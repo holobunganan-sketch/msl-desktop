@@ -8,10 +8,13 @@
 //! - 单实例保护
 
 mod app_state;
+pub mod commands;
 pub mod db;
 mod single_instance;
+pub mod workspace;
 
 use app_state::AppState;
+use db::Database;
 use tauri::Manager;
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -129,8 +132,35 @@ pub fn run() {
 fn run_app() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
+            // 打开数据库（默认路径 %APPDATA%\MSLDesktop\msl-desktop.db）。
+            // 失败只告警不阻塞启动——后续命令会返回"数据库未初始化"。
+            match Database::open(&db::default_db_path()) {
+                Ok(db) => app.state::<AppState>().set_database(db),
+                Err(e) => eprintln!("[db] failed to open default database: {e}"),
+            }
+
+            // 恢复主 workspace 的文件监听（上次绑定过的目录自动继续监控）。
+            let state = app.state::<AppState>();
+            if let Some(main_ws) = state.with_database(|db| {
+                crate::db::provider::AppSettingsRepo::new(db.conn()).get("main_workspace")
+            }) {
+                if let Ok(Some(path)) = main_ws {
+                    match crate::workspace::watcher::FileWatcher::start(
+                        app.handle().clone(),
+                        std::path::PathBuf::from(&path),
+                    ) {
+                        Ok(w) => {
+                            state.set_watcher(w);
+                            eprintln!("[workspace] watching {path}");
+                        }
+                        Err(e) => eprintln!("[workspace] failed to watch {path}: {e}"),
+                    }
+                }
+            }
+
             setup_tray(app.handle())?;
             create_main_window(app.handle())?;
             Ok(())
@@ -147,7 +177,17 @@ fn run_app() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            commands::bind_workspace,
+            commands::list_dir,
+            commands::open_file,
+            commands::reveal_in_explorer,
+            commands::recent_files,
+            commands::get_workspaces,
+            commands::set_watcher_paused,
+            commands::watcher_status,
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 

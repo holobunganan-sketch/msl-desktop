@@ -6,7 +6,7 @@ use super::{DbError, DbResult, now_unix};
 
 // ---------- tasks ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Task {
     pub id: i64,
     pub work_id: Option<i64>,
@@ -148,7 +148,7 @@ impl<'a> TaskRepo<'a> {
 
 // ---------- waiting_items ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct WaitingItem {
     pub id: i64,
     pub work_id: Option<i64>,

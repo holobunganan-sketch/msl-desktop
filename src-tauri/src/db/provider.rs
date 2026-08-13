@@ -6,7 +6,7 @@ use super::{DbError, DbResult, now_unix};
 
 // ---------- provider_settings ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ProviderSetting {
     pub id: i64,
     pub display_name: String,

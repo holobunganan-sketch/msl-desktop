@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{DbError, DbResult, now_unix};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CalendarEvent {
     pub id: i64,
     pub work_id: Option<i64>,

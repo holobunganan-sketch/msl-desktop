@@ -6,7 +6,7 @@ use super::{DbError, DbResult, now_unix};
 
 // ---------- workspaces ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Workspace {
     pub id: i64,
     pub name: String,
@@ -95,7 +95,7 @@ impl<'a> WorkspaceRepo<'a> {
 
 // ---------- work_file_refs ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkFileRef {
     pub id: i64,
     pub work_id: i64,

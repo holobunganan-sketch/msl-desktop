@@ -6,7 +6,7 @@ use super::{DbError, DbResult, now_unix};
 
 // ---------- works ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Work {
     pub id: i64,
     pub title: String,
@@ -119,7 +119,7 @@ impl<'a> WorkRepo<'a> {
 
 // ---------- resume_points ----------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ResumePoint {
     pub id: i64,
     pub work_id: i64,
