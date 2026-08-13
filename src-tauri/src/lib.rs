@@ -8,6 +8,7 @@
 //! - 单实例保护
 
 mod app_state;
+pub mod db;
 mod single_instance;
 
 use app_state::AppState;
