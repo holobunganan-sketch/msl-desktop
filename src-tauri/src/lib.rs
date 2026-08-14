@@ -135,6 +135,19 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// 启动应用。先做单实例检查：已有实例时静默退出。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 性能：优化 WebView2 内存占用（指南 §4 预算）。
+    // - 禁用 GPU 进程（简单 UI 不受影响）；
+    // - 限制 renderer 进程数为 1（单窗口应用）。
+    // 必须在 WebView2 运行时创建前设置；保留用户已有参数（如调试端口）。
+    let mut wv_args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    if !wv_args.contains("--disable-gpu") {
+        wv_args.push_str(" --disable-gpu");
+    }
+    if !wv_args.contains("--renderer-process-limit") {
+        wv_args.push_str(" --renderer-process-limit=1");
+    }
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", wv_args.trim());
+
     match single_instance::acquire() {
         Ok(Some(_guard)) => run_app(),
         Ok(None) => {

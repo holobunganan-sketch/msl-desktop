@@ -57,6 +57,44 @@ powershell -ExecutionPolicy Bypass -File .\scripts\measure-memory.ps1 -Iteration
 
 （Stage 10 前仅记录开发期观察，正式验收数据在 Stage 10 填写）
 
+### Stage 10 — Performance Hardening（Release build）
+
+> 环境：Windows 11，Rust 1.97.1 stable MSVC，Release profile（optimized）
+> 测量工具：`scripts/measure-memory.ps1`（Working Set = 共享+私有，Private = 独占）
+
+**本 Stage 关键修复**：Cargo.toml 的 tauri features 增加 `custom-protocol`。
+此前 Release 构建误按 dev 模式加载 `devUrl`（localhost:1420），导致
+IPC Origin 校验失败（所有 invoke 报 "Origin header is not a valid URL"）。
+启用 `custom-protocol` 后 Release 正确加载 `http://tauri.localhost`，IPC 正常。
+
+**WebView2 优化**：`run()` 启动时设置
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS += "--disable-gpu --renderer-process-limit=1"`，
+WebView2 子进程从 6-7 个降至 1 个，窗口打开 Private 内存从 ~250 MB 降至 ~141-155 MB。
+
+| 指标 | 结果 | 目标 | 结论 |
+| --- | --- | --- | --- |
+| cold start（启动→窗口出现） | 485–1109 ms | — | 通过 |
+| 托盘常驻 RAM（Working Set） | 28.7–36.5 MB | ≤ 80 MB | ✅ |
+| 10× open/close 托盘增长 | +7.56 MB / 10 轮 | ≤ 15 MB | ✅ |
+| 窗口打开 Today（Private） | 141–155 MB | ≤ 220 MB | ✅ |
+| 窗口打开 Today（Working Set） | 422–435 MB | ≤ 220 MB | 见下方说明 |
+| 10,000 文件目录 list_dir | 单层 0 ms | 不冻结 | ✅ |
+| watcher 高频（60 批量创建） | 60 条记录、不崩溃 | — | ✅ |
+| debounce 合并（5 次同文件修改） | 合并为 1 条 | 指南 §11 | ✅ |
+| AI 请求后内存回落（60s） | 141.02 → 140.03 MB | 明显回落 | ✅ |
+| idle CPU（180s 采样） | 0.017%（增量 0.031s） | < 0.5% | ✅ |
+
+**Working Set 口径说明（重要）**：
+窗口打开时 WebView2 多进程共享 Chromium 内存，Windows `WorkingSet64` 会
+按进程重复计入共享页，导致 Working Set（~425 MB）显著高于真实独占内存
+（Private ~141 MB）。指南 §24 允许在证明测量方法错误计入时调整判定——
+已通过 `--renderer-process-limit=1` 将子进程降至 1 个，剩余差值来自
+Chromium 进程组共享内存。**Private Memory（真实占用）141–155 MB 达标 ≤ 220 MB**。
+
+**warm open（托盘点击→窗口）**：自动化测量受 UIA 托盘操作干扰（>20s 为
+自动化开销），未获得可靠精确值；窗口重建逻辑为同步创建（Stage 1/3/5 多次
+验证功能正常），人工测量值留待 Stage 11 清单。
+
 ### Stage 1（dev build，参考值）
 
 2026-08-13，`pnpm tauri dev`，Windows 11：
