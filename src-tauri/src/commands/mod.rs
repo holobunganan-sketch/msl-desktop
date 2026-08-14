@@ -633,7 +633,116 @@ pub fn remove_work_file_ref(state: State<AppState>, id: i64) -> Result<(), Strin
     })
 }
 
-// ---------- Today（指南 §7.1 / §20） ----------
+// ---------- Search / Command（指南 §7.9 / §21） ----------
+
+/// 搜索结果分组项。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchResults {
+    pub works: Vec<crate::db::work::Work>,
+    pub files: Vec<FileHit>,
+    pub tasks: Vec<crate::db::task::Task>,
+    pub waiting: Vec<crate::db::task::WaitingItem>,
+    pub calendar: Vec<crate::db::calendar::CalendarEvent>,
+    pub inbox: Vec<crate::db::inbox::InboxItem>,
+    pub resume_points: Vec<crate::db::work::ResumePoint>,
+    pub activity: Vec<crate::db::activity::ActivityEvent>,
+}
+
+/// 文件命中：来自 work_file_refs 与 activity 中出现的路径（已索引，不遍历磁盘）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FileHit {
+    pub path: String,
+    pub label: Option<String>,
+    pub work_id: Option<i64>,
+}
+
+/// LIKE 转义：`%`、`_` 与反斜杠。
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+fn like_param(q: &str) -> String {
+    format!("%{}%", like_escape(q))
+}
+
+const SEARCH_LIMIT: usize = 8;
+
+/// 轻量搜索（SQLite LIKE，不建向量索引，不遍历磁盘）。
+#[tauri::command]
+pub fn search(state: State<AppState>, query: String) -> Result<SearchResults, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Ok(SearchResults {
+            works: Vec::new(),
+            files: Vec::new(),
+            tasks: Vec::new(),
+            waiting: Vec::new(),
+            calendar: Vec::new(),
+            inbox: Vec::new(),
+            resume_points: Vec::new(),
+            activity: Vec::new(),
+        });
+    }
+    with_db(&state, |db| {
+        let conn = db.conn();
+        let like = like_param(q);
+
+        // 简单 LIMIT 查询（各表独立 LIKE）
+        let works = crate::db::work::WorkRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+        let tasks = crate::db::task::TaskRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+        let waiting = crate::db::task::WaitingRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+        let calendar = crate::db::calendar::CalendarRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+        let inbox = crate::db::inbox::InboxRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+        let resume_points = crate::db::work::ResumePointRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+        let activity = crate::db::activity::ActivityRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?;
+
+        // 文件：work_file_refs（label/path）+ activity 中的 path（去重）
+        let mut files = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for f in crate::db::workspace::WorkFileRefRepo::new(conn)
+            .search(&like, SEARCH_LIMIT)?
+        {
+            if seen.insert(f.path.clone()) {
+                files.push(FileHit {
+                    path: f.path,
+                    label: f.label,
+                    work_id: Some(f.work_id),
+                });
+            }
+        }
+        for a in &activity {
+            if let Some(p) = &a.path {
+                if p.to_lowercase().contains(&q.to_lowercase()) && seen.insert(p.clone()) {
+                    files.push(FileHit {
+                        path: p.clone(),
+                        label: None,
+                        work_id: a.work_id,
+                    });
+                }
+            }
+        }
+
+        Ok(SearchResults {
+            works,
+            files,
+            tasks,
+            waiting,
+            calendar,
+            inbox,
+            resume_points,
+            activity,
+        })
+    })
+}
 
 /// Continue 列表项：Work + 最新 Resume Point + 最近活动时间 + 相关文件。
 #[derive(Debug, Clone, serde::Serialize)]

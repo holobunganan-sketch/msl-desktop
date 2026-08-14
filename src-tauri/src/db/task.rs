@@ -144,6 +144,20 @@ impl<'a> TaskRepo<'a> {
         }
         Ok(())
     }
+
+    /// 按标题/备注模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<Task>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, work_id, title, status, priority, due_at, scheduled_start,
+                    scheduled_end, notes, created_at, updated_at, completed_at
+             FROM tasks
+             WHERE title LIKE ?1 ESCAPE '\\' OR (notes IS NOT NULL AND notes LIKE ?1 ESCAPE '\\')
+             ORDER BY (status = 'done'), due_at IS NULL, due_at LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_task)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
 }
 
 // ---------- waiting_items ----------
@@ -265,6 +279,22 @@ impl<'a> WaitingRepo<'a> {
             return Err(DbError::NotFound("waiting_item".into()));
         }
         Ok(())
+    }
+
+    /// 按标题/waiting_for/备注模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<WaitingItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, work_id, title, waiting_for, started_at, follow_up_at,
+                    status, notes, created_at, updated_at, resolved_at
+             FROM waiting_items
+             WHERE title LIKE ?1 ESCAPE '\\'
+                OR waiting_for LIKE ?1 ESCAPE '\\'
+                OR (notes IS NOT NULL AND notes LIKE ?1 ESCAPE '\\')
+             ORDER BY (status = 'resolved'), follow_up_at IS NULL, follow_up_at LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_waiting)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
     }
 }
 

@@ -156,6 +156,22 @@ impl<'a> ActivityRepo<'a> {
         }
         Ok(())
     }
+
+    /// 按 display_text / path / event_type 模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<ActivityEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, timestamp, event_type, workspace_id, work_id, entity_type,
+                    entity_id, path, display_text, metadata_json, dedupe_key
+             FROM activity_events
+             WHERE display_text LIKE ?1 ESCAPE '\\'
+                OR (path IS NOT NULL AND path LIKE ?1 ESCAPE '\\')
+                OR event_type LIKE ?1 ESCAPE '\\'
+             ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_activity)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
 }
 
 #[cfg(test)]

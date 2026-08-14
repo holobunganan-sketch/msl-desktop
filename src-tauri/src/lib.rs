@@ -221,6 +221,7 @@ fn run_app() {
             commands::update_work_file_ref,
             commands::remove_work_file_ref,
             commands::get_today,
+            commands::search,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

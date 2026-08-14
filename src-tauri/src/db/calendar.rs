@@ -138,6 +138,21 @@ impl<'a> CalendarRepo<'a> {
         }
         Ok(())
     }
+
+    /// 按标题/地点/备注模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<CalendarEvent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, work_id, title, start_at, end_at, all_day, location, notes, kind, created_at, updated_at
+             FROM calendar_events
+             WHERE title LIKE ?1 ESCAPE '\\'
+                OR (location IS NOT NULL AND location LIKE ?1 ESCAPE '\\')
+                OR (notes IS NOT NULL AND notes LIKE ?1 ESCAPE '\\')
+             ORDER BY start_at LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_event)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
 }
 
 #[cfg(test)]

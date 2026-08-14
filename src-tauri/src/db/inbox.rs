@@ -90,6 +90,18 @@ impl<'a> InboxRepo<'a> {
         }
         Ok(())
     }
+
+    /// 按内容模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<InboxItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, content, created_at, processed_at, converted_to_type, converted_to_id
+             FROM inbox_items WHERE content LIKE ?1 ESCAPE '\\'
+             ORDER BY (processed_at IS NOT NULL), created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_inbox)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
 }
 
 #[cfg(test)]

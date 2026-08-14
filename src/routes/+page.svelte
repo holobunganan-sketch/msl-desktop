@@ -8,6 +8,7 @@
   import CalendarView from "$lib/components/CalendarView.svelte";
   import WorksView from "$lib/components/WorksView.svelte";
   import TodayView from "$lib/components/TodayView.svelte";
+  import SearchOverlay from "$lib/components/SearchOverlay.svelte";
 
   type DirEntry = {
     name: string;
@@ -28,6 +29,25 @@
   type View = "today" | "workspace" | "works" | "plan" | "waiting" | "inbox" | "calendar";
 
   let view = $state<View>("today");
+  let searchOpen = $state(false);
+
+  // 搜索结果导航（kind: work/file/task/waiting/calendar/inbox/resume/activity）
+  function onSearchSelect(kind: string, id: number) {
+    if (kind === "work" || kind === "resume") {
+      view = "works";
+    } else if (kind === "task") {
+      view = "plan";
+    } else if (kind === "waiting") {
+      view = "waiting";
+    } else if (kind === "calendar") {
+      view = "calendar";
+    } else if (kind === "inbox") {
+      view = "inbox";
+    } else if (kind === "file") {
+      // 打开文件（work_id 为 0 时仅定位）
+      if (id > 0) view = "works";
+    }
+  }
   let currentPath = $state("");
   let entries = $state<DirEntry[]>([]);
   let workspaces = $state<Workspace[]>([]);
@@ -233,6 +253,7 @@
       {/if}
     </div>
   </main>
+  <SearchOverlay bind:open={searchOpen} onSelect={onSearchSelect} />
 </div>
 
 <style>

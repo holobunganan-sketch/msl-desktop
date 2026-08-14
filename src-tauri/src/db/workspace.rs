@@ -82,6 +82,7 @@ impl<'a> WorkspaceRepo<'a> {
         Ok(())
     }
 
+    /// 删除不存在的记录应报 NotFound
     pub fn delete(&self, id: i64) -> DbResult<()> {
         let affected = self
             .conn
@@ -90,6 +91,19 @@ impl<'a> WorkspaceRepo<'a> {
             return Err(DbError::NotFound("workspace".into()));
         }
         Ok(())
+    }
+
+    /// 按名称/路径模糊搜索（LIKE，转义由调用方处理）。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<Workspace>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, root_path, enabled, created_at, updated_at
+             FROM workspaces
+             WHERE name LIKE ?1 ESCAPE '\\' OR root_path LIKE ?1 ESCAPE '\\'
+             ORDER BY id LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_workspace)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
     }
 }
 
@@ -187,6 +201,26 @@ impl<'a> WorkFileRefRepo<'a> {
             return Err(DbError::NotFound("work_file_ref".into()));
         }
         Ok(())
+    }
+
+    /// 删除某 Work 的文件引用（供归档清理）。
+    pub fn delete_by_work(&self, work_id: i64) -> DbResult<()> {
+        self.conn
+            .execute("DELETE FROM work_file_refs WHERE work_id = ?1", [work_id])?;
+        Ok(())
+    }
+
+    /// 按路径/标签模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<WorkFileRef>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, work_id, workspace_id, path, label, pinned, created_at
+             FROM work_file_refs
+             WHERE path LIKE ?1 ESCAPE '\\' OR (label IS NOT NULL AND label LIKE ?1 ESCAPE '\\')
+             ORDER BY pinned DESC, id LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_file_ref)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
     }
 }
 

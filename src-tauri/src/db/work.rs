@@ -115,6 +115,19 @@ impl<'a> WorkRepo<'a> {
         }
         Ok(())
     }
+
+    /// 按标题/摘要模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<Work>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, status, summary, created_at, updated_at, archived_at
+             FROM works
+             WHERE title LIKE ?1 ESCAPE '\\' OR (summary IS NOT NULL AND summary LIKE ?1 ESCAPE '\\')
+             ORDER BY updated_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_work)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
 }
 
 // ---------- resume_points ----------
@@ -215,6 +228,21 @@ impl<'a> ResumePointRepo<'a> {
             return Err(DbError::NotFound("resume_point".into()));
         }
         Ok(())
+    }
+
+    /// 按 current_state/next_step/remember 模糊搜索。
+    pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<ResumePoint>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, work_id, current_state, next_step, remember, source, created_at
+             FROM resume_points
+             WHERE current_state LIKE ?1 ESCAPE '\\'
+                OR next_step LIKE ?1 ESCAPE '\\'
+                OR remember LIKE ?1 ESCAPE '\\'
+             ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![like, limit as i64], row_to_resume)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
     }
 }
 
