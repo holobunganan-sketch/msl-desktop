@@ -7,6 +7,7 @@
   import InboxView from "$lib/components/InboxView.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
   import WorksView from "$lib/components/WorksView.svelte";
+  import TodayView from "$lib/components/TodayView.svelte";
 
   type DirEntry = {
     name: string;
@@ -156,17 +157,7 @@
     <QuickCapture />
     <div class="view-body">
       {#if view === "today"}
-        <section class="today">
-          <h1>Today</h1>
-          <p class="muted">
-            恢复工作上下文的页面（Stage 6 实现）。当前可用：Workspace 文件浏览、
-            Plan 任务、Waiting、Calendar、Inbox。
-          </p>
-          <div class="card">
-            <div class="card-title">Morning Brief</div>
-            <div class="muted">连接 AI 后可生成 Morning Brief</div>
-          </div>
-        </section>
+        <TodayView />
       {:else if view === "workspace"}
         <section class="workspace">
           <div class="ws-header">
@@ -311,16 +302,6 @@
   .muted {
     color: #6b7280;
     font-size: 13px;
-  }
-  .card {
-    border: 1px solid #e4e7eb;
-    border-radius: 8px;
-    padding: 16px;
-    margin-top: 16px;
-  }
-  .card-title {
-    font-weight: 600;
-    margin-bottom: 6px;
   }
 
   .ws-header {

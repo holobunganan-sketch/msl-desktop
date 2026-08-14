@@ -632,3 +632,103 @@ pub fn remove_work_file_ref(state: State<AppState>, id: i64) -> Result<(), Strin
         crate::db::workspace::WorkFileRefRepo::new(db.conn()).delete(id)
     })
 }
+
+// ---------- Today（指南 §7.1 / §20） ----------
+
+/// Continue 列表项：Work + 最新 Resume Point + 最近活动时间 + 相关文件。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContinueWork {
+    pub work: crate::db::work::Work,
+    pub latest_resume: Option<crate::db::work::ResumePoint>,
+    pub last_activity_at: Option<i64>,
+    pub files: Vec<crate::db::workspace::WorkFileRef>,
+}
+
+/// Today 页面聚合数据（指南 §20 排序规则）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TodayData {
+    /// Continue：未 done 的 Works，按最近活动/更新时间排序。
+    pub continue_works: Vec<ContinueWork>,
+    /// 今日 tasks（含 overdue）。
+    pub today_tasks: Vec<crate::db::task::Task>,
+    /// 今日 calendar 事件。
+    pub today_calendar: Vec<crate::db::calendar::CalendarEvent>,
+    /// 需要跟进/已到期的 waiting。
+    pub waiting_followups: Vec<crate::db::task::WaitingItem>,
+    /// 未处理 Inbox。
+    pub inbox_pending: Vec<crate::db::inbox::InboxItem>,
+}
+
+/// 获取 Today 页面数据。
+/// `day_start` / `day_end` 为"今天"的起止（Unix 秒，由前端按本地时区计算）。
+#[tauri::command]
+pub fn get_today(
+    state: State<AppState>,
+    day_start: i64,
+    day_end: i64,
+) -> Result<TodayData, String> {
+    with_db(&state, |db| {
+        let work_repo = crate::db::work::WorkRepo::new(db.conn());
+        let resume_repo = crate::db::work::ResumePointRepo::new(db.conn());
+        let activity_repo = crate::db::activity::ActivityRepo::new(db.conn());
+        let file_repo = crate::db::workspace::WorkFileRefRepo::new(db.conn());
+
+        // Continue：未 done 的 Works（active/paused/waiting）
+        let mut continue_works: Vec<ContinueWork> = work_repo
+            .list(None)?
+            .into_iter()
+            .filter(|w| w.status != "done" && w.status != "archived")
+            .map(|work| {
+                let latest_resume = resume_repo.latest_for_work(work.id).unwrap_or(None);
+                let last_activity_at = activity_repo
+                    .query(None, None, Some(work.id), None, None, Some(1))
+                    .ok()
+                    .and_then(|v| v.first().map(|a| a.timestamp))
+                    .or(Some(work.updated_at));
+                let files = file_repo.list_by_work(work.id).unwrap_or_default();
+                ContinueWork {
+                    work,
+                    latest_resume,
+                    last_activity_at,
+                    files,
+                }
+            })
+            .collect();
+
+        // 排序（指南 §20.4）：最近有 Activity 且未 done 的 Work 在前
+        continue_works.sort_by_key(|c| std::cmp::Reverse(c.last_activity_at.unwrap_or(0)));
+
+        // 今日 tasks：due 在今天 + overdue（due ≤ 今天结束，未完成）
+        let all_tasks = crate::db::task::TaskRepo::new(db.conn()).list(None, None)?;
+        let today_tasks: Vec<_> = all_tasks
+            .into_iter()
+            .filter(|t| t.status != "done" && t.due_at.is_some_and(|d| d <= day_end))
+            .collect();
+
+        // 今日 calendar
+        let today_calendar =
+            crate::db::calendar::CalendarRepo::new(db.conn()).list_between(day_start, day_end)?;
+
+        // waiting follow-up：open 且 follow_up_at ≤ 今天结束（含到期）
+        let all_waiting = crate::db::task::WaitingRepo::new(db.conn()).list(None, None)?;
+        let waiting_followups: Vec<_> = all_waiting
+            .into_iter()
+            .filter(|w| w.status == "open" && w.follow_up_at.is_some_and(|f| f <= day_end))
+            .collect();
+
+        // 未处理 Inbox
+        let inbox_pending: Vec<_> = crate::db::inbox::InboxRepo::new(db.conn())
+            .list()?
+            .into_iter()
+            .filter(|i| i.processed_at.is_none())
+            .collect();
+
+        Ok(TodayData {
+            continue_works,
+            today_tasks,
+            today_calendar,
+            waiting_followups,
+            inbox_pending,
+        })
+    })
+}
