@@ -11,6 +11,8 @@ pub mod ai;
 pub mod app_state;
 pub mod commands;
 pub mod db;
+mod lifecycle;
+pub mod notifications;
 mod single_instance;
 pub mod workspace;
 
@@ -30,17 +32,29 @@ fn greet(name: &str) -> String {
 }
 
 /// 创建（或重建）主窗口。窗口属性集中在此处定义，保证初次创建与
-/// 托盘重建使用同一份配置。
+/// 托盘重建使用同一份配置。若已保存窗口状态则恢复位置与大小。
 fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let window = tauri::WebviewWindowBuilder::new(
+    let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         MAIN_WINDOW_LABEL,
         tauri::WebviewUrl::default(), // dev 模式自动使用 devUrl，prod 使用 frontendDist
     )
     .title("MSL Desktop")
     .inner_size(1240.0, 720.0)
-    .min_inner_size(1024.0, 640.0)
-    .build()?;
+    .min_inner_size(1024.0, 640.0);
+
+    // 恢复上次窗口位置/大小（指南 §23 window state restore）
+    let restored = app
+        .try_state::<AppState>()
+        .and_then(|s| s.with_database(lifecycle::load_window_state))
+        .flatten();
+    if let Some((x, y, w, h)) = restored {
+        builder = builder
+            .position(x as f64, y as f64)
+            .inner_size(w as f64, h as f64);
+    }
+
+    let window = builder.build()?;
 
     if let Some(state) = app.try_state::<AppState>() {
         state.record_window_created();
@@ -137,6 +151,8 @@ fn run_app() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
             // 打开数据库（默认路径 %APPDATA%\MSLDesktop\msl-desktop.db）。
@@ -165,8 +181,17 @@ fn run_app() {
                 }
             }
 
+            // 提醒调度（Resident Core 常驻，低频轮询）
+            crate::notifications::spawn(app.handle().clone());
+
             setup_tray(app.handle())?;
-            create_main_window(app.handle())?;
+
+            // background 启动（自启动/后台模式）不创建主窗口，仅 tray 常驻
+            if !crate::lifecycle::is_background_start() {
+                create_main_window(app.handle())?;
+            } else {
+                eprintln!("[lifecycle] background start: window suppressed");
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -174,6 +199,20 @@ fn run_app() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == MAIN_WINDOW_LABEL {
                     api.prevent_close();
+                    // 保存窗口位置/大小（window state restore）
+                    if let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) {
+                        if let Some(state) = window.try_state::<AppState>() {
+                            state.with_database(|db| {
+                                let _ = lifecycle::save_window_state(
+                                    db,
+                                    pos.x,
+                                    pos.y,
+                                    size.width,
+                                    size.height,
+                                );
+                            });
+                        }
+                    }
                     if let Some(state) = window.try_state::<AppState>() {
                         state.record_window_destroyed();
                     }
@@ -230,6 +269,13 @@ fn run_app() {
             commands::test_provider_connection,
             commands::generate_morning_brief,
             commands::get_morning_brief,
+            commands::set_autostart,
+            commands::autostart_status,
+            commands::set_notifications_enabled,
+            commands::set_reminder_lead_minutes,
+            commands::check_reminders_now,
+            commands::app_settings_get,
+            commands::app_settings_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -242,7 +288,16 @@ fn run_app() {
                 .try_state::<AppState>()
                 .map(|s| s.quit_requested())
                 .unwrap_or(false);
-            if !should_quit {
+            if should_quit {
+                // graceful shutdown：WAL checkpoint 后关闭数据库（指南 §23）
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    if let Some(db) = state.take_database() {
+                        if let Err(e) = db.close() {
+                            eprintln!("[db] close failed: {e}");
+                        }
+                    }
+                }
+            } else {
                 api.prevent_exit();
             }
         }

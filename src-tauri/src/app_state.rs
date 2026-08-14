@@ -27,6 +27,8 @@ pub struct AppState {
     database: Mutex<Option<Database>>,
     /// 文件监听器（Stage 3+）。
     watcher: Mutex<Option<FileWatcher>>,
+    /// 已通知提醒的去重集合（进程内，Stage 9）。
+    notified: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Default for AppState {
@@ -38,6 +40,7 @@ impl Default for AppState {
             quit_requested: AtomicBool::new(false),
             database: Mutex::new(None),
             watcher: Mutex::new(None),
+            notified: Mutex::new(std::collections::HashSet::new()),
         }
     }
 }
@@ -101,6 +104,11 @@ impl AppState {
 
     pub fn with_watcher<T>(&self, f: impl FnOnce(&FileWatcher) -> T) -> Option<T> {
         self.watcher.lock().unwrap().as_ref().map(f)
+    }
+
+    /// 已通知提醒去重集合。
+    pub fn notified_set(&self) -> &Mutex<std::collections::HashSet<String>> {
+        &self.notified
     }
 
     /// 自 Core 启动至今的秒数。

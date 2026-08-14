@@ -28,6 +28,11 @@
   let fKey = $state("");
   let testing = $state(false);
 
+  // 通知/自启动
+  let notifEnabled = $state(true);
+  let leadMinutes = $state(60);
+  let autostartOn = $state(false);
+
   const DEEPSEEK_PRESET = {
     name: "DeepSeek",
     type: "openai_compatible",
@@ -123,8 +128,46 @@
     testing = false;
   }
 
+  async function loadNotifications() {
+    try {
+      const v = await invoke("app_settings_get", { key: "notifications_enabled" });
+      if (v !== null) notifEnabled = v !== "false";
+      const l = await invoke("app_settings_get", { key: "reminder_lead_minutes" });
+      if (l !== null) leadMinutes = Number(l);
+      autostartOn = await invoke("autostart_status");
+    } catch {
+      /* 默认值 */
+    }
+  }
+
+  async function toggleNotif() {
+    try {
+      notifEnabled = await invoke("set_notifications_enabled", { enabled: notifEnabled });
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function changeLead() {
+    try {
+      leadMinutes = await invoke("set_reminder_lead_minutes", { minutes: leadMinutes });
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function toggleAutostart() {
+    try {
+      autostartOn = await invoke("set_autostart", { enabled: !autostartOn });
+      info = autostartOn ? "已启用 Windows 自启动（后台模式启动，不弹主窗口）" : "已关闭自启动";
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
   $effect(() => {
     load();
+    loadNotifications();
   });
 </script>
 
@@ -193,6 +236,52 @@
     {:else}
       <button class="add" onclick={openNew}>新增 Provider…</button>
     {/if}
+  </section>
+
+  <!-- Notifications -->
+  <section class="card">
+    <div class="card-title">Notifications</div>
+    <div class="row-item">
+      <span class="p-main">提醒通知（waiting 跟进 / 任务截止 / 日历日程）</span>
+      <label class="chk">
+        <input type="checkbox" bind:checked={notifEnabled} onchange={toggleNotif} /> 开启
+      </label>
+    </div>
+    <div class="row-item">
+      <span class="p-main">提前提醒</span>
+      <input
+        type="number"
+        min="1"
+        max="1440"
+        bind:value={leadMinutes}
+        onchange={changeLead}
+        style="width: 80px; padding: 5px 8px; border: 1px solid #c8ccd1; border-radius: 6px; font-size: 12px;"
+      />
+      <span class="muted">分钟</span>
+    </div>
+  </section>
+
+  <!-- Autostart -->
+  <section class="card">
+    <div class="card-title">Windows 启动</div>
+    <div class="row-item">
+      <span class="p-main">
+        开机自启动（后台模式启动，不弹主窗口，仅托盘常驻；
+        点击托盘图标再打开窗口）
+      </span>
+      <label class="chk">
+        <input type="checkbox" bind:checked={autostartOn} onchange={toggleAutostart} /> 启用
+      </label>
+    </div>
+  </section>
+
+  <!-- 快捷键 -->
+  <section class="card">
+    <div class="card-title">快捷键</div>
+    <div class="muted hint">
+      <div>Ctrl+K — 全局搜索</div>
+      <div>Ctrl+Shift+Space — Quick Capture（快速记入 Inbox）</div>
+    </div>
   </section>
 </div>
 

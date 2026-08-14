@@ -992,3 +992,63 @@ pub fn get_today(
         })
     })
 }
+
+// ---------- 生命周期 / 通知设置（指南 §23） ----------
+
+/// 启用/禁用 Windows 自启动（background 模式）。
+#[tauri::command]
+pub fn set_autostart(enabled: bool) -> Result<bool, String> {
+    crate::lifecycle::set_autostart(enabled).map_err(|e| e.to_string())?;
+    Ok(crate::lifecycle::is_autostart_enabled())
+}
+
+/// 查询自启动状态。
+#[tauri::command]
+pub fn autostart_status() -> Result<bool, String> {
+    Ok(crate::lifecycle::is_autostart_enabled())
+}
+
+/// 开关通知提醒。
+#[tauri::command]
+pub fn set_notifications_enabled(state: State<AppState>, enabled: bool) -> Result<bool, String> {
+    with_db(&state, |db| {
+        crate::db::provider::AppSettingsRepo::new(db.conn())
+            .set("notifications_enabled", if enabled { "true" } else { "false" })
+    })?;
+    Ok(enabled)
+}
+
+/// 设置提醒提前量（分钟）。
+#[tauri::command]
+pub fn set_reminder_lead_minutes(state: State<AppState>, minutes: i64) -> Result<i64, String> {
+    let clamped = minutes.clamp(1, 1440);
+    with_db(&state, |db| {
+        crate::db::provider::AppSettingsRepo::new(db.conn())
+            .set("reminder_lead_minutes", &clamped.to_string())
+    })?;
+    Ok(clamped)
+}
+
+/// 立即执行一次提醒检查（调试/验收用）。
+#[tauri::command]
+pub fn check_reminders_now(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::notifications::Reminder>, String> {
+    Ok(crate::notifications::check_once(&app))
+}
+
+/// 读取应用设置项。
+#[tauri::command]
+pub fn app_settings_get(state: State<AppState>, key: String) -> Result<Option<String>, String> {
+    with_db(&state, |db| {
+        crate::db::provider::AppSettingsRepo::new(db.conn()).get(&key)
+    })
+}
+
+/// 写入应用设置项。
+#[tauri::command]
+pub fn app_settings_set(state: State<AppState>, key: String, value: String) -> Result<(), String> {
+    with_db(&state, |db| {
+        crate::db::provider::AppSettingsRepo::new(db.conn()).set(&key, &value)
+    })
+}
