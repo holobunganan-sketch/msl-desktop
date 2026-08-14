@@ -9,6 +9,7 @@
   import WorksView from "$lib/components/WorksView.svelte";
   import TodayView from "$lib/components/TodayView.svelte";
   import SearchOverlay from "$lib/components/SearchOverlay.svelte";
+  import SettingsView from "$lib/components/SettingsView.svelte";
 
   type DirEntry = {
     name: string;
@@ -26,7 +27,7 @@
     updated_at: number;
   };
 
-  type View = "today" | "workspace" | "works" | "plan" | "waiting" | "inbox" | "calendar";
+  type View = "today" | "workspace" | "works" | "plan" | "waiting" | "inbox" | "calendar" | "settings";
 
   let view = $state<View>("today");
   let searchOpen = $state(false);
@@ -170,7 +171,9 @@
       Inbox
     </button>
     <div class="nav-spacer"></div>
-    <button class="nav-item" disabled title="后续阶段">Settings</button>
+    <button class="nav-item" class:active={view === "settings"} onclick={() => (view = "settings")}>
+      Settings
+    </button>
   </aside>
 
   <main class="content">
@@ -250,6 +253,8 @@
         <InboxView />
       {:else if view === "calendar"}
         <CalendarView />
+      {:else if view === "settings"}
+        <SettingsView />
       {/if}
     </div>
   </main>

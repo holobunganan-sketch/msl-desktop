@@ -7,6 +7,7 @@
 //! - 托盘"退出" → 真正结束进程
 //! - 单实例保护
 
+pub mod ai;
 pub mod app_state;
 pub mod commands;
 pub mod db;
@@ -222,6 +223,13 @@ fn run_app() {
             commands::remove_work_file_ref,
             commands::get_today,
             commands::search,
+            commands::list_providers,
+            commands::save_provider,
+            commands::delete_provider,
+            commands::provider_has_key,
+            commands::test_provider_connection,
+            commands::generate_morning_brief,
+            commands::get_morning_brief,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

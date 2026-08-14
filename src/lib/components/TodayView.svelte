@@ -92,6 +92,11 @@
 
   let data = $state<TodayData | null>(null);
   let error = $state("");
+  let brief = $state<string | null>(null);
+  let briefDate = $state("");
+  let aiConfigured = $state(false);
+  let generating = $state(false);
+  let briefMsg = $state("");
 
   const KIND_LABEL: Record<string, string> = {
     meeting: "会议",
@@ -129,6 +134,49 @@
     } catch (e) {
       error = String(e);
     }
+    // Morning Brief：今日缓存 + AI 配置状态
+    try {
+      const date = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      briefDate = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+      const b = await invoke("get_morning_brief", { date: briefDate });
+      brief = b ? (b as { content: string }).content : null;
+
+      const providers = (await invoke("list_providers")) as { enabled: boolean; id: number }[];
+      const enabled = providers.filter((p) => p.enabled);
+      let configured = false;
+      for (const p of enabled) {
+        if (await invoke("provider_has_key", { id: p.id })) configured = true;
+      }
+      aiConfigured = configured;
+    } catch {
+      aiConfigured = false;
+    }
+  }
+
+  async function generateBrief(force: boolean) {
+    generating = true;
+    briefMsg = "";
+    try {
+      const date = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const ds = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const de = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+      const ys = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 1);
+      const ye = ds;
+      const b = (await invoke("generate_morning_brief", {
+        date: briefDate,
+        yesterdayStart: Math.floor(ys.getTime() / 1000),
+        yesterdayEnd: Math.floor(ye.getTime() / 1000),
+        dayStart: Math.floor(ds.getTime() / 1000),
+        dayEnd: Math.floor(de.getTime() / 1000),
+        force,
+      })) as { content: string };
+      brief = b.content;
+    } catch (e) {
+      briefMsg = String(e);
+    }
+    generating = false;
   }
 
   async function completeTask(t: Task) {
@@ -214,10 +262,23 @@
         {/each}
       </section>
 
-      <!-- E. Morning Brief 占位 -->
+      <!-- E. Morning Brief -->
       <section class="card brief">
         <div class="card-title">MORNING BRIEF</div>
-        <div class="muted">连接 AI 后可生成 Morning Brief（Stage 8 实现）</div>
+        {#if brief}
+          <div class="brief-content">{brief}</div>
+          <button onclick={() => generateBrief(true)} disabled={generating}>
+            {generating ? "生成中…" : "重新生成"}
+          </button>
+        {:else if aiConfigured}
+          <div class="muted">AI 已配置，可生成今日 Morning Brief。</div>
+          <button onclick={() => generateBrief(false)} disabled={generating}>
+            {generating ? "生成中…" : "生成今日 Brief"}
+          </button>
+        {:else}
+          <div class="muted">连接 AI 后可生成 Morning Brief（在设置中配置 Provider 与 API Key）</div>
+        {/if}
+        {#if briefMsg}<div class="status error">{briefMsg}</div>{/if}
       </section>
     </div>
 
@@ -330,6 +391,18 @@
     background: #fff;
     font-size: 12px;
     cursor: pointer;
+  }
+  button:disabled {
+    color: #9aa0a6;
+    cursor: default;
+  }
+  .brief-content {
+    font-size: 13px;
+    white-space: pre-wrap;
+    line-height: 1.6;
+    margin-bottom: 8px;
+    max-height: 260px;
+    overflow-y: auto;
   }
   .status.error {
     color: #b3261e;

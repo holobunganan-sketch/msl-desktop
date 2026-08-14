@@ -633,7 +633,158 @@ pub fn remove_work_file_ref(state: State<AppState>, id: i64) -> Result<(), Strin
     })
 }
 
-// ---------- Search / Command（指南 §7.9 / §21） ----------
+// ---------- AI Provider / Morning Brief（指南 §22） ----------
+
+/// 列出已保存的 Providers（不含 API Key）。
+#[tauri::command]
+pub fn list_providers(
+    state: State<AppState>,
+) -> Result<Vec<crate::db::provider::ProviderSetting>, String> {
+    with_db(&state, |db| crate::db::provider::ProviderRepo::new(db.conn()).list())
+}
+
+/// 保存 Provider（含 API Key → Windows Credential Manager）。
+/// 传入 `api_key: Some("")` 表示不修改 key（编辑场景）。
+#[tauri::command]
+pub fn save_provider(
+    state: State<AppState>,
+    id: Option<i64>,
+    display_name: String,
+    provider_type: String,
+    base_url: String,
+    model: String,
+    enabled: bool,
+    api_key: Option<String>,
+) -> Result<crate::db::provider::ProviderSetting, String> {
+    let saved = match id {
+        Some(pid) => {
+            with_db(&state, |db| {
+                crate::db::provider::ProviderRepo::new(db.conn())
+                    .update(pid, &display_name, &provider_type, &base_url, &model, enabled)
+            })?;
+            with_db(&state, |db| crate::db::provider::ProviderRepo::new(db.conn()).get(pid))?
+                .ok_or_else(|| "Provider 不存在".to_string())?
+        }
+        None => with_db(&state, |db| {
+            crate::db::provider::ProviderRepo::new(db.conn())
+                .insert(&display_name, &provider_type, &base_url, &model, enabled)
+        })?,
+    };
+
+    // 保存 API Key（Some("") 视为不修改）
+    if let Some(key) = api_key {
+        if !key.is_empty() {
+            crate::ai::provider::save_api_key(saved.id, &key).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(saved)
+}
+
+/// 删除 Provider（并清除 keyring 中的 key）。
+#[tauri::command]
+pub fn delete_provider(state: State<AppState>, id: i64) -> Result<(), String> {
+    with_db(&state, |db| crate::db::provider::ProviderRepo::new(db.conn()).delete(id))?;
+    let _ = crate::ai::provider::delete_api_key(id);
+    Ok(())
+}
+
+/// 查询某 Provider 是否已配置 API Key（不返回 key 本身）。
+#[tauri::command]
+pub fn provider_has_key(state: State<AppState>, id: i64) -> Result<bool, String> {
+    // 确认 provider 存在
+    let exists = with_db(&state, |db| {
+        crate::db::provider::ProviderRepo::new(db.conn()).get(id)
+    })?
+    .is_some();
+    if !exists {
+        return Ok(false);
+    }
+    Ok(crate::ai::provider::has_api_key(id))
+}
+
+/// 测试连接：使用 keyring 中的 key 发送最小请求。
+#[tauri::command]
+pub async fn test_provider_connection(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    let provider = with_db(&state, |db| {
+        crate::db::provider::ProviderRepo::new(db.conn()).get(id)
+    })?
+    .ok_or_else(|| "Provider 不存在".to_string())?;
+
+    let key = crate::ai::provider::get_api_key(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "未配置 API Key".to_string())?;
+
+    let resp = crate::ai::provider::test_connection(&provider, &key)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(format!("连接成功（model={}）：{}", resp.model.unwrap_or_default(), resp.content))
+}
+
+/// 生成今日 Morning Brief。force=true 时忽略缓存重新生成。
+/// 无可用 provider/key 时返回错误（前端给出"未配置 AI"提示）。
+#[tauri::command]
+pub async fn generate_morning_brief(
+    state: State<'_, AppState>,
+    date: String,
+    yesterday_start: i64,
+    yesterday_end: i64,
+    day_start: i64,
+    day_end: i64,
+    force: Option<bool>,
+) -> Result<crate::db::brief::DailyBrief, String> {
+    let provider = with_db(&state, |db| {
+        crate::db::provider::ProviderRepo::new(db.conn()).list_enabled()
+    })?
+    .into_iter()
+    .next()
+    .ok_or_else(|| "未配置可用的 AI Provider（请在设置中配置）".to_string())?;
+
+    let key = crate::ai::provider::get_api_key(provider.id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "未配置 API Key".to_string())?;
+
+    // 同步准备（snapshot + 缓存检查）
+    let (cached, snapshot, hash) = state
+        .with_database(|db| {
+            crate::ai::brief::prepare(
+                db,
+                &date,
+                yesterday_start,
+                yesterday_end,
+                day_start,
+                day_end,
+                force.unwrap_or(false),
+            )
+        })
+        .ok_or_else(|| "数据库未初始化".to_string())?
+        .map_err(|e| e.to_string())?;
+
+    if let Some(brief) = cached {
+        return Ok(brief);
+    }
+
+    // 异步调用模型（不持有 DB 引用）
+    let content = crate::ai::brief::call(&provider, &key, &snapshot)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 同步保存
+    state
+        .with_database(|db| crate::ai::brief::save(db, &date, &provider.display_name, &content, &hash))
+        .ok_or_else(|| "数据库未初始化".to_string())?
+        .map_err(|e| e.to_string())
+}
+
+/// 读取今日已缓存 Brief（无则 None）。
+#[tauri::command]
+pub fn get_morning_brief(
+    state: State<AppState>,
+    date: String,
+) -> Result<Option<crate::db::brief::DailyBrief>, String> {
+    with_db(&state, |db| {
+        crate::db::brief::BriefRepo::new(db.conn()).latest_for_date(&date)
+    })
+}
 
 /// 搜索结果分组项。
 #[derive(Debug, Clone, serde::Serialize)]
