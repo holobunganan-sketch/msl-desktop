@@ -1,6 +1,11 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
+  import QuickCapture from "$lib/components/QuickCapture.svelte";
+  import PlanView from "$lib/components/PlanView.svelte";
+  import WaitingView from "$lib/components/WaitingView.svelte";
+  import InboxView from "$lib/components/InboxView.svelte";
+  import CalendarView from "$lib/components/CalendarView.svelte";
 
   type DirEntry = {
     name: string;
@@ -18,7 +23,7 @@
     updated_at: number;
   };
 
-  type View = "today" | "workspace";
+  type View = "today" | "workspace" | "plan" | "waiting" | "inbox" | "calendar";
 
   let view = $state<View>("today");
   let currentPath = $state("");
@@ -128,89 +133,109 @@
       Workspace
     </button>
     <button class="nav-item" disabled title="后续阶段">Works</button>
-    <button class="nav-item" disabled title="后续阶段">Plan</button>
-    <button class="nav-item" disabled title="后续阶段">Calendar</button>
-    <button class="nav-item" disabled title="后续阶段">Activity</button>
+    <button class="nav-item" class:active={view === "plan"} onclick={() => (view = "plan")}>
+      Plan
+    </button>
+    <button class="nav-item" class:active={view === "waiting"} onclick={() => (view = "waiting")}>
+      Waiting
+    </button>
+    <button class="nav-item" class:active={view === "calendar"} onclick={() => (view = "calendar")}>
+      Calendar
+    </button>
+    <button class="nav-item" class:active={view === "inbox"} onclick={() => (view = "inbox")}>
+      Inbox
+    </button>
     <div class="nav-spacer"></div>
     <button class="nav-item" disabled title="后续阶段">Settings</button>
   </aside>
 
   <main class="content">
-    {#if view === "today"}
-      <section class="today">
-        <h1>Today</h1>
-        <p class="muted">
-          恢复工作上下文的页面（Stage 6 实现）。当前阶段请先进入
-          <strong>Workspace</strong> 绑定工作目录。
-        </p>
-        <div class="card">
-          <div class="card-title">Morning Brief</div>
-          <div class="muted">连接 AI 后可生成 Morning Brief</div>
-        </div>
-      </section>
-    {:else}
-      <section class="workspace">
-        <div class="ws-header">
-          <h1>Workspace</h1>
-          <button onclick={bindWorkspace}>绑定工作目录…</button>
-        </div>
-
-        {#if workspaces.length > 0}
-          <div class="ws-list">
-            {#each workspaces as ws (ws.id)}
-              <button class="ws-chip" onclick={() => loadDir(ws.root_path)} title={ws.root_path}>
-                {ws.name} · {ws.root_path}
-              </button>
-            {/each}
+    <QuickCapture />
+    <div class="view-body">
+      {#if view === "today"}
+        <section class="today">
+          <h1>Today</h1>
+          <p class="muted">
+            恢复工作上下文的页面（Stage 6 实现）。当前可用：Workspace 文件浏览、
+            Plan 任务、Waiting、Calendar、Inbox。
+          </p>
+          <div class="card">
+            <div class="card-title">Morning Brief</div>
+            <div class="muted">连接 AI 后可生成 Morning Brief</div>
           </div>
-        {/if}
+        </section>
+      {:else if view === "workspace"}
+        <section class="workspace">
+          <div class="ws-header">
+            <h1>Workspace</h1>
+            <button onclick={bindWorkspace}>绑定工作目录…</button>
+          </div>
 
-        <div class="breadcrumb">
-          {#each breadcrumb as seg, i (i)}
-            <button onclick={() => goTo(i)}>{seg}</button>
-            {#if i < breadcrumb.length - 1}<span>›</span>{/if}
-          {/each}
-          {#if isDriveRoot()}<button onclick={() => loadDir("C:\\")}>C:\</button>{/if}
-        </div>
-
-        {#if statusMsg}<div class="status error">{statusMsg}</div>{/if}
-
-        {#if loading}
-          <div class="muted">加载中…</div>
-        {:else}
-          <table class="file-table">
-            <thead>
-              <tr>
-                <th>名称</th>
-                <th>修改时间</th>
-                <th>大小</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each entries as e (e.path)}
-                <tr ondblclick={() => enterEntry(e)}>
-                  <td>
-                    <button class="file-name" class:dir={e.is_dir} onclick={() => enterEntry(e)}>
-                      {e.is_dir ? "📁" : "📄"} {e.name}
-                    </button>
-                  </td>
-                  <td class="muted">{fmtTime(e.modified)}</td>
-                  <td class="muted">{e.is_dir ? "" : fmtSize(e.size)}</td>
-                  <td class="actions">
-                    <button onclick={() => openFile(e.path)} title="打开">打开</button>
-                    <button onclick={() => reveal(e.path)} title="在资源管理器中定位">定位</button>
-                  </td>
-                </tr>
+          {#if workspaces.length > 0}
+            <div class="ws-list">
+              {#each workspaces as ws (ws.id)}
+                <button class="ws-chip" onclick={() => loadDir(ws.root_path)} title={ws.root_path}>
+                  {ws.name} · {ws.root_path}
+                </button>
               {/each}
-            </tbody>
-          </table>
-          {#if entries.length === 0}
-            <div class="muted empty">（空目录）</div>
+            </div>
           {/if}
-        {/if}
-      </section>
-    {/if}
+
+          <div class="breadcrumb">
+            {#each breadcrumb as seg, i (i)}
+              <button onclick={() => goTo(i)}>{seg}</button>
+              {#if i < breadcrumb.length - 1}<span>›</span>{/if}
+            {/each}
+            {#if isDriveRoot()}<button onclick={() => loadDir("C:\\")}>C:\</button>{/if}
+          </div>
+
+          {#if statusMsg}<div class="status error">{statusMsg}</div>{/if}
+
+          {#if loading}
+            <div class="muted">加载中…</div>
+          {:else}
+            <table class="file-table">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>修改时间</th>
+                  <th>大小</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each entries as e (e.path)}
+                  <tr ondblclick={() => enterEntry(e)}>
+                    <td>
+                      <button class="file-name" class:dir={e.is_dir} onclick={() => enterEntry(e)}>
+                        {e.is_dir ? "📁" : "📄"} {e.name}
+                      </button>
+                    </td>
+                    <td class="muted">{fmtTime(e.modified)}</td>
+                    <td class="muted">{e.is_dir ? "" : fmtSize(e.size)}</td>
+                    <td class="actions">
+                      <button onclick={() => openFile(e.path)} title="打开">打开</button>
+                      <button onclick={() => reveal(e.path)} title="在资源管理器中定位">定位</button>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+            {#if entries.length === 0}
+              <div class="muted empty">（空目录）</div>
+            {/if}
+          {/if}
+        </section>
+      {:else if view === "plan"}
+        <PlanView />
+      {:else if view === "waiting"}
+        <WaitingView />
+      {:else if view === "inbox"}
+        <InboxView />
+      {:else if view === "calendar"}
+        <CalendarView />
+      {/if}
+    </div>
   </main>
 </div>
 
@@ -268,6 +293,10 @@
     flex: 1;
     overflow: auto;
     padding: 20px 24px;
+  }
+
+  .view-body {
+    margin-top: 14px;
   }
 
   h1 {

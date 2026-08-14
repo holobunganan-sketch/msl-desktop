@@ -7,7 +7,7 @@
 //! - 托盘"退出" → 真正结束进程
 //! - 单实例保护
 
-mod app_state;
+pub mod app_state;
 pub mod commands;
 pub mod db;
 mod single_instance;
@@ -15,7 +15,7 @@ pub mod workspace;
 
 use app_state::AppState;
 use db::Database;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "msl-desktop-tray";
@@ -87,8 +87,11 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .tooltip("MSL Desktop")
         .on_menu_event(|app, event| match event.id().as_ref() {
             TRAY_MENU_OPEN => show_main_window(app),
-            // Stage 4 实现真正的 Quick Capture；当前为占位：恢复主窗口
-            TRAY_MENU_QUICK_CAPTURE => show_main_window(app),
+            // Quick Capture：显示主窗口并通知前端聚焦输入框（指南 §7.8）。
+            TRAY_MENU_QUICK_CAPTURE => {
+                show_main_window(app);
+                let _ = app.emit("quick-capture", ());
+            }
             TRAY_MENU_QUIT => {
                 if let Some(state) = app.try_state::<AppState>() {
                     state.request_quit();
@@ -187,6 +190,25 @@ fn run_app() {
             commands::get_workspaces,
             commands::set_watcher_paused,
             commands::watcher_status,
+            commands::create_task,
+            commands::update_task,
+            commands::complete_task,
+            commands::list_tasks,
+            commands::delete_task,
+            commands::create_waiting,
+            commands::resolve_waiting,
+            commands::list_waiting,
+            commands::delete_waiting,
+            commands::create_inbox_item,
+            commands::list_inbox,
+            commands::convert_inbox_to_task,
+            commands::convert_inbox_to_waiting,
+            commands::convert_inbox_to_calendar,
+            commands::delete_inbox_item,
+            commands::create_calendar_event,
+            commands::update_calendar_event,
+            commands::delete_calendar_event,
+            commands::list_calendar_events,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
