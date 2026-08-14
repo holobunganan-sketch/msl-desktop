@@ -6,6 +6,7 @@
   import WaitingView from "$lib/components/WaitingView.svelte";
   import InboxView from "$lib/components/InboxView.svelte";
   import CalendarView from "$lib/components/CalendarView.svelte";
+  import WorksView from "$lib/components/WorksView.svelte";
 
   type DirEntry = {
     name: string;
@@ -23,7 +24,7 @@
     updated_at: number;
   };
 
-  type View = "today" | "workspace" | "plan" | "waiting" | "inbox" | "calendar";
+  type View = "today" | "workspace" | "works" | "plan" | "waiting" | "inbox" | "calendar";
 
   let view = $state<View>("today");
   let currentPath = $state("");
@@ -132,7 +133,9 @@
     <button class="nav-item" class:active={view === "workspace"} onclick={() => (view = "workspace")}>
       Workspace
     </button>
-    <button class="nav-item" disabled title="后续阶段">Works</button>
+    <button class="nav-item" class:active={view === "works"} onclick={() => (view = "works")}>
+      Works
+    </button>
     <button class="nav-item" class:active={view === "plan"} onclick={() => (view = "plan")}>
       Plan
     </button>
@@ -226,6 +229,8 @@
             {/if}
           {/if}
         </section>
+      {:else if view === "works"}
+        <WorksView />
       {:else if view === "plan"}
         <PlanView />
       {:else if view === "waiting"}

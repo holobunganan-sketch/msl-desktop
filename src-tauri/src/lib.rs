@@ -209,6 +209,17 @@ fn run_app() {
             commands::update_calendar_event,
             commands::delete_calendar_event,
             commands::list_calendar_events,
+            commands::create_work,
+            commands::update_work,
+            commands::archive_work,
+            commands::list_works,
+            commands::get_work_detail,
+            commands::create_resume_point,
+            commands::list_resume_points,
+            commands::delete_resume_point,
+            commands::add_work_file_ref,
+            commands::update_work_file_ref,
+            commands::remove_work_file_ref,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

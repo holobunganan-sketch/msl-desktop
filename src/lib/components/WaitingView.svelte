@@ -40,7 +40,7 @@
 
   async function load() {
     try {
-      items = await invoke("list_waiting", { status: null });
+      items = await invoke("list_waiting", { status: null, workId: null });
     } catch (e) {
       error = String(e);
     }
