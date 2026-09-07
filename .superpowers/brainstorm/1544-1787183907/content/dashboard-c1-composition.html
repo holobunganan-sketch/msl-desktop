@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MSL Desktop · C1 首页结构</title>
+  <style>
+    :root{
+      --bg:#f1f4f5;--panel:#fbfcfc;--panel2:#f7f9f9;--rail:#e3e9eb;
+      --ink:#263640;--muted:#6f7e86;--soft:#93a1a8;--line:#dbe3e6;
+      --accent:#6d8794;--accent2:#8ba0aa;--accent-soft:#e7eef1;
+      --sage:#7e958d;--amber:#aa8b63;--rose:#a37c78;
+      --shadow:0 14px 38px rgba(44,63,72,.07);
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+    body{padding:20px}
+    button{font:inherit}
+    .browser-title{max-width:1440px;margin:0 auto 12px;color:#718087;font-size:13px;letter-spacing:.02em;display:flex;justify-content:space-between}
+    .frame{max-width:1440px;height:min(860px,calc(100vh - 96px));min-height:620px;margin:0 auto;background:var(--panel);border:1px solid #d7e0e3;border-radius:22px;box-shadow:var(--shadow);overflow:hidden;display:grid;grid-template-columns:194px 1fr}
+    .rail{background:var(--rail);border-right:1px solid #d4dde1;padding:20px 13px 14px;display:flex;flex-direction:column;min-width:0}
+    .brand{height:48px;display:flex;align-items:center;gap:10px;padding:0 10px;margin-bottom:13px}
+    .brandmark{width:31px;height:31px;border:1px solid #8ea2ac;border-radius:10px;display:grid;place-items:center;color:#526c78;background:rgba(255,255,255,.44);font-family:Georgia,serif;font-weight:700}
+    .brandname{font-size:14px;font-weight:650;letter-spacing:.08em}.brandsub{font-size:10px;color:var(--muted);margin-top:2px}
+    .group{margin-top:15px}.group-label{font-size:10px;color:#87969d;letter-spacing:.12em;padding:0 12px 8px;text-transform:uppercase}
+    .nav{display:flex;align-items:center;gap:10px;height:38px;margin:3px 0;padding:0 11px;border-radius:10px;color:#566971;font-size:13px}
+    .nav.active{background:rgba(255,255,255,.7);color:#2e424c;box-shadow:0 4px 13px rgba(51,73,82,.05);font-weight:600}
+    .icon{width:18px;height:18px;display:grid;place-items:center;color:#78909a;font-size:15px}.nav.active .icon{color:#577482}
+    .badge{margin-left:auto;min-width:19px;height:19px;padding:0 6px;border-radius:10px;background:#d1dde1;color:#526d79;font-size:10px;display:grid;place-items:center}
+    .rail-bottom{margin-top:auto;padding:12px 9px 2px}.secretary{border-top:1px solid #cfdade;padding-top:14px;display:flex;align-items:center;gap:9px;font-size:11px;color:#64777f}.pulse{width:9px;height:9px;border-radius:50%;background:#809a91;box-shadow:0 0 0 4px rgba(128,154,145,.13)}
+    .main{min-width:0;display:grid;grid-template-rows:68px 1fr;background:#f7f9f9}
+    .topbar{display:grid;grid-template-columns:1fr minmax(260px,420px) auto;align-items:center;gap:18px;padding:0 25px;border-bottom:1px solid var(--line);background:rgba(251,252,252,.92)}
+    .today{font-size:12px;color:var(--muted)}.today b{color:var(--ink);font-weight:650;font-size:14px;margin-right:8px}
+    .capture{height:34px;border:1px solid #d4dfe2;background:#f8fafa;border-radius:10px;display:flex;align-items:center;padding:0 12px;color:#8a989e;font-size:12px}.capture span{margin-left:auto;color:#788a92;background:#edf2f3;border-radius:6px;padding:3px 7px;font-size:10px}
+    .tools{display:flex;align-items:center;gap:8px}.tool{width:34px;height:34px;border:1px solid var(--line);background:#fafcfc;border-radius:10px;color:#71848c}.avatar{width:32px;height:32px;border-radius:10px;background:#dbe5e8;color:#58717c;display:grid;place-items:center;font-size:11px;font-weight:700}
+    .workspace{min-height:0;padding:19px 22px 20px;display:grid;grid-template-rows:auto 1fr;gap:15px;overflow:hidden}
+    .brief{background:linear-gradient(120deg,#f9fbfb 0%,#edf2f4 100%);border:1px solid #d7e1e4;border-radius:17px;padding:18px 19px 15px;display:grid;grid-template-columns:minmax(300px,1.3fr) minmax(330px,1fr);gap:23px;position:relative;overflow:hidden}
+    .brief:after{content:"";position:absolute;width:210px;height:210px;border:1px solid rgba(109,135,148,.12);border-radius:50%;right:-84px;top:-96px;box-shadow:0 0 0 26px rgba(109,135,148,.025)}
+    .eyebrow{font-size:10px;letter-spacing:.14em;color:#718790;text-transform:uppercase;margin-bottom:6px}.brief h1{font-family:Georgia,"Noto Serif SC",serif;font-weight:500;font-size:24px;line-height:1.18;margin:0 0 7px;letter-spacing:.01em}.brief-copy{font-size:12px;color:#718087;line-height:1.55;max-width:590px}
+    .brief-actions{margin-top:14px;display:flex;gap:8px}.btn{border:1px solid #cad7dc;background:#fbfcfc;color:#5e727b;border-radius:9px;padding:7px 11px;font-size:11px}.btn.primary{background:#657f8c;color:white;border-color:#657f8c}
+    .priorities{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;align-content:center;position:relative;z-index:1}.priority{background:rgba(255,255,255,.66);border:1px solid rgba(207,219,223,.9);border-radius:12px;padding:11px;min-height:82px}.p-num{font:12px Georgia,serif;color:#79909a}.p-title{font-size:12px;font-weight:650;margin:8px 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.p-meta{font-size:10px;color:#85949a;line-height:1.35}
+    .body-grid{min-height:0;display:grid;grid-template-columns:minmax(410px,1.4fr) minmax(260px,.83fr) minmax(270px,.86fr);gap:14px}
+    .column{min-width:0;min-height:0;display:grid;gap:12px}.column.left{grid-template-rows:auto 1fr}.column.middle{grid-template-rows:1fr auto}.column.right{grid-template-rows:minmax(210px,1.15fr) minmax(154px,.85fr)}
+    .metrics{background:#fbfcfc;border:1px solid var(--line);border-radius:13px;min-height:60px;display:grid;grid-template-columns:repeat(5,1fr);padding:10px 8px}.metric{padding:0 10px;border-right:1px solid #e4eaec}.metric:last-child{border:0}.metric-label{font-size:9px;color:#8b999f;white-space:nowrap}.metric-value{font-size:17px;margin-top:4px;font-weight:600}.metric-value small{font-size:9px;color:#7e9097;font-weight:400;margin-left:3px}
+    .card{background:#fbfcfc;border:1px solid var(--line);border-radius:14px;padding:14px;min-height:0;overflow:hidden}.card-head{display:flex;align-items:center;margin-bottom:11px}.card-title{font-size:13px;font-weight:650}.card-sub{font-size:10px;color:#8b989e;margin-left:7px}.more{margin-left:auto;border:0;background:none;color:#7b8e96;font-size:11px}
+    .agenda{display:grid;grid-template-columns:52px 1fr;row-gap:0;height:calc(100% - 28px)}.time{font-size:10px;color:#92a0a5;padding-top:8px;border-right:1px solid #e0e7e9}.event{margin-left:12px;padding:7px 10px 7px 11px;border-bottom:1px solid #edf1f2;position:relative}.event:last-child{border:0}.event:before{content:"";position:absolute;left:-15px;top:11px;width:5px;height:5px;border-radius:50%;background:#8299a4}.event-title{font-size:11px;font-weight:600}.event-meta{font-size:9px;color:#8b999e;margin-top:3px}
+    .decision{padding:10px 0;border-bottom:1px solid #e8edef}.decision:last-child{border-bottom:0}.tag{display:inline-block;font-size:9px;padding:3px 6px;border-radius:6px;background:#e8eef0;color:#637a85;margin-right:5px}.tag.warm{background:#f1ece5;color:#94785b}.tag.sage{background:#e8eeeb;color:#6e877e}.decision-title{font-size:11px;line-height:1.45;margin-top:7px}.decision-meta{font-size:9px;color:#8b999e;margin-top:5px;display:flex;justify-content:space-between}
+    .files{background:#f4f7f7;border:1px solid #dde5e7;border-radius:12px;padding:11px}.file-row{display:flex;align-items:center;font-size:10px;color:#61747c;margin-top:7px}.file-dot{width:6px;height:6px;border-radius:50%;background:#8ba096;margin-right:7px}.file-time{margin-left:auto;color:#95a1a6}
+    .translate{display:flex;flex-direction:column}.switcher{display:flex;background:#eef2f3;border-radius:8px;padding:3px;margin-left:auto}.switcher span{font-size:9px;padding:4px 7px;border-radius:6px;color:#829198}.switcher .on{background:#fff;color:#536a75;box-shadow:0 2px 6px rgba(46,65,73,.06)}
+    .input{flex:1;border:1px solid #dde5e7;background:#f7f9f9;border-radius:10px;padding:11px;font-size:11px;color:#89969b;line-height:1.5;min-height:58px}.translation{margin-top:8px;padding:10px 11px;border-radius:10px;background:#eaf0f2;color:#526973;font-size:11px;line-height:1.45;min-height:50px}.translate-footer{display:flex;margin-top:8px;align-items:center;font-size:9px;color:#8c999f}.translate-footer button{margin-left:auto;border:0;background:none;color:#5e7884;font-size:10px}
+    .ai-state{display:grid;grid-template-columns:42px 1fr;gap:10px;align-items:start}.ai-orb{width:39px;height:39px;border:1px solid #b9c8ce;border-radius:13px;background:linear-gradient(145deg,#f9fbfb,#dce6e9);display:grid;place-items:center;color:#607b87;font:16px Georgia,serif}.ai-name{font-size:11px;font-weight:650}.ai-copy{font-size:9px;color:#849399;line-height:1.45;margin-top:4px}.ai-log{margin-top:11px;border-top:1px solid #e6ecee;padding-top:9px;display:grid;gap:7px}.log{font-size:9px;color:#6e8087;display:flex;gap:7px}.log-time{color:#9aa6aa;min-width:30px}
+    .choices{max-width:1440px;margin:14px auto 0;display:flex;align-items:center;justify-content:space-between;gap:15px}.choice-copy{font-size:13px;color:#64767e}.choice-copy b{color:#334852}.choice-buttons{display:flex;gap:9px}.choice{border:1px solid #cad6da;background:#fbfcfc;color:#526a75;padding:10px 15px;border-radius:10px;cursor:pointer}.choice.primary{background:#667f8c;color:#fff;border-color:#667f8c}
+    @media(max-width:1100px){body{padding:12px}.frame{grid-template-columns:68px;height:calc(100vh - 86px)}.brandname,.brandsub,.nav span:not(.icon),.group-label,.badge,.secretary span{display:none}.rail{padding-left:8px;padding-right:8px}.brand,.nav{justify-content:center;padding:0}.body-grid{grid-template-columns:1.25fr .8fr}.column.right{display:none}.brief{grid-template-columns:1.1fr 1fr}.brief h1{font-size:21px}.topbar{grid-template-columns:1fr minmax(220px,340px) auto}.metrics{padding-left:3px;padding-right:3px}.metric{padding:0 6px}}
+    @media(max-height:720px){.frame{min-height:570px}.workspace{padding-top:13px;gap:11px}.brief{padding-top:13px;padding-bottom:12px}.brief-copy{display:none}.brief-actions{margin-top:10px}.priority{min-height:69px}.p-title{margin-top:5px}.card{padding:11px}.metrics{min-height:52px;padding-top:7px;padding-bottom:7px}.column{gap:9px}}
+  </style>
+</head>
+<body>
+  <div class="browser-title"><span>MSL Desktop · 首页设计确认</span><span>C1 雾蓝银灰 / 编辑式 AI 秘书台</span></div>
+  <section class="frame" aria-label="MSL Desktop 首页原型">
+    <aside class="rail">
+      <div class="brand"><div class="brandmark">M</div><div><div class="brandname">MSL DESKTOP</div><div class="brandsub">个人医学工作台</div></div></div>
+      <div class="group"><div class="group-label">工作台</div>
+        <div class="nav active"><span class="icon">⌂</span><span>工作总览</span></div>
+        <div class="nav"><span class="icon">◫</span><span>工作项目</span><span class="badge">6</span></div>
+        <div class="nav"><span class="icon">✓</span><span>任务计划</span><span class="badge">12</span></div>
+        <div class="nav"><span class="icon">◷</span><span>等待事项</span><span class="badge">3</span></div>
+        <div class="nav"><span class="icon">□</span><span>日历</span></div>
+        <div class="nav"><span class="icon">⌑</span><span>收件箱</span><span class="badge">4</span></div>
+      </div>
+      <div class="group"><div class="group-label">智能秘书</div>
+        <div class="nav"><span class="icon">✦</span><span>分析与简报</span></div>
+        <div class="nav"><span class="icon">◇</span><span>确认队列</span><span class="badge">5</span></div>
+        <div class="nav"><span class="icon">⌁</span><span>工作目录</span></div>
+      </div>
+      <div class="group"><div class="group-label">系统</div>
+        <div class="nav"><span class="icon">⚙</span><span>设置</span></div>
+      </div>
+      <div class="rail-bottom"><div class="secretary"><i class="pulse"></i><span>AI 秘书运行正常<br>下次分析 09:00</span></div></div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="today"><b>工作总览</b> 8月20日 · 星期四</div>
+        <div class="capture">随手记录一个想法、任务或待办……<span>⌘ K</span></div>
+        <div class="tools"><button class="tool">⌕</button><button class="tool">中</button><div class="avatar">ZN</div></div>
+      </header>
+      <div class="workspace">
+        <section class="brief">
+          <div>
+            <div class="eyebrow">Secretary Brief · 06:00 更新</div>
+            <h1>早上好，今天从三件事开始。</h1>
+            <div class="brief-copy">昨天新增 7 项工作变化，AI 已整理出今日推进顺序。两项外部回复可能影响本周计划，建议优先确认医学部会议材料。</div>
+            <div class="brief-actions"><button class="btn primary">查看完整简报</button><button class="btn">确认今日安排</button><button class="btn">重新分析</button></div>
+          </div>
+          <div class="priorities">
+            <div class="priority"><div class="p-num">01</div><div class="p-title">确认区域医学会议材料</div><div class="p-meta">建议 10:00 前完成<br>来自：工作目录变化</div></div>
+            <div class="priority"><div class="p-num">02</div><div class="p-title">跟进 KOL 访谈反馈</div><div class="p-meta">等待 2 天<br>来自：等待事项</div></div>
+            <div class="priority"><div class="p-num">03</div><div class="p-title">补充月度洞察摘要</div><div class="p-meta">计划 45 分钟<br>来自：任务计划</div></div>
+          </div>
+        </section>
+        <section class="body-grid">
+          <div class="column left">
+            <div class="metrics">
+              <div class="metric"><div class="metric-label">进行中的工作</div><div class="metric-value">6<small>项</small></div></div>
+              <div class="metric"><div class="metric-label">今日待办</div><div class="metric-value">8<small>项</small></div></div>
+              <div class="metric"><div class="metric-label">等待回复</div><div class="metric-value">3<small>项</small></div></div>
+              <div class="metric"><div class="metric-label">待确认建议</div><div class="metric-value">5<small>项</small></div></div>
+              <div class="metric"><div class="metric-label">本周会议</div><div class="metric-value">4<small>场</small></div></div>
+            </div>
+            <div class="card">
+              <div class="card-head"><div class="card-title">今天继续推进</div><div class="card-sub">按优先级与时间排列</div><button class="more">查看全部 →</button></div>
+              <div class="agenda">
+                <div class="time">09:00</div><div class="event"><div class="event-title">医学部周会 · 准备重点问题</div><div class="event-meta">会议 · 30 分钟 · 线上</div></div>
+                <div class="time">10:30</div><div class="event"><div class="event-title">区域医学会议材料 · 完成内部确认</div><div class="event-meta">高优先级 · 距截止时间 1 天</div></div>
+                <div class="time">14:00</div><div class="event"><div class="event-title">KOL 访谈纪要 · 提炼医学洞察</div><div class="event-meta">深度工作 · 预计 60 分钟</div></div>
+                <div class="time">16:30</div><div class="event"><div class="event-title">本周跟进事项 · 集中处理</div><div class="event-meta">3 项等待 · 2 封待回复邮件</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="column middle">
+            <div class="card">
+              <div class="card-head"><div class="card-title">需要您决定</div><div class="card-sub">5 项</div><button class="more">全部确认</button></div>
+              <div class="decision"><span class="tag">AI 建议</span><span class="tag sage">工作</span><div class="decision-title">将“区域医学会议”拆分为 4 个推进节点</div><div class="decision-meta"><span>可编辑后确认</span><span>刚刚</span></div></div>
+              <div class="decision"><span class="tag">AI 建议</span><span class="tag warm">日历</span><div class="decision-title">8月24日 14:00 预留材料复核时间</div><div class="decision-meta"><span>检测到临近截止日</span><span>12 分钟前</span></div></div>
+              <div class="decision"><span class="tag">AI 建议</span><span class="tag sage">等待</span><div class="decision-title">创建“KOL 访谈补充回复”等待事项</div><div class="decision-meta"><span>来源：访谈纪要</span><span>1 小时前</span></div></div>
+            </div>
+            <div class="files">
+              <div class="card-head"><div class="card-title">工作目录变化</div><div class="card-sub">上次分析后</div><button class="more">查看</button></div>
+              <div class="file-row"><i class="file-dot"></i>会议材料_v3.docx <span class="file-time">已更新</span></div>
+              <div class="file-row"><i class="file-dot"></i>KOL访谈纪要.pdf <span class="file-time">新文件</span></div>
+            </div>
+          </div>
+          <div class="column right">
+            <div class="card translate">
+              <div class="card-head"><div class="card-title">AI 翻译</div><div class="switcher"><span class="on">书面</span><span>口语</span></div></div>
+              <div class="input">输入中文或英文，自动识别语言并翻译……</div>
+              <div class="translation">Translation will appear here with the selected professional tone.</div>
+              <div class="translate-footer"><span>中 ⇄ EN · 自动检测</span><button>复制译文</button></div>
+            </div>
+            <div class="card">
+              <div class="ai-state"><div class="ai-orb">S</div><div><div class="ai-name">秘书状态 · 空闲</div><div class="ai-copy">DeepSeek · 秘书分析模型<br>下次全局分析：今天 09:00</div></div></div>
+              <div class="ai-log"><div class="log"><span class="log-time">08:42</span><span>已索引 2 个发生变化的文件</span></div><div class="log"><span class="log-time">06:03</span><span>今日简报已生成，等待确认</span></div><div class="log"><span class="log-time">06:00</span><span>定时分析已完成</span></div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </section>
+  <section class="choices">
+    <div class="choice-copy"><b>请判断首页结构：</b>信息是否能在首屏看完，重点是否足够清晰？</div>
+    <div class="choice-buttons">
+      <button class="choice" data-choice="revise-dashboard">需要调整首页结构</button>
+      <button class="choice primary" data-choice="approve-dashboard">确认这套首页结构</button>
+    </div>
+  </section>
+</body>
+</html>

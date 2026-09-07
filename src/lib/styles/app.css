@@ -1,0 +1,161 @@
+:root {
+  color-scheme: light;
+  --color-bg: #f1f4f5;
+  --color-content: #f7f9f9;
+  --color-surface: #fbfcfc;
+  --color-surface-muted: #f3f6f6;
+  --color-surface-raised: #ffffff;
+  --color-sidebar: #e3e9eb;
+  --color-text: #263640;
+  --color-muted: #718088;
+  --color-subtle: #91a0a6;
+  --color-primary: #687f8b;
+  --color-primary-hover: #596f7a;
+  --color-primary-soft: #e7eef1;
+  --color-success: #6f8d82;
+  --color-success-soft: #e7eeeb;
+  --color-warning: #9b7f5e;
+  --color-warning-soft: #f2ede6;
+  --color-danger: #9f6f6f;
+  --color-danger-soft: #f5eaea;
+  --color-border: #dbe3e6;
+  --color-border-strong: #cbd7db;
+  --shadow-sm: 0 4px 14px rgb(44 63 72 / 0.045);
+  --shadow-md: 0 18px 46px rgb(44 63 72 / 0.13);
+  --radius-xs: 7px;
+  --radius-sm: 9px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --sidebar-width: 194px;
+  --sidebar-collapsed-width: 68px;
+  --topbar-height: 68px;
+  --font-serif: Georgia, "Noto Serif SC", "Songti SC", serif;
+  --ui-scale: 1;
+  --ui-scale-inverse: 1;
+  --viewport-width: calc(100vw * var(--ui-scale-inverse));
+  --viewport-height: calc(100dvh * var(--ui-scale-inverse));
+}
+
+html[data-font-size="compact"] { --ui-scale: .93; --ui-scale-inverse: 1.07527; }
+html[data-font-size="standard"] { --ui-scale: 1; --ui-scale-inverse: 1; }
+html[data-font-size="large"] { --ui-scale: 1.08; --ui-scale-inverse: .92593; }
+html[data-font-size="xlarge"] { --ui-scale: 1.16; --ui-scale-inverse: .86207; }
+
+html[data-theme="sage"] {
+  --color-bg:#eef2ef;--color-content:#f7f9f7;--color-surface:#fbfcfb;--color-surface-muted:#f0f4f1;--color-surface-raised:#fff;--color-sidebar:#dfe7e1;--color-text:#2d3b35;--color-muted:#6f7f76;--color-subtle:#91a098;--color-primary:#6d8576;--color-primary-hover:#5e7568;--color-primary-soft:#e4ece7;--color-border:#d8e1db;--color-border-strong:#c7d4cc;
+}
+html[data-theme="ivory"] {
+  --color-bg:#f3f0ea;--color-content:#faf8f4;--color-surface:#fffdf9;--color-surface-muted:#f6f1e9;--color-surface-raised:#fff;--color-sidebar:#e9e3d9;--color-text:#3d3832;--color-muted:#7d746a;--color-subtle:#9d9489;--color-primary:#8a735f;--color-primary-hover:#77614f;--color-primary-soft:#eee5d9;--color-border:#e4ddd2;--color-border-strong:#d3c8b9;
+}
+html[data-theme="contrast"] {
+  --color-bg:#e9eef0;--color-content:#f7fafb;--color-surface:#fff;--color-surface-muted:#edf2f4;--color-surface-raised:#fff;--color-sidebar:#d8e2e6;--color-text:#172a34;--color-muted:#516872;--color-subtle:#6e838c;--color-primary:#365f72;--color-primary-hover:#294c5c;--color-primary-soft:#dce9ee;--color-border:#bdcdd4;--color-border-strong:#92aab4;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+::selection { background: #d9e5e9; color: var(--color-text); }
+button, [role="button"], input, textarea, select, a { outline: none; }
+button:focus-visible, [role="button"]:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px #8da4ae;
+}
+input, textarea, select {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+input:hover, textarea:hover, select:hover { border-color: var(--color-border-strong); }
+input::placeholder, textarea::placeholder { color: var(--color-subtle); }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #c8d3d7; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: #aebdc3; background-clip: padding-box; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.page-title-serif { font-family: var(--font-serif); font-weight: 500; letter-spacing: .01em; }
+.surface-card { border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm); }
+
+/* Shared C1 structure for business pages. Component rules keep their layout logic. */
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) {
+  width: 100%;
+  min-height: 100%;
+}
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) .page-head {
+  min-height: 54px;
+  align-items: center;
+  margin-bottom: 13px;
+}
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) .page-head h1 {
+  margin: 0 0 5px;
+  color: var(--color-text);
+  font: 500 22px var(--font-serif);
+  letter-spacing: .01em;
+}
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) .page-head p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+/* Readability floor for dense forms and supporting copy. */
+body .view-body :is(input, textarea, select) { font-size: 13px; }
+body .view-body :is(label, small) { font-size: max(11px, 1em); }
+
+.app-shell {
+  zoom: var(--ui-scale);
+  width: var(--viewport-width);
+  height: var(--viewport-height);
+}
+/* Flex/grid children must be allowed to shrink before text can wrap. */
+button, input, textarea, select { min-width: 0; }
+button { overflow-wrap: anywhere; }
+textarea { resize: vertical; }
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) :is(.toolbar, .filters) {
+  border-color: var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) :is(input, textarea, select) {
+  border-color: var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) :is(.list, .task-list, .waiting-list, .inbox-list, .day-view, .week-view, .file-table-wrap) {
+  border-color: var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) button {
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}

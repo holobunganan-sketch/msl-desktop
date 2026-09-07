@@ -84,6 +84,9 @@ pub fn handle_file_event(
     event: &Event,
     debounce: &mut HashMap<String, i64>,
 ) -> Vec<ActivityEvent> {
+    if event.paths.is_empty() {
+        return Vec::new();
+    }
     let kind_family = event_family(&event.kind);
     let event_type = event_type_for(&event.kind);
 
@@ -115,13 +118,17 @@ pub fn handle_file_event(
     debounce.insert(key, now);
 
     let display_text = display_text_for(event_type, path, old_path);
-    let metadata_json = old_path.map(|o| {
-        serde_json::json!({ "old_path": o.to_string_lossy() }).to_string()
-    });
+    let metadata_json =
+        old_path.map(|o| serde_json::json!({ "old_path": o.to_string_lossy() }).to_string());
     let repo = ActivityRepo::new(db.conn());
+    let workspace_id = crate::db::workspace::WorkspaceFileStateRepo::new(db.conn())
+        .workspace_for_path(&path.to_string_lossy())
+        .ok()
+        .flatten()
+        .map(|ws| ws.id);
     match repo.insert(
         event_type,
-        None,
+        workspace_id,
         None,
         Some("file"),
         None,
@@ -130,8 +137,18 @@ pub fn handle_file_event(
         metadata_json.as_deref(),
         Some(&format!("file|{event_type}|{}", path.display())),
     ) {
-        Ok(ev) => vec![ev],
-        Err(_) => Vec::new(),
+        Ok(ev) => {
+            if let Err(err) =
+                crate::workspace::inventory::sync_live_state(db, event_type, path, old_path)
+            {
+                eprintln!("[workspace] live state update failed: {err}");
+            }
+            vec![ev]
+        }
+        Err(err) => {
+            eprintln!("[workspace] activity write failed: {err}");
+            Vec::new()
+        }
     }
 }
 
@@ -155,6 +172,7 @@ impl FileWatcher {
     /// 启动监听 `root` 目录（递归），事件写入 AppState 中的数据库。
     /// 失败返回 notify 错误。
     pub fn start(app: AppHandle, root: PathBuf) -> notify::Result<Self> {
+        let watched_root = root.to_string_lossy().into_owned();
         let paused = Arc::new(AtomicBool::new(false));
         let paused_clone = paused.clone();
         let debounce = Arc::new(Mutex::new(HashMap::<String, i64>::new()));
@@ -174,6 +192,16 @@ impl FileWatcher {
             let mut map = debounce.lock().unwrap();
             if let Some(state) = app.try_state::<AppState>() {
                 state.with_database(|db| {
+                    if !crate::db::workspace::WorkspaceRepo::new(db.conn())
+                        .list()
+                        .is_ok_and(|items| {
+                            items
+                                .iter()
+                                .any(|w| w.enabled && w.root_path == watched_root)
+                        })
+                    {
+                        return;
+                    }
                     handle_file_event(db, &event, &mut map);
                 });
             }
@@ -229,10 +257,24 @@ mod tests {
 
     #[test]
     fn temp_file_filter_rules() {
-        for name in ["~$方案V3.docx", "~$数据.xlsx", "~$报告.pptx", "foo.tmp", "x.swp", "Thumbs.db", "desktop.ini"] {
+        for name in [
+            "~$方案V3.docx",
+            "~$数据.xlsx",
+            "~$报告.pptx",
+            "foo.tmp",
+            "x.swp",
+            "Thumbs.db",
+            "desktop.ini",
+        ] {
             assert!(is_temp_file(Path::new(name)), "{name} 应被过滤");
         }
-        for name in ["方案V3.docx", "数据.xlsx", "统计.sas7bdat", "README.md", "报告.pdf"] {
+        for name in [
+            "方案V3.docx",
+            "数据.xlsx",
+            "统计.sas7bdat",
+            "README.md",
+            "报告.pdf",
+        ] {
             assert!(!is_temp_file(Path::new(name)), "{name} 不应被过滤");
         }
     }
@@ -256,9 +298,7 @@ mod tests {
             handle_file_event(&db, &event, &mut map);
         })
         .unwrap();
-        watcher
-            .watch(&root, RecursiveMode::Recursive)
-            .unwrap();
+        watcher.watch(&root, RecursiveMode::Recursive).unwrap();
 
         // 修改文件 → 等待 notify 事件
         std::thread::sleep(std::time::Duration::from_millis(300));

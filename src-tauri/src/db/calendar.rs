@@ -1,8 +1,8 @@
 //! calendar_events repository（指南 §6.8）。
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use super::{DbError, DbResult, now_unix};
+use super::{now_unix, DbError, DbResult};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CalendarEvent {
@@ -108,6 +108,7 @@ impl<'a> CalendarRepo<'a> {
     pub fn update(
         &self,
         id: i64,
+        work_id: Option<i64>,
         title: &str,
         start_at: i64,
         end_at: Option<i64>,
@@ -118,10 +119,21 @@ impl<'a> CalendarRepo<'a> {
     ) -> DbResult<()> {
         let affected = self.conn.execute(
             "UPDATE calendar_events
-             SET title = ?1, start_at = ?2, end_at = ?3, all_day = ?4, kind = ?5,
-                 location = ?6, notes = ?7, updated_at = ?8
-             WHERE id = ?9",
-            params![title, start_at, end_at, all_day as i64, kind, location, notes, now_unix(), id],
+             SET work_id = ?1, title = ?2, start_at = ?3, end_at = ?4, all_day = ?5, kind = ?6,
+                 location = ?7, notes = ?8, updated_at = ?9
+             WHERE id = ?10",
+            params![
+                work_id,
+                title,
+                start_at,
+                end_at,
+                all_day as i64,
+                kind,
+                location,
+                notes,
+                now_unix(),
+                id
+            ],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound("calendar_event".into()));
@@ -166,10 +178,29 @@ mod tests {
         let repo = CalendarRepo::new(db.conn());
 
         let day0 = now_unix();
-        let e1 = repo.insert(None, "专家拜访 张教授", day0, Some(day0 + 3600), false, "kol_visit", Some("医院"), None)
+        let e1 = repo
+            .insert(
+                None,
+                "专家拜访 张教授",
+                day0,
+                Some(day0 + 3600),
+                false,
+                "kol_visit",
+                Some("医院"),
+                None,
+            )
             .unwrap();
         let e2 = repo
-            .insert(None, "方案提交 deadline", day0 + 86400, None, true, "deadline", None, None)
+            .insert(
+                None,
+                "方案提交 deadline",
+                day0 + 86400,
+                None,
+                true,
+                "deadline",
+                None,
+                None,
+            )
             .unwrap();
         assert!(e1.all_day == false && e2.all_day);
 
@@ -181,8 +212,18 @@ mod tests {
         let all = repo.list_between(day0, day0 + 172800).unwrap();
         assert_eq!(all.len(), 2);
 
-        repo.update(e1.id, "专家拜访 张教授（改期）", day0 + 7200, None, false, "kol_visit", Some("线上"), None)
-            .unwrap();
+        repo.update(
+            e1.id,
+            None,
+            "专家拜访 张教授（改期）",
+            day0 + 7200,
+            None,
+            false,
+            "kol_visit",
+            Some("线上"),
+            None,
+        )
+        .unwrap();
         let updated = repo.get(e1.id).unwrap().unwrap();
         assert_eq!(updated.title, "专家拜访 张教授（改期）");
         assert_eq!(updated.location.as_deref(), Some("线上"));

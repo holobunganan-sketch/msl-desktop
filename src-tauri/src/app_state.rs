@@ -106,6 +106,19 @@ impl AppState {
         self.watcher.lock().unwrap().as_ref().map(f)
     }
 
+    pub fn clear_watcher_for(&self, path: &str) {
+        let mut watcher = self.watcher.lock().unwrap();
+        if watcher
+            .as_ref()
+            .is_some_and(|w| w.root().to_string_lossy() == path)
+        {
+            // Drop outside the mutex: a pending callback may be finishing.
+            let old = watcher.take();
+            drop(watcher);
+            drop(old);
+        }
+    }
+
     /// 已通知提醒去重集合。
     pub fn notified_set(&self) -> &Mutex<std::collections::HashSet<String>> {
         &self.notified
@@ -113,8 +126,6 @@ impl AppState {
 
     /// 自 Core 启动至今的秒数。
     pub fn uptime_secs(&self) -> u64 {
-        self.started_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0)
+        self.started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
     }
 }

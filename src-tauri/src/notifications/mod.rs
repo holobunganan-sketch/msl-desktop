@@ -42,11 +42,7 @@ pub fn collect_due_reminders(db: &Database, now: i64, lead_secs: i64) -> Vec<Rem
                     out.push(Reminder {
                         kind: "waiting".into(),
                         title: format!("跟进：{}", w.title),
-                        body: format!(
-                            "等待{}，{}",
-                            w.waiting_for,
-                            fmt_time(f)
-                        ),
+                        body: format!("等待{}，{}", w.waiting_for, fmt_time(f)),
                         dedupe_key: format!("waiting-{}", w.id),
                     });
                 }
@@ -74,8 +70,8 @@ pub fn collect_due_reminders(db: &Database, now: i64, lead_secs: i64) -> Vec<Rem
     }
 
     // calendar：start_at 落在窗口内
-    if let Ok(events) = crate::db::calendar::CalendarRepo::new(db.conn())
-        .list_between(now, window_end)
+    if let Ok(events) =
+        crate::db::calendar::CalendarRepo::new(db.conn()).list_between(now, window_end)
     {
         for e in events {
             out.push(Reminder {
@@ -170,12 +166,7 @@ fn reminders_enabled(app: &AppHandle) -> bool {
 /// 发送系统通知（tauri-plugin-notification，Windows toast）。
 fn send_notification(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// 立即执行一次提醒检查（调试/验收用；不经过调度循环）。

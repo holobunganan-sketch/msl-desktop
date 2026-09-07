@@ -7,15 +7,14 @@
 //! - 按需调用，默认关闭，无 key 不影响其他功能。
 
 use std::fmt;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+#[path = "adapters.rs"]
+pub mod adapters;
+
 /// Keyring 服务名。
 pub const KEYRING_SERVICE: &str = "MSLDesktop";
-/// AI 请求超时。
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiMessage {
     pub role: String, // system | user
@@ -34,6 +33,23 @@ pub struct AiRequest {
 pub struct AiResponse {
     pub content: String,
     pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiTextRequest {
+    pub model_id: String,
+    pub system: Option<String>,
+    pub messages: Vec<AiMessage>,
+    pub temperature: Option<f32>,
+    pub max_output_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiTextResponse {
+    pub content: String,
+    pub model: Option<String>,
+    pub usage: Option<serde_json::Value>,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -57,13 +73,17 @@ impl fmt::Display for AiError {
 
 impl std::error::Error for AiError {}
 
-fn keyring_user(provider_id: i64) -> String {
-    format!("provider-{provider_id}")
+pub fn new_credential_ref() -> String {
+    format!("provider-{}", uuid::Uuid::new_v4())
+}
+
+fn keyring_user(credential_ref: &str) -> &str {
+    credential_ref
 }
 
 /// 保存 API Key（Windows Credential Manager）。
-pub fn save_api_key(provider_id: i64, key: &str) -> Result<(), AiError> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(provider_id))
+pub fn save_api_key(credential_ref: &str, key: &str) -> Result<(), AiError> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, keyring_user(credential_ref))
         .map_err(|e| AiError::Keyring(e.to_string()))?;
     entry
         .set_password(key)
@@ -71,8 +91,8 @@ pub fn save_api_key(provider_id: i64, key: &str) -> Result<(), AiError> {
 }
 
 /// 读取 API Key；不存在返回 None。
-pub fn get_api_key(provider_id: i64) -> Result<Option<String>, AiError> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(provider_id))
+pub fn get_api_key(credential_ref: &str) -> Result<Option<String>, AiError> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, keyring_user(credential_ref))
         .map_err(|e| AiError::Keyring(e.to_string()))?;
     match entry.get_password() {
         Ok(k) => Ok(Some(k)),
@@ -82,8 +102,8 @@ pub fn get_api_key(provider_id: i64) -> Result<Option<String>, AiError> {
 }
 
 /// 删除 API Key。
-pub fn delete_api_key(provider_id: i64) -> Result<(), AiError> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &keyring_user(provider_id))
+pub fn delete_api_key(credential_ref: &str) -> Result<(), AiError> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, keyring_user(credential_ref))
         .map_err(|e| AiError::Keyring(e.to_string()))?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
@@ -93,66 +113,96 @@ pub fn delete_api_key(provider_id: i64) -> Result<(), AiError> {
 }
 
 /// 是否已配置 API Key（用于前端判断"已配置/未配置"）。
-pub fn has_api_key(provider_id: i64) -> bool {
-    get_api_key(provider_id).map(|k| k.is_some()).unwrap_or(false)
+pub fn has_api_key(credential_ref: &str) -> bool {
+    get_api_key(credential_ref)
+        .map(|k| k.is_some())
+        .unwrap_or(false)
 }
 
-/// 调用 OpenAI-compatible chat completion。
+/// 统一按 Provider model 协议完成文本请求。
+pub async fn complete_model(
+    connection: &crate::db::provider::ProviderConnection,
+    model: &crate::db::provider::ProviderModel,
+    api_key: &str,
+    request: &AiTextRequest,
+) -> Result<AiTextResponse, AiError> {
+    validate_test_endpoint(&connection.base_url)?;
+    adapters::complete(connection, model, api_key, request).await
+}
+
+fn validate_test_endpoint(base_url: &str) -> Result<(), AiError> {
+    if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") {
+        let url = reqwest::Url::parse(base_url)
+            .map_err(|_| AiError::Api("测试 Provider 地址无效".into()))?;
+        if !matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")) {
+            return Err(AiError::Api("隔离测试仅允许本地 Mock Provider".into()));
+        }
+    }
+    Ok(())
+}
+
+/// 连接探测只验证认证、端点与协议结构，允许推理模型尚未生成最终文本。
+pub async fn probe_model(
+    connection: &crate::db::provider::ProviderConnection,
+    model: &crate::db::provider::ProviderModel,
+    api_key: &str,
+    request: &AiTextRequest,
+) -> Result<(), AiError> {
+    validate_test_endpoint(&connection.base_url)?;
+    adapters::probe(connection, model, api_key, request).await
+}
+
+/// 兼容旧调用方：把旧 ProviderSetting 的 model 视为 Chat Completions 模型。
 pub async fn complete(
     provider: &crate::db::provider::ProviderSetting,
     api_key: &str,
     request: &AiRequest,
 ) -> Result<AiResponse, AiError> {
-    let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|e| AiError::Http(e.to_string()))?;
-
-    let url = format!(
-        "{}/chat/completions",
-        provider.base_url.trim_end_matches('/')
-    );
-
-    let mut body = serde_json::json!({
-        "model": request.model,
-        "messages": request.messages,
-    });
-    if let Some(t) = request.temperature {
-        body["temperature"] = serde_json::json!(t);
-    }
-    if let Some(mt) = request.max_tokens {
-        body["max_tokens"] = serde_json::json!(mt);
-    }
-
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AiError::Http(e.to_string()))?;
-
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| AiError::Http(e.to_string()))?;
-
-    if !status.is_success() {
-        let snippet: String = text.chars().take(200).collect();
-        return Err(AiError::Api(format!("HTTP {status}: {snippet}")));
-    }
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&text).map_err(|e| AiError::Api(format!("响应解析失败: {e}")))?;
-    let content = parsed["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or_else(|| AiError::Api("响应缺少 choices[0].message.content".into()))?
-        .to_string();
-
+    let connection = crate::db::provider::ProviderConnection {
+        id: provider.id,
+        display_name: provider.display_name.clone(),
+        provider_type: provider.provider_type.clone(),
+        base_url: provider.base_url.clone(),
+        legacy_model: provider.model.clone(),
+        enabled: provider.enabled,
+        credential_ref: provider.credential_ref.clone(),
+        template_kind: "custom".into(),
+        auth_mode: "bearer".into(),
+        models_endpoint: None,
+        last_models_refresh_at: None,
+        created_at: provider.created_at,
+        updated_at: provider.updated_at,
+    };
+    let model = crate::db::provider::ProviderModel {
+        id: 0,
+        provider_id: provider.id,
+        model_id: request.model.clone(),
+        display_name: request.model.clone(),
+        protocol: "chat_completions".into(),
+        endpoint_path: "/chat/completions".into(),
+        capabilities_json: "{}".into(),
+        source: "legacy".into(),
+        enabled: true,
+        available: true,
+        created_at: provider.created_at,
+        updated_at: provider.updated_at,
+    };
+    let response = complete_model(
+        &connection,
+        &model,
+        api_key,
+        &AiTextRequest {
+            model_id: request.model.clone(),
+            system: None,
+            messages: request.messages.clone(),
+            temperature: request.temperature,
+            max_output_tokens: request.max_tokens,
+        },
+    )
+    .await?;
     Ok(AiResponse {
-        content,
-        model: parsed["model"].as_str().map(str::to_string),
+        content: response.content,
+        model: response.model,
     })
 }
 
@@ -175,4 +225,18 @@ pub async fn test_connection(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_credential_ref;
+
+    #[test]
+    fn credential_refs_are_random_and_prefixed() {
+        let a = new_credential_ref();
+        let b = new_credential_ref();
+        assert!(a.starts_with("provider-"));
+        assert!(b.starts_with("provider-"));
+        assert_ne!(a, b);
+    }
 }

@@ -1,0 +1,67 @@
+<style>
+  .palette-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:22px}
+  .palette-card{border:2px solid transparent;border-radius:20px;overflow:hidden;background:#fff;box-shadow:0 12px 34px rgba(30,41,59,.08);cursor:pointer;transition:.2s ease}
+  .palette-card:hover{transform:translateY(-3px);box-shadow:0 20px 48px rgba(30,41,59,.13)}
+  .palette-card.selected{border-color:#667f8f;box-shadow:0 0 0 4px rgba(102,127,143,.13),0 20px 48px rgba(30,41,59,.13)}
+  .desk{height:365px;padding:14px;display:grid;grid-template-columns:54px 1fr;gap:10px}
+  .side{border-radius:14px;padding:9px 6px;display:flex;flex-direction:column;align-items:center;gap:8px}
+  .monogram{width:29px;height:29px;border-radius:50%;display:grid;place-items:center;font-family:Georgia,serif;font-size:11px;font-weight:700;margin-bottom:5px}
+  .navmark{width:29px;height:25px;border-radius:8px;display:grid;place-items:center;font-size:10px}.navmark.last{margin-top:auto}
+  .workarea{min-width:0;display:grid;grid-template-rows:31px 100px 48px 1fr;gap:8px}
+  .toolbar{display:flex;align-items:center;justify-content:space-between;padding:0 3px}.date{font-size:9px;font-weight:700;letter-spacing:.08em}.tools{display:flex;gap:5px}.tool{font-size:7px;padding:5px 7px;border-radius:7px}
+  .note{border-radius:14px;padding:13px 14px;display:grid;grid-template-columns:1.4fr .7fr;gap:9px;overflow:hidden}.note-label{font-size:7px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}.note h4{font-family:Georgia,'Microsoft YaHei',serif;font-size:14px;line-height:1.2;margin:5px 0 6px;font-weight:600}.note p{font-size:8px;line-height:1.45;margin:0;opacity:.73}.note-side{border-radius:10px;padding:8px;font-size:8px;line-height:1.7}
+  .numbers{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.number{padding:6px 5px 5px;border-bottom:1px solid}.number strong{font-family:Georgia,serif;font-size:15px;font-weight:500}.number span{display:block;font-size:7px;opacity:.66;margin-top:2px}
+  .columns{display:grid;grid-template-columns:1.18fr .92fr .86fr;gap:7px;min-height:0}.module{border-radius:11px;padding:9px;overflow:hidden}.module-title{display:flex;justify-content:space-between;font-size:9px;font-weight:750;margin-bottom:7px}.item{border-radius:7px;padding:7px;margin-bottom:5px;font-size:8px}.item small{display:block;opacity:.58;margin-top:3px}.input{height:66px;border-radius:8px;padding:7px;font-size:8px;opacity:.68}
+  .palette-copy{padding:18px 19px 20px;border-top:1px solid #eceff1}.palette-copy h3{margin:0 0 6px;font-size:17px}.palette-copy p{margin:0;color:#667085;font-size:13px;line-height:1.55}.swatches{display:flex;gap:7px;margin-top:13px}.swatch{width:26px;height:26px;border-radius:50%;border:1px solid rgba(15,23,42,.08)}.badge{display:inline-block;margin-top:12px;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:700}
+
+  .mist .desk{background:#f1f4f5;color:#263640}.mist .side{background:#e1e7ea;color:#526975}.mist .monogram{background:#2e414c;color:#f7fafb}.mist .navmark.active{background:#cad5da;color:#263640}.mist .tool{background:#e3e9ec}.mist .note{background:#fbfcfc;border:1px solid #dce4e7;box-shadow:0 5px 15px rgba(38,54,64,.06)}.mist .note-label{color:#6e8794}.mist .note-side{background:#edf2f4}.mist .number{border-color:#ccd7dc}.mist .module{background:#fbfcfc;border:1px solid #dce4e7}.mist .item,.mist .input{background:#eef2f4}.mist .badge{background:#e5ecef;color:#425d6a}
+
+  .sage .desk{background:#f3f4ef;color:#2c3934}.sage .side{background:#e4e8df;color:#607369}.sage .monogram{background:#33443d;color:#fafbf7}.sage .navmark.active{background:#cdd7cd;color:#2c3934}.sage .tool{background:#e5e9e1}.sage .note{background:#fbfbf7;border:1px solid #dde3d9;box-shadow:0 5px 15px rgba(44,57,52,.06)}.sage .note-label{color:#778c81}.sage .note-side{background:#edf0e8}.sage .number{border-color:#d1d9ce}.sage .module{background:#fbfbf7;border:1px solid #dde3d9}.sage .item,.sage .input{background:#eff1eb}.sage .badge{background:#e5ebe2;color:#52685d}
+
+  .pearl .desk{background:#f4f2f3;color:#342f36}.pearl .side{background:#e8e4e7;color:#6d6570}.pearl .monogram{background:#433d46;color:#fbf9fa}.pearl .navmark.active{background:#d7cfd6;color:#342f36}.pearl .tool{background:#e9e5e8}.pearl .note{background:#fcfbfb;border:1px solid #e4dfe3;box-shadow:0 5px 15px rgba(52,47,54,.06)}.pearl .note-label{color:#897d89}.pearl .note-side{background:#f0ecef}.pearl .number{border-color:#dad3d9}.pearl .module{background:#fcfbfb;border:1px solid #e4dfe3}.pearl .item,.pearl .input{background:#f1edef}.pearl .badge{background:#ebe5ea;color:#675d69}
+  @media(max-width:1100px){.palette-grid{grid-template-columns:1fr}.desk{height:390px}}
+</style>
+
+<h2>C 方案 · 淡雅高智配色</h2>
+<p class="subtitle">三套都去掉了明显暖黄和陶土红，保留编辑式层级、轻材质和秘书感。请点击最喜欢的一套。</p>
+
+<div class="palette-grid">
+  <div class="palette-card mist" data-choice="mist-blue-gray" onclick="toggleSelect(this)">
+    <div class="desk">
+      <div class="side"><div class="monogram">M</div><div class="navmark active">⌂</div><div class="navmark">▤</div><div class="navmark">✓</div><div class="navmark">◷</div><div class="navmark last">⚙</div></div>
+      <div class="workarea">
+        <div class="toolbar"><span class="date">星期四 · 八月二十日</span><div class="tools"><span class="tool">记一件事</span><span class="tool">搜索</span></div></div>
+        <div class="note"><div><div class="note-label">Secretary's Note</div><h4>早上好，今天从这里开始</h4><p>昨天完成了院内会材料更新。今天建议先确认专家拜访，再整理医学洞察草稿。</p></div><div class="note-side">今日约定 · 1<br>等待回复 · 1<br>需要确认 · 2</div></div>
+        <div class="numbers"><div class="number"><strong>3</strong><span>手头工作</span></div><div class="number"><strong>2</strong><span>今日事项</span></div><div class="number"><strong>1</strong><span>等待回复</span></div><div class="number"><strong>2</strong><span>秘书建议</span></div></div>
+        <div class="columns"><div class="module"><div class="module-title"><span>今天的节奏</span><span>日历</span></div><div class="item">10:30 · 医学洞察<small>继续完成核心信息页</small></div><div class="item">14:00 · 专家拜访准备</div></div><div class="module"><div class="module-title"><span>等你决定</span><span>2</span></div><div class="item">建立随访任务？</div><div class="item">调整日历安排？</div></div><div class="module"><div class="module-title"><span>随手翻译</span><span>书面</span></div><div class="input">在这里写下内容…</div></div></div>
+      </div>
+    </div>
+    <div class="palette-copy"><h3>C1 · 雾蓝银灰</h3><p>冷静、精密、清醒。适合医学信息、分析和日程管理，长时间使用也很耐看。</p><div class="swatches"><span class="swatch" style="background:#f1f4f5"></span><span class="swatch" style="background:#e1e7ea"></span><span class="swatch" style="background:#6e8794"></span><span class="swatch" style="background:#263640"></span></div><span class="badge">推荐 · 高智感最明确</span></div>
+  </div>
+
+  <div class="palette-card sage" data-choice="porcelain-sage" onclick="toggleSelect(this)">
+    <div class="desk">
+      <div class="side"><div class="monogram">M</div><div class="navmark active">⌂</div><div class="navmark">▤</div><div class="navmark">✓</div><div class="navmark">◷</div><div class="navmark last">⚙</div></div>
+      <div class="workarea">
+        <div class="toolbar"><span class="date">星期四 · 八月二十日</span><div class="tools"><span class="tool">记一件事</span><span class="tool">搜索</span></div></div>
+        <div class="note"><div><div class="note-label">Secretary's Note</div><h4>早上好，今天从这里开始</h4><p>昨天完成了院内会材料更新。今天建议先确认专家拜访，再整理医学洞察草稿。</p></div><div class="note-side">今日约定 · 1<br>等待回复 · 1<br>需要确认 · 2</div></div>
+        <div class="numbers"><div class="number"><strong>3</strong><span>手头工作</span></div><div class="number"><strong>2</strong><span>今日事项</span></div><div class="number"><strong>1</strong><span>等待回复</span></div><div class="number"><strong>2</strong><span>秘书建议</span></div></div>
+        <div class="columns"><div class="module"><div class="module-title"><span>今天的节奏</span><span>日历</span></div><div class="item">10:30 · 医学洞察<small>继续完成核心信息页</small></div><div class="item">14:00 · 专家拜访准备</div></div><div class="module"><div class="module-title"><span>等你决定</span><span>2</span></div><div class="item">建立随访任务？</div><div class="item">调整日历安排？</div></div><div class="module"><div class="module-title"><span>随手翻译</span><span>书面</span></div><div class="input">在这里写下内容…</div></div></div>
+      </div>
+    </div>
+    <div class="palette-copy"><h3>C2 · 瓷白鼠尾草</h3><p>安静、自然、温和。医学专业感仍然清楚，整体更松弛，适合全天常驻。</p><div class="swatches"><span class="swatch" style="background:#f3f4ef"></span><span class="swatch" style="background:#e4e8df"></span><span class="swatch" style="background:#778c81"></span><span class="swatch" style="background:#2c3934"></span></div><span class="badge">柔和舒展 · 亲和度最高</span></div>
+  </div>
+
+  <div class="palette-card pearl" data-choice="pearl-taupe" onclick="toggleSelect(this)">
+    <div class="desk">
+      <div class="side"><div class="monogram">M</div><div class="navmark active">⌂</div><div class="navmark">▤</div><div class="navmark">✓</div><div class="navmark">◷</div><div class="navmark last">⚙</div></div>
+      <div class="workarea">
+        <div class="toolbar"><span class="date">星期四 · 八月二十日</span><div class="tools"><span class="tool">记一件事</span><span class="tool">搜索</span></div></div>
+        <div class="note"><div><div class="note-label">Secretary's Note</div><h4>早上好，今天从这里开始</h4><p>昨天完成了院内会材料更新。今天建议先确认专家拜访，再整理医学洞察草稿。</p></div><div class="note-side">今日约定 · 1<br>等待回复 · 1<br>需要确认 · 2</div></div>
+        <div class="numbers"><div class="number"><strong>3</strong><span>手头工作</span></div><div class="number"><strong>2</strong><span>今日事项</span></div><div class="number"><strong>1</strong><span>等待回复</span></div><div class="number"><strong>2</strong><span>秘书建议</span></div></div>
+        <div class="columns"><div class="module"><div class="module-title"><span>今天的节奏</span><span>日历</span></div><div class="item">10:30 · 医学洞察<small>继续完成核心信息页</small></div><div class="item">14:00 · 专家拜访准备</div></div><div class="module"><div class="module-title"><span>等你决定</span><span>2</span></div><div class="item">建立随访任务？</div><div class="item">调整日历安排？</div></div><div class="module"><div class="module-title"><span>随手翻译</span><span>书面</span></div><div class="input">在这里写下内容…</div></div></div>
+      </div>
+    </div>
+    <div class="palette-copy"><h3>C3 · 珍珠灰紫</h3><p>细腻、内敛、带少量人文气质。更像私人桌面工具，个性鲜明但保持克制。</p><div class="swatches"><span class="swatch" style="background:#f4f2f3"></span><span class="swatch" style="background:#e8e4e7"></span><span class="swatch" style="background:#897d89"></span><span class="swatch" style="background:#342f36"></span></div><span class="badge">精致内敛 · 人文感最强</span></div>
+  </div>
+</div>

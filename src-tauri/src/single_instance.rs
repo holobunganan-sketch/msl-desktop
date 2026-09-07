@@ -30,7 +30,19 @@ impl Drop for SingleInstanceGuard {
 /// - `Ok(None)`：已有实例在运行，调用方应立即退出；
 /// - `Err(_)`：系统调用失败，由调用方决定如何处理。
 pub fn acquire() -> io::Result<Option<SingleInstanceGuard>> {
-    let wide_name: Vec<u16> = MUTEX_NAME.encode_utf16().chain(std::iter::once(0)).collect();
+    let name = if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") {
+        let paths = ["APPDATA", "LOCALAPPDATA", "TEMP", "TMP"]
+            .map(|key| std::env::var(key).unwrap_or_default());
+        isolated_mutex_name(&paths).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Test instance requires four isolated directories",
+            )
+        })?
+    } else {
+        MUTEX_NAME.into()
+    };
+    let wide_name: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
         // owned = FALSE：不要求所有权，只用于检测已存在
         let handle = CreateMutexW(std::ptr::null(), 0, wide_name.as_ptr());
@@ -42,5 +54,53 @@ pub fn acquire() -> io::Result<Option<SingleInstanceGuard>> {
             return Ok(None);
         }
         Ok(Some(SingleInstanceGuard(handle)))
+    }
+}
+
+fn isolated_mutex_name(paths: &[String; 4]) -> Option<String> {
+    let mut profiles = Vec::new();
+    for path in paths {
+        let path = std::path::Path::new(path);
+        if !path.is_absolute() {
+            return None;
+        }
+        let mut prefix = std::path::PathBuf::new();
+        let mut next = false;
+        for part in path.components() {
+            prefix.push(part);
+            if next {
+                break;
+            }
+            if part.as_os_str() == ".test-runtime" {
+                next = true;
+            }
+        }
+        if !next {
+            return None;
+        }
+        profiles.push(prefix.to_string_lossy().to_lowercase());
+    }
+    if profiles.iter().any(|p| p != &profiles[0]) {
+        return None;
+    }
+    Some(format!(
+        "{MUTEX_NAME}_test_{}",
+        crate::cognition::digest(&profiles[0])
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_instance_requires_all_four_paths_in_one_explicit_test_profile() {
+        let valid = ["appdata", "localappdata", "temp", "tmp"]
+            .map(|p| format!("C:/synthetic/.test-runtime/profile/{p}"));
+        assert!(super::isolated_mutex_name(&valid).is_some());
+        let mut invalid = valid.clone();
+        invalid[2] = "C:/Users/synthetic/AppData/Temp".into();
+        assert!(super::isolated_mutex_name(&invalid).is_none());
+        invalid = valid;
+        invalid[3] = "C:/synthetic/.test-runtime/other/tmp".into();
+        assert!(super::isolated_mutex_name(&invalid).is_none());
     }
 }

@@ -7,6 +7,7 @@
 //! - 最近修改文件；
 //! - 文件 watcher 的启动/停止（见 watcher 子模块）。
 
+pub mod inventory;
 pub mod watcher;
 
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 
-use crate::db::{DbResult, Database};
+use crate::db::{Database, DbResult};
 
 /// 单层目录项（lazy loading：一次只返回一个目录的内容）。
 #[derive(Debug, Clone, Serialize)]

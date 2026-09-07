@@ -1,401 +1,78 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { locale, t, setLocale } from "$lib/i18n";
+  import { normalizeError } from "$lib/services/api";
+  import ProviderSettings from "$lib/components/ProviderSettings.svelte";
+  import AiRoutingSettings from "$lib/components/AiRoutingSettings.svelte";
+  import AppButton from "$lib/components/ui/AppButton.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import AnalysisScheduleSettings from "$lib/components/AnalysisScheduleSettings.svelte";
+  import StorageSettings from "$lib/components/StorageSettings.svelte";
+  import AppearanceSettings from "$lib/components/AppearanceSettings.svelte";
+  import { addToast } from "$lib/stores/toast";
 
-  type Provider = {
-    id: number;
-    display_name: string;
-    provider_type: string;
-    base_url: string;
-    model: string;
-    enabled: boolean;
-    created_at: number;
-    updated_at: number;
-  };
-
-  let providers = $state<Provider[]>([]);
-  let keyStatus = $state<Record<number, boolean>>({});
   let error = $state("");
+  let appVersion = $state("");
   let info = $state("");
-
-  // 表单
-  let editingId = $state<number | null>(null);
-  let showForm = $state(false);
-  let fName = $state("");
-  let fType = $state("openai_compatible");
-  let fUrl = $state("");
-  let fModel = $state("");
-  let fEnabled = $state(true);
-  let fKey = $state("");
-  let testing = $state(false);
-
-  // 通知/自启动
+  let syncStatus = $state<{ root: string | null; paused: boolean; baseline_count: number; last_scan: number | null; last_warning: string | null } | null>(null);
   let notifEnabled = $state(true);
   let leadMinutes = $state(60);
   let autostartOn = $state(false);
-
-  const DEEPSEEK_PRESET = {
-    name: "DeepSeek",
-    type: "openai_compatible",
-    url: "https://api.deepseek.com",
-    model: "deepseek-v4-flash",
-  };
-
-  async function load() {
-    try {
-      providers = await invoke("list_providers");
-      const st: Record<number, boolean> = {};
-      for (const p of providers) {
-        try {
-          st[p.id] = await invoke("provider_has_key", { id: p.id });
-        } catch {
-          st[p.id] = false;
-        }
-      }
-      keyStatus = st;
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  function openNew() {
-    editingId = null;
-    showForm = true;
-    fName = "";
-    fType = "openai_compatible";
-    fUrl = "";
-    fModel = "";
-    fEnabled = true;
-    fKey = "";
-  }
-
-  function openEdit(p: Provider) {
-    editingId = p.id;
-    showForm = true;
-    fName = p.display_name;
-    fType = p.provider_type;
-    fUrl = p.base_url;
-    fModel = p.model;
-    fEnabled = p.enabled;
-    fKey = ""; // 不显示已存 key；留空表示不修改
-  }
-
-  function applyPreset() {
-    fName = DEEPSEEK_PRESET.name;
-    fType = DEEPSEEK_PRESET.type;
-    fUrl = DEEPSEEK_PRESET.url;
-    fModel = DEEPSEEK_PRESET.model;
-  }
-
-  async function save() {
-    try {
-      await invoke("save_provider", {
-        id: editingId,
-        displayName: fName.trim(),
-        providerType: fType,
-        baseUrl: fUrl.trim(),
-        model: fModel.trim(),
-        enabled: fEnabled,
-        apiKey: fKey || (editingId !== null ? "" : null),
-      });
-      showForm = false;
-      info = "已保存";
-      await load();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function remove(p: Provider) {
-    if (!confirm(`删除 Provider「${p.display_name}」？`)) return;
-    try {
-      await invoke("delete_provider", { id: p.id });
-      await load();
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function testConn(p: Provider) {
-    testing = true;
-    error = "";
-    info = "";
-    try {
-      const msg: string = await invoke("test_provider_connection", { id: p.id });
-      info = msg;
-    } catch (e) {
-      error = String(e);
-    }
-    testing = false;
-  }
-
-  async function loadNotifications() {
-    try {
-      const v = await invoke("app_settings_get", { key: "notifications_enabled" });
-      if (v !== null) notifEnabled = v !== "false";
-      const l = await invoke("app_settings_get", { key: "reminder_lead_minutes" });
-      if (l !== null) leadMinutes = Number(l);
-      autostartOn = await invoke("autostart_status");
-    } catch {
-      /* 默认值 */
-    }
-  }
-
-  async function toggleNotif() {
-    try {
-      notifEnabled = await invoke("set_notifications_enabled", { enabled: notifEnabled });
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function changeLead() {
-    try {
-      leadMinutes = await invoke("set_reminder_lead_minutes", { minutes: leadMinutes });
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  async function toggleAutostart() {
-    try {
-      autostartOn = await invoke("set_autostart", { enabled: !autostartOn });
-      info = autostartOn ? "已启用 Windows 自启动（后台模式启动，不弹主窗口）" : "已关闭自启动";
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
-  $effect(() => {
-    load();
-    loadNotifications();
-  });
+  let currentLocale = $derived($locale);
+  const tt = (key: Parameters<typeof t>[0], params: Record<string, string | number> = {}) => t(key, params, currentLocale);
+  function syncTime(ts: number | null) { if (!ts) return tt("workspace.neverScanned"); return new Intl.DateTimeFormat(currentLocale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(ts * 1000)); }
+  async function load() { try { syncStatus = await invoke("workspace_sync_status"); const n = await invoke<string | null>("app_settings_get", { key: "notifications_enabled" }); if (n !== null) notifEnabled = n !== "false"; const l = await invoke<string | null>("app_settings_get", { key: "reminder_lead_minutes" }); if (l !== null) leadMinutes = Number(l); autostartOn = await invoke<boolean>("autostart_status"); } catch (value) { error = normalizeError(value); } }
+  async function toggleNotif() { try { notifEnabled = await invoke<boolean>("set_notifications_enabled", { enabled: notifEnabled }); addToast(tt("settings.saved"), "success"); } catch (value) { error = normalizeError(value); } }
+  async function changeLead() { try { leadMinutes = await invoke<number>("set_reminder_lead_minutes", { minutes: leadMinutes }); } catch (value) { error = normalizeError(value); } }
+  async function toggleAutostart() { try { autostartOn = await invoke<boolean>("set_autostart", { enabled: !autostartOn }); info = autostartOn ? tt("settings.autostartEnabled") : tt("settings.autostartDisabled"); } catch (value) { error = normalizeError(value); } }
+  $effect(() => { $locale; void load(); void getVersion().then(value => appVersion = value); });
 </script>
 
 <div class="settings">
-  <h1>Settings</h1>
+  <div class="page-head"><div><h1>{tt("settings.title")}</h1><p>{tt("settings.pageHint")}</p></div><AppButton variant="secondary" onclick={() => setLocale(currentLocale === "zh-CN" ? "en-US" : "zh-CN")}><Icon name="languages" size={15} />{currentLocale === "zh-CN" ? tt("common.english") : tt("common.chinese")}</AppButton></div>
+  {#if error}<div class="status error" role="alert">{error}</div>{/if}{#if info}<div class="status ok">{info}</div>{/if}
+  <div class="settings-layout">
+    <aside class="settings-nav" aria-label={tt("settings.categories")}>
+      <a href="#providers"><Icon name="sparkles" size={15} />{tt("settings.providers")}</a>
+      <a href="#appearance"><Icon name="languages" size={15} />{tt("appearance.title")}</a>
+      <a href="#routing"><Icon name="review" size={15} />{tt("settings.aiRouting")}</a>
+      <a href="#schedule"><Icon name="clock" size={15} />{tt("settings.analysisSchedule")}</a>
+      <a href="#storage"><Icon name="archive" size={15} />{tt("storage.title")}</a>
+      <a href="#system"><Icon name="settings" size={15} />{tt("settings.system")}</a>
+    </aside>
 
-  {#if error}<div class="status error">{error}</div>{/if}
-  {#if info}<div class="status ok">{info}</div>{/if}
-
-  <section class="card">
-    <div class="card-title">AI Providers</div>
-    <div class="muted hint">
-      API Key 保存在 Windows 凭据管理器（Credential Manager），不落数据库。
-      DeepSeek preset：OpenAI-compatible，base URL
-      <code>https://api.deepseek.com</code>。
-    </div>
-
-    {#each providers as p (p.id)}
-      <div class="row-item">
-        <div class="p-main">
-          <div class="p-name">{p.display_name} {p.enabled ? "✅" : "⏸"}</div>
-          <div class="muted">{p.provider_type} · {p.base_url} · {p.model}</div>
-        </div>
-        <div class="p-key">{keyStatus[p.id] ? "已配置 Key" : "未配置 Key"}</div>
-        <div class="actions">
-          <button onclick={() => testConn(p)} disabled={testing}>
-            {testing ? "测试中…" : "测试连接"}
-          </button>
-          <button onclick={() => openEdit(p)}>编辑</button>
-          <button onclick={() => remove(p)}>删除</button>
-        </div>
-      </div>
-    {/each}
-
-    {#if providers.length === 0}
-      <div class="muted empty">尚未配置 AI Provider（AI 默认关闭，不影响其他功能）</div>
-    {/if}
-
-    {#if showForm}
-      <div class="form">
-        <div class="form-row">
-          <button class="preset" onclick={applyPreset}>使用 DeepSeek preset</button>
-        </div>
-        <div class="form-row">
-          <input bind:value={fName} placeholder="显示名称" />
-          <select bind:value={fType}>
-            <option value="openai_compatible">openai_compatible</option>
-            <option value="deepseek">deepseek</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <input bind:value={fUrl} placeholder="Base URL（如 https://api.deepseek.com）" />
-          <input bind:value={fModel} placeholder="模型（如 deepseek-v4-flash）" />
-        </div>
-        <div class="form-row">
-          <input type="password" bind:value={fKey} placeholder={editingId ? "新 API Key（留空不修改）" : "API Key"} />
-          <label class="chk">
-            <input type="checkbox" bind:checked={fEnabled} /> 启用
-          </label>
-        </div>
-        <div class="form-row">
-          <button onclick={save}>{editingId ? "保存" : "添加"}</button>
-          <button onclick={() => (showForm = false)}>取消</button>
-        </div>
-      </div>
-    {:else}
-      <button class="add" onclick={openNew}>新增 Provider…</button>
-    {/if}
-  </section>
-
-  <!-- Notifications -->
-  <section class="card">
-    <div class="card-title">Notifications</div>
-    <div class="row-item">
-      <span class="p-main">提醒通知（waiting 跟进 / 任务截止 / 日历日程）</span>
-      <label class="chk">
-        <input type="checkbox" bind:checked={notifEnabled} onchange={toggleNotif} /> 开启
-      </label>
-    </div>
-    <div class="row-item">
-      <span class="p-main">提前提醒</span>
-      <input
-        type="number"
-        min="1"
-        max="1440"
-        bind:value={leadMinutes}
-        onchange={changeLead}
-        style="width: 80px; padding: 5px 8px; border: 1px solid #c8ccd1; border-radius: 6px; font-size: 12px;"
-      />
-      <span class="muted">分钟</span>
-    </div>
-  </section>
-
-  <!-- Autostart -->
-  <section class="card">
-    <div class="card-title">Windows 启动</div>
-    <div class="row-item">
-      <span class="p-main">
-        开机自启动（后台模式启动，不弹主窗口，仅托盘常驻；
-        点击托盘图标再打开窗口）
-      </span>
-      <label class="chk">
-        <input type="checkbox" bind:checked={autostartOn} onchange={toggleAutostart} /> 启用
-      </label>
-    </div>
-  </section>
-
-  <!-- 快捷键 -->
-  <section class="card">
-    <div class="card-title">快捷键</div>
-    <div class="muted hint">
-      <div>Ctrl+K — 全局搜索</div>
-      <div>Ctrl+Shift+Space — Quick Capture（快速记入 Inbox）</div>
-    </div>
-  </section>
+    <main class="settings-content">
+      {#if syncStatus?.root}<section class="sync-strip"><div><span class:paused={syncStatus.paused} class="sync-dot"></span><strong>{syncStatus.paused ? tt("workspace.paused") : tt("workspace.watching")}</strong></div><span>{tt("workspace.fileCount", { count: syncStatus.baseline_count })}</span><span>{tt("workspace.lastScan", { time: syncTime(syncStatus.last_scan) })}</span>{#if syncStatus.last_warning}<span class="warning">{tt("workspace.warning", { warning: syncStatus.last_warning })}</span>{/if}</section>{/if}
+      <section id="appearance" class="settings-section"><AppearanceSettings /></section>
+      <section id="providers" class="settings-section"><ProviderSettings /></section>
+      <section id="routing" class="settings-section"><AiRoutingSettings /></section>
+      <section id="schedule" class="settings-section"><AnalysisScheduleSettings /></section>
+      <section id="storage" class="settings-section"><StorageSettings /></section>
+      <section id="system" class="settings-section system-section">
+        <div class="section-heading"><h2>{tt("settings.system")}</h2><p>{tt("settings.systemHint")}</p><p class="build-id" data-testid="app-version">MSL Desktop · {appVersion}</p></div>
+        <div class="setting-row"><div><strong>{tt("settings.language")}</strong><small>{tt("settings.appearance")}</small></div><AppButton variant="secondary" onclick={() => setLocale(currentLocale === "zh-CN" ? "en-US" : "zh-CN")}>{currentLocale === "zh-CN" ? tt("common.chinese") : tt("common.english")}</AppButton></div>
+        <div class="setting-row"><div><strong>{tt("settings.notifications")}</strong><small>{tt("settings.notificationsHint")}</small></div><label class="check"><input type="checkbox" bind:checked={notifEnabled} onchange={toggleNotif} />{tt("settings.enabled")}</label></div>
+        <div class="setting-row"><div><strong>{tt("settings.lead")}</strong><small>{tt("settings.notifications")}</small></div><div class="inline-control"><input class="number" type="number" min="1" max="1440" bind:value={leadMinutes} onchange={changeLead} /><span>{tt("settings.minutes")}</span></div></div>
+        <div class="setting-row"><div><strong>{tt("settings.autostart")}</strong><small>{tt("settings.autostartHint")}</small></div><label class="check"><input type="checkbox" bind:checked={autostartOn} onchange={toggleAutostart} />{tt("settings.enabled")}</label></div>
+        <div class="setting-row"><div><strong>{tt("settings.shortcuts")}</strong><small>{tt("settings.shortcutsSearch")} · {tt("settings.shortcutsCapture")}</small></div></div>
+      </section>
+    </main>
+  </div>
 </div>
 
 <style>
-  h1 {
-    font-size: 18px;
-    margin: 0 0 12px;
-  }
-  .card {
-    border: 1px solid #e4e7eb;
-    border-radius: 8px;
-    padding: 12px 14px;
-    max-width: 720px;
-  }
-  .card-title {
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: 0.05em;
-    color: #4a5568;
-    margin-bottom: 8px;
-  }
-  .hint {
-    margin-bottom: 12px;
-    line-height: 1.5;
-  }
-  .hint code {
-    background: #f1f3f5;
-    padding: 1px 5px;
-    border-radius: 4px;
-  }
-  .row-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 0;
-    border-bottom: 1px solid #f0f2f4;
-    font-size: 13px;
-  }
-  .p-main {
-    flex: 1;
-    min-width: 0;
-  }
-  .p-name {
-    font-weight: 600;
-  }
-  .p-key {
-    font-size: 12px;
-    color: #2f6db3;
-    white-space: nowrap;
-  }
-  .actions button {
-    margin-left: 4px;
-  }
-  button {
-    padding: 5px 10px;
-    border: 1px solid #c8ccd1;
-    border-radius: 6px;
-    background: #fff;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  button:disabled {
-    color: #9aa0a6;
-    cursor: default;
-  }
-  .add {
-    margin-top: 10px;
-  }
-  .form {
-    margin-top: 12px;
-    border-top: 1px solid #e4e7eb;
-    padding-top: 10px;
-  }
-  .form-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
-    flex-wrap: wrap;
-  }
-  .form-row input:not([type]),
-  .form-row input[type="password"] {
-    flex: 1;
-    min-width: 160px;
-    padding: 6px 8px;
-    border: 1px solid #c8ccd1;
-    border-radius: 6px;
-    font-size: 12px;
-  }
-  .chk {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 12px;
-    white-space: nowrap;
-  }
-  .preset {
-    background: #dbe9f7;
-    font-weight: 600;
-  }
-  .muted {
-    color: #6b7280;
-    font-size: 12px;
-  }
-  .empty {
-    padding: 8px 0;
-  }
-  .status.error {
-    color: #b3261e;
-    font-size: 13px;
-    margin: 6px 0;
-  }
-  .status.ok {
-    color: #2e7d32;
-    font-size: 13px;
-    margin: 6px 0;
-  }
+  .settings{min-width:0;display:flex;flex-direction:column;gap:16px}.page-head{min-height:54px;display:flex;align-items:center;justify-content:space-between;gap:16px}.page-head h1{margin:0 0 5px;font:500 22px var(--font-serif)}.page-head p{margin:0;color:var(--color-muted);font-size:10px}.settings-layout{min-height:0;display:grid;grid-template-columns:190px minmax(0,1fr);gap:12px}.settings-nav{min-height:0;padding:8px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface);box-shadow:var(--shadow-sm)}.settings-nav a{min-height:38px;display:flex;align-items:center;gap:9px;padding:0 10px;border-radius:9px;color:#60737c;font-size:10px;text-decoration:none}.settings-nav a:hover{background:var(--color-primary-soft);color:#4f6873}.settings-content{min-height:0;display:grid;gap:11px;overflow:auto;padding-right:3px;scroll-behavior:smooth}.settings-section{padding:15px;border:1px solid var(--color-border);border-radius:var(--radius-md);background:var(--color-surface);box-shadow:var(--shadow-sm);scroll-margin-top:10px}.sync-strip{display:flex;align-items:center;gap:13px;padding:10px 12px;border:1px solid #d9e4e0;border-radius:11px;background:var(--color-success-soft);color:#657d75;font-size:9px}.sync-strip div{display:flex;align-items:center;gap:7px}.sync-strip strong{font-size:10px}.sync-dot{width:7px;height:7px;border-radius:50%;background:var(--color-success);box-shadow:0 0 0 3px rgb(111 141 130 / .12)}.sync-dot.paused{background:var(--color-warning)}.sync-strip .warning{margin-left:auto;color:var(--color-warning)}.section-heading h2{margin:0 0 4px;font-size:14px}.section-heading p{margin:0;color:var(--color-muted);font-size:10px}.setting-row{min-height:55px;display:flex;align-items:center;gap:15px;border-top:1px solid #e7edef}.setting-row>div:first-child{min-width:0;flex:1;display:grid;gap:4px}.setting-row strong{font-size:10px}.setting-row small{color:var(--color-muted);font-size:9px;line-height:1.4}.check,.inline-control{display:flex;align-items:center;gap:6px;color:#667a83;font-size:9px;white-space:nowrap}.number{width:76px;padding:7px}.status{position:static;overflow-wrap:anywhere;padding:8px 10px;border-radius:9px;font-size:9px;box-shadow:var(--shadow-md)}.status.error{border:1px solid #ead2d2;background:var(--color-danger-soft);color:var(--color-danger)}.status.ok{border:1px solid #d9e4e0;background:var(--color-success-soft);color:var(--color-success)}
+  .settings-section :global(h2){font-size:14px}.settings-section :global(p){font-size:10px}.settings-section :global(.app-card){border-radius:12px;box-shadow:none}.settings-section :global(input),.settings-section :global(select),.settings-section :global(textarea){border-color:var(--color-border);border-radius:8px;background:#fbfcfc;font-size:10px}.settings-section :global(label),.settings-section :global(.muted){font-size:9px}
+  @container(max-width:900px){.settings-layout{grid-template-columns:155px 1fr}.settings-nav a{padding-inline:8px}}
+  @container(max-width:760px){.settings{height:auto}.settings-layout{grid-template-columns:1fr}.settings-nav{display:flex;overflow:auto}.settings-nav a{flex:0 0 auto}.settings-content{overflow:visible}.sync-strip{flex-wrap:wrap}.setting-row{align-items:flex-start;flex-direction:column;padding:10px 0}}
+  .page-head p{font-size:12px}.settings-nav a{font-size:13px}.sync-strip,.setting-row small,.check,.inline-control,.status{font-size:11px}.sync-strip strong,.setting-row strong{font-size:12px}.section-heading h2,.settings-section :global(h2){font-size:17px}.section-heading p,.settings-section :global(p){font-size:12px}.settings-section :global(input),.settings-section :global(select),.settings-section :global(textarea){font-size:13px}.settings-section :global(label),.settings-section :global(.muted){font-size:11px}
+  .build-id { margin-top: 10px; color: var(--color-primary); font-weight: 600; }
+  .settings-content { overflow: visible; min-width: 0; padding: 0; }
+  .settings-layout { align-items: start; }
+  .settings-nav { position: sticky; top: 0; }
+  .settings-section,.settings-nav a { min-width: 0; overflow-wrap: anywhere; }
+  .page-head,.sync-strip { flex-wrap: wrap; }
+  .setting-row { padding: 12px 0; flex-wrap: wrap; }
+  @container(max-width:760px) { .settings-nav { position: static; flex-wrap: wrap; } }
 </style>

@@ -15,7 +15,10 @@ const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "MSLDesktop";
 
 fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// 当前是否以 background 模式启动（不弹主窗口，仅 tray 常驻）。
@@ -28,8 +31,8 @@ pub fn is_background_start() -> bool {
 pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
-        RegCreateKeyExW, RegDeleteValueW, RegSetValueExW,
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+        KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
     };
 
     let exe = std::env::current_exe()?;
@@ -85,8 +88,8 @@ pub fn set_autostart(enabled: bool) -> std::io::Result<()> {
 pub fn is_autostart_enabled() -> bool {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, RRF_RT_REG_SZ, RegCloseKey, RegGetValueW,
-        RegOpenKeyExW,
+        RegCloseKey, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+        RRF_RT_REG_SZ,
     };
 
     let key_name = wide(RUN_KEY);
@@ -94,8 +97,13 @@ pub fn is_autostart_enabled() -> bool {
 
     unsafe {
         let mut key: HKEY = std::ptr::null_mut();
-        let status =
-            RegOpenKeyExW(HKEY_CURRENT_USER, key_name.as_ptr(), 0, KEY_QUERY_VALUE, &mut key);
+        let status = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            key_name.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        );
         if status != ERROR_SUCCESS {
             return false;
         }
@@ -116,13 +124,7 @@ pub fn is_autostart_enabled() -> bool {
 }
 
 /// 保存主窗口状态（关闭/销毁前调用）。
-pub fn save_window_state(
-    db: &Database,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-) -> DbResult<()> {
+pub fn save_window_state(db: &Database, x: i32, y: i32, width: u32, height: u32) -> DbResult<()> {
     let repo = AppSettingsRepo::new(db.conn());
     repo.set("window_x", &x.to_string())?;
     repo.set("window_y", &y.to_string())?;

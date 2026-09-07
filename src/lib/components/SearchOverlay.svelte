@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { locale, t, translateStatus } from "$lib/i18n";
 
   type Work = { id: number; title: string; status: string };
   type FileHit = { path: string; label: string | null; work_id: number | null };
@@ -25,6 +26,8 @@
   let query = $state("");
   let results = $state<SearchResults | null>(null);
   let inputEl = $state<HTMLInputElement | undefined>(undefined);
+  let currentLocale = $derived($locale);
+  const tt = (key: Parameters<typeof t>[0], params: Record<string, string | number> = {}) => t(key, params, currentLocale);
 
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -111,17 +114,17 @@
         bind:this={inputEl}
         bind:value={query}
         oninput={onInput}
-        placeholder="搜索 Works、文件、任务、日历、活动…（Ctrl+K / Esc）"
+        placeholder={tt("search.placeholder")}
       />
       {#if results}
         <div class="results">
           {#if total() === 0}
-            <div class="muted empty">没有找到与「{query}」相关的结果</div>
+            <div class="muted empty">{tt("common.noResults", { query })}</div>
           {/if}
 
           {#if results.works.length > 0}
             <div class="group">
-              <div class="group-title">Works</div>
+              <div class="group-title">{tt("search.works")}</div>
               {#each results.works as w (w.id)}
                 <button class="item" onclick={() => pick("work", w.id)}>
                   <span class="name">{w.title}</span>
@@ -133,7 +136,7 @@
 
           {#if results.files.length > 0}
             <div class="group">
-              <div class="group-title">Files</div>
+              <div class="group-title">{tt("search.files")}</div>
               {#each results.files as f (f.path)}
                 <button class="item" onclick={() => pick("file", f.work_id ?? 0)}>
                   <span class="name">{f.label || f.path.split(/[\\/]/).pop()}</span>
@@ -145,7 +148,7 @@
 
           {#if results.tasks.length > 0}
             <div class="group">
-              <div class="group-title">Tasks</div>
+              <div class="group-title">{tt("search.tasks")}</div>
               {#each results.tasks as t (t.id)}
                 <button class="item" onclick={() => pick("task", t.id)}>
                   <span class="name">{t.title}</span>
@@ -157,11 +160,11 @@
 
           {#if results.waiting.length > 0}
             <div class="group">
-              <div class="group-title">Waiting</div>
+              <div class="group-title">{tt("search.waiting")}</div>
               {#each results.waiting as w (w.id)}
                 <button class="item" onclick={() => pick("waiting", w.id)}>
                   <span class="name">{w.title}</span>
-                  <span class="muted">等待 {w.waiting_for || "—"} · {fmtStatus(w.status)}</span>
+                  <span class="muted">{tt("search.waitingDetail", { person: w.waiting_for || "—", status: fmtStatus(w.status) })}</span>
                 </button>
               {/each}
             </div>
@@ -169,7 +172,7 @@
 
           {#if results.calendar.length > 0}
             <div class="group">
-              <div class="group-title">Calendar</div>
+              <div class="group-title">{tt("search.calendar")}</div>
               {#each results.calendar as ev (ev.id)}
                 <button class="item" onclick={() => pick("calendar", ev.id)}>
                   <span class="name">{ev.title}</span>
@@ -181,7 +184,7 @@
 
           {#if results.inbox.length > 0}
             <div class="group">
-              <div class="group-title">Inbox</div>
+              <div class="group-title">{tt("search.inbox")}</div>
               {#each results.inbox as it (it.id)}
                 <button class="item" onclick={() => pick("inbox", it.id)}>
                   <span class="name">{it.content}</span>
@@ -192,7 +195,7 @@
 
           {#if results.resume_points.length > 0}
             <div class="group">
-              <div class="group-title">Resume Points</div>
+              <div class="group-title">{tt("search.resume")}</div>
               {#each results.resume_points as rp (rp.id)}
                 <button class="item" onclick={() => pick("resume", rp.work_id)}>
                   <span class="name">{rp.current_state || rp.next_step}</span>
@@ -203,7 +206,7 @@
 
           {#if results.activity.length > 0}
             <div class="group">
-              <div class="group-title">Activity</div>
+              <div class="group-title">{tt("search.activity")}</div>
               {#each results.activity as a (a.id)}
                 <button class="item" onclick={() => pick("activity", a.id)}>
                   <span class="name">{a.display_text}</span>
@@ -214,7 +217,7 @@
           {/if}
         </div>
       {:else if query.trim()}
-        <div class="muted empty">搜索中…</div>
+        <div class="muted empty">{tt("common.searching")}</div>
       {/if}
     </div>
   </div>
@@ -228,13 +231,13 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding-top: 12vh;
+    padding: calc(var(--viewport-height) * .1) 16px 16px;
     z-index: 1000;
   }
   .panel {
     width: 560px;
-    max-width: 90vw;
-    max-height: 60vh;
+    max-width: 100%;
+    max-height: calc(var(--viewport-height) * .8);
     background: #fff;
     border-radius: 10px;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);

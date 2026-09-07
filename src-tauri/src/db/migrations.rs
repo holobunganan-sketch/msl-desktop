@@ -8,7 +8,7 @@
 
 use rusqlite::{Connection, OptionalExtension};
 
-use super::{DbError, DbResult, now_unix};
+use super::{now_unix, DbError, DbResult};
 
 pub struct Migration {
     pub version: i64,
@@ -18,11 +18,83 @@ pub struct Migration {
 
 /// 迁移列表（按 version 升序）。
 /// 新增 schema 变化时：新建 `migrations/NNNN_name.sql` 并在此登记。
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../../migrations/0001_init.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "workbench_reliability",
+        sql: include_str!("../../migrations/0002_workbench_reliability.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "ai_provider_catalog",
+        sql: include_str!("../../migrations/0003_ai_provider_catalog.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "document_intelligence",
+        sql: include_str!("../../migrations/0004_document_intelligence.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "ai_secretary",
+        sql: include_str!("../../migrations/0005_ai_secretary.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "storage_governance",
+        sql: include_str!("../../migrations/0006_storage_governance.sql"),
+    },
+    Migration {
+        version: 7,
+        name: "decisions_reports",
+        sql: include_str!("../../migrations/0007_decisions_reports.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "classification_memory",
+        sql: include_str!("../../migrations/0008_classification_memory.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "background_jobs",
+        sql: include_str!("../../migrations/0009_background_jobs.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "cognition_flow",
+        sql: include_str!("../../migrations/0010_cognition_flow.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "capture_context",
+        sql: include_str!("../../migrations/0011_capture_context.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "ai_efficiency",
+        sql: include_str!("../../migrations/0012_ai_efficiency.sql"),
+    },
+    Migration {
+        version: 13,
+        name: "workspace_lifecycle",
+        sql: include_str!("../../migrations/0013_workspace_lifecycle.sql"),
+    },
+    Migration {
+        version: 14,
+        name: "knowledge_kol",
+        sql: include_str!("../../migrations/0014_knowledge_kol.sql"),
+    },
+    Migration {
+        version: 15,
+        name: "expert_department",
+        sql: include_str!("../../migrations/0015_expert_department.sql"),
+    },
+];
 
 /// 执行所有未应用的迁移（幂等、事务化）。
 pub fn run(conn: &mut Connection) -> DbResult<()> {

@@ -5,10 +5,19 @@
 //! 本模块不依赖 Tauri，便于单元测试（临时文件 / 内存库）。
 
 pub mod activity;
+pub mod ai;
 pub mod brief;
 pub mod calendar;
+pub mod documents;
+pub mod flow;
 pub mod inbox;
+pub mod jobs;
+pub mod knowledge;
+pub mod kol;
+pub mod memory;
 pub mod provider;
+pub mod qa;
+pub mod reports;
 pub mod task;
 pub mod work;
 pub mod workspace;
@@ -84,6 +93,15 @@ impl From<rusqlite::Error> for DbError {
 
 pub type DbResult<T> = Result<T, DbError>;
 
+pub fn write_transaction(conn: &Connection) -> DbResult<rusqlite::Transaction<'_>> {
+    // Reserve the writer before reading: a deferred WAL transaction cannot wait
+    // when another writer invalidates its read snapshot before the first write.
+    Ok(rusqlite::Transaction::new_unchecked(
+        conn,
+        rusqlite::TransactionBehavior::Immediate,
+    )?)
+}
+
 /// SQLite 连接封装。
 pub struct Database {
     conn: Connection,
@@ -114,10 +132,8 @@ impl Database {
 
     /// 基础 PRAGMA：WAL、外键、busy timeout。
     fn configure(&self) -> DbResult<()> {
-        self.conn
-            .pragma_update(None, "journal_mode", "WAL")?;
-        self.conn
-            .pragma_update(None, "foreign_keys", "ON")?;
+        self.conn.pragma_update(None, "journal_mode", "WAL")?;
+        self.conn.pragma_update(None, "foreign_keys", "ON")?;
         self.conn.busy_timeout(Duration::from_secs(5))?;
         Ok(())
     }
@@ -146,13 +162,39 @@ impl Database {
 mod tests {
     use super::*;
 
+    #[test]
+    fn knowledge_schema_preserves_durable_conversations_and_kol_records() {
+        let db = Database::open_in_memory().unwrap();
+        let found: i64 = db.conn().query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('qa_sessions','qa_turns','kol_experts','kol_notes','kol_drafts','kol_insights','kol_actions','kol_projects')", [], |r| r.get(0)).unwrap();
+        assert_eq!(found, 8, "knowledge persistence is unavailable");
+    }
+
+    #[test]
+    fn write_transaction_reserves_writer_before_reading_shared_state() {
+        let root = std::env::temp_dir().join(format!("msl-wal-race-{}", uuid::Uuid::new_v4()));
+        let db = Database::open(&root.join("test.db")).unwrap();
+        let other = Database::open(&root.join("test.db")).unwrap();
+        other
+            .conn()
+            .busy_timeout(Duration::from_millis(25))
+            .unwrap();
+        let tx = write_transaction(db.conn()).unwrap();
+        tx.query_row("SELECT COUNT(*) FROM workspaces", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+        let competing=other.conn().execute("INSERT INTO workspaces(name,root_path,created_at,updated_at) VALUES ('other','C:/synthetic',0,0)",[]);
+        assert!(competing.is_err(),"writer was not reserved before the read; later upgrade can fail with SQLITE_BUSY_SNAPSHOT");
+        tx.execute("INSERT INTO workspaces(name,root_path,created_at,updated_at) VALUES ('first','C:/synthetic',0,0)",[]).unwrap();
+        tx.commit().unwrap();
+        other.close().unwrap();
+        db.close().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// 生成唯一的临时数据库路径（测试用，用后删除）。
     fn temp_db_path(tag: &str) -> PathBuf {
-        let unique = format!(
-            "msl-db-test-{tag}-{}-{}",
-            std::process::id(),
-            now_unix()
-        );
+        let unique = format!("msl-db-test-{tag}-{}-{}", std::process::id(), now_unix());
         std::env::temp_dir().join(unique).join(DB_FILE_NAME)
     }
 
@@ -161,14 +203,16 @@ mod tests {
         let path = temp_db_path("fresh");
         let db = Database::open(&path).unwrap();
 
-        // schema_migrations 已应用 1 条
+        // schema_migrations 已应用到最新版本
         let version: i64 = db
             .conn()
-            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 15);
 
-        // 12 张表存在
+        // 业务表包含 Provider catalog、文档智能、AI secretary 与周期报告。
         let table_count: i64 = db
             .conn()
             .query_row(
@@ -177,7 +221,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(table_count, 12);
+        assert_eq!(table_count, 40);
 
         // WAL 已启用
         let journal: String = db
@@ -240,15 +284,334 @@ mod tests {
         db.migrate().unwrap();
         let version: i64 = db
             .conn()
-            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                r.get(0)
+            })
             .unwrap();
-        assert_eq!(version, 1);
-        // 迁移记录只有 1 条
+        assert_eq!(version, 15);
+        // Each registered migration is recorded exactly once.
         let count: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 15);
+    }
+
+    #[test]
+    fn migration_v1_to_v3_preserves_provider_and_adds_schema() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES (1, 'init', 0);
+             INSERT INTO provider_settings (display_name, provider_type, base_url, model, enabled, created_at, updated_at)
+             VALUES ('legacy', 'openai_compatible', 'http://localhost', 'local', 1, 1, 1);",
+        )
+        .unwrap();
+
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM provider_settings", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT credential_ref FROM provider_settings WHERE id = 1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "provider-1"
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM workspace_file_state", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM provider_models", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(daily_briefs)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(columns.iter().any(|c| c == "source_snapshot_json"));
+    }
+
+    #[test]
+    fn migration_v2_to_v3_preserves_provider_and_migrates_model_catalog() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0002_workbench_reliability.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES (1, 'init', 0);
+             INSERT INTO schema_migrations VALUES (2, 'workbench_reliability', 0);
+             INSERT INTO provider_settings (display_name, provider_type, base_url, model, enabled, credential_ref, created_at, updated_at)
+             VALUES ('legacy', 'openai_compatible', 'https://api.deepseek.com/', 'deepseek-v4-flash', 1, 'provider-test', 1, 1);",
+        )
+        .unwrap();
+
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(
+            conn.query_row(
+                "SELECT template_kind FROM provider_settings WHERE id = 1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "deepseek"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT credential_ref FROM provider_settings WHERE id = 1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "provider-test"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT protocol || '|' || endpoint_path || '|' || source FROM provider_models WHERE provider_id = 1 AND model_id = 'deepseek-v4-flash'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "chat_completions|/chat/completions|legacy"
+        );
+
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM provider_models", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        conn.execute(
+            "INSERT INTO ai_task_routes (task_kind, provider_model_id, updated_at) VALUES ('general', 1, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM provider_settings WHERE id = 1", [])
+            .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM provider_models", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT provider_model_id FROM ai_task_routes WHERE task_kind = 'general'",
+                [],
+                |r| r.get::<_, Option<i64>>(0)
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn migration_v3_to_v4_adds_document_index_without_body_columns() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0002_workbench_reliability.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0003_ai_provider_catalog.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES (1, 'init', 0);
+             INSERT INTO schema_migrations VALUES (2, 'workbench_reliability', 0);
+             INSERT INTO schema_migrations VALUES (3, 'ai_provider_catalog', 0);
+             INSERT INTO workspaces (name, root_path, created_at, updated_at) VALUES ('w', 'C:/w', 0, 0);
+             INSERT INTO works (title, status, created_at, updated_at) VALUES ('work', 'active', 0, 0);",
+        ).unwrap();
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        for table in ["work_workspace_links", "document_index", "cache_entries"] {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(document_index)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!columns
+            .iter()
+            .any(|c| ["full_content", "raw_body", "prompt_body"].contains(&c.as_str())));
+        conn.execute("INSERT INTO work_workspace_links (work_id, workspace_id, is_primary, created_at) VALUES (1, 1, 1, 0)", []).unwrap();
+        conn.execute("INSERT INTO document_index (workspace_id, path, relative_path, extension, size, modified_at) VALUES (1, 'C:/w/a.txt', 'a.txt', 'txt', 1, 0)", []).unwrap();
+        conn.execute("INSERT INTO cache_entries (category, relative_path, size_bytes, created_at, last_accessed_at) VALUES ('extracted', 'extracted/x', 1, 0, 0)", []).unwrap();
+        assert!(conn.execute("INSERT INTO document_index (workspace_id, path, relative_path, extension, size, modified_at) VALUES (1, 'C:/w/a.txt', 'a.txt', 'txt', 1, 0)", []).is_err());
+    }
+
+    #[test]
+    fn migration_v4_to_v5_adds_secretary_defaults_and_keeps_briefs() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0002_workbench_reliability.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0003_ai_provider_catalog.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0004_document_intelligence.sql"
+        ))
+        .unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0); INSERT INTO daily_briefs (brief_date,generated_at,content) VALUES ('2026-08-14',0,'kept brief');").unwrap();
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        let schedule: (i64, i64, i64, i64) = conn.query_row("SELECT enabled, interval_minutes, daily_hour, daily_minute FROM analysis_schedule_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(schedule, (1, 180, 6, 0));
+        assert_eq!(
+            conn.query_row(
+                "SELECT retention_state FROM daily_briefs LIMIT 1",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "kept"
+        );
+        for table in ["analysis_runs", "ai_proposals"] {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
+        conn.execute_batch("INSERT INTO ai_proposals (kind,operation,dedupe_key,title,payload_json,created_at,updated_at) VALUES ('task','create','same','a','{}',0,0);").unwrap();
+        assert!(conn.execute("INSERT INTO ai_proposals (kind,operation,dedupe_key,title,payload_json,created_at,updated_at) VALUES ('task','create','same','b','{}',0,0)", []).is_err());
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            15
+        );
+    }
+
+    #[test]
+    fn migration_v5_to_v6_preserves_existing_storage_setting() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0001_init.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0002_workbench_reliability.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0003_ai_provider_catalog.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/0004_document_intelligence.sql"
+        ))
+        .unwrap();
+        conn.execute_batch(include_str!("../../migrations/0005_ai_secretary.sql"))
+            .unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0),(5,'ai_secretary',0); INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES ('cache_limit_bytes','123',1);").unwrap();
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM app_settings WHERE key='cache_limit_bytes'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "123"
+        );
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='daily_activity_rollups'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn migration_v7_to_v8_preserves_proposals_and_initializes_memory_schema() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in [
+            include_str!("../../migrations/0001_init.sql"),
+            include_str!("../../migrations/0002_workbench_reliability.sql"),
+            include_str!("../../migrations/0003_ai_provider_catalog.sql"),
+            include_str!("../../migrations/0004_document_intelligence.sql"),
+            include_str!("../../migrations/0005_ai_secretary.sql"),
+            include_str!("../../migrations/0006_storage_governance.sql"),
+            include_str!("../../migrations/0007_decisions_reports.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL);
+             INSERT INTO schema_migrations VALUES
+               (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),
+               (4,'document_intelligence',0),(5,'ai_secretary',0),
+               (6,'storage_governance',0),(7,'decisions_reports',0);
+             INSERT INTO ai_proposals
+               (kind,operation,dedupe_key,title,payload_json,created_at,updated_at)
+             VALUES ('task','create','kept-proposal','保留建议','{}',1,1);",
+        )
+        .unwrap();
+
+        migrations::run(&mut conn).unwrap();
+
+        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(
+            conn.query_row(
+                "SELECT kind || '|' || suggested_kind FROM ai_proposals WHERE dedupe_key='kept-proposal'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "task|task"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='classification_memories'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -271,5 +634,63 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("FOREIGN KEY"));
+    }
+
+    /// Release audit only: the caller must provide a disposable copy, never the formal path.
+    #[test]
+    #[ignore]
+    fn disposable_formal_database_copy_migrates_without_entity_loss() {
+        let path = std::env::var("MSL_FORMAL_DB_COPY")
+            .map(PathBuf::from)
+            .expect("MSL_FORMAL_DB_COPY must point to a disposable database copy");
+        let canonical = path.canonicalize().expect("database copy must exist");
+        assert!(canonical
+            .to_string_lossy()
+            .contains("formal-migration-copy"));
+        let before = Connection::open(&canonical).unwrap();
+        let counts_before = [
+            "works",
+            "tasks",
+            "waiting_items",
+            "calendar_events",
+            "inbox_items",
+        ]
+        .map(|table| {
+            before
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap()
+        });
+        drop(before);
+        let db = Database::open(&canonical).unwrap();
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 15);
+        let counts_after = [
+            "works",
+            "tasks",
+            "waiting_items",
+            "calendar_events",
+            "inbox_items",
+        ]
+        .map(|table| {
+            db.conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap()
+        });
+        assert_eq!(counts_after, counts_before);
+        for table in ["reports", "report_schedule_state"] {
+            assert_eq!(
+                db.conn()
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                        [table],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+        }
     }
 }

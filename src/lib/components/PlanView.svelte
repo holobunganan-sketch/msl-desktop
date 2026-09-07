@@ -1,6 +1,28 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { locale, t, translateStatus } from "$lib/i18n";
+  import Modal from "$lib/components/ui/Modal.svelte";
+  import AppButton from "$lib/components/ui/AppButton.svelte";
+  import { addToast } from "$lib/stores/toast";
+  import { dataRevision, invalidate } from "$lib/stores/dataRevision";
+  import ProjectScope from "./ProjectScope.svelte";
+  import ProjectFilter from "./ProjectFilter.svelte";
+  import ProjectBadge from "./ProjectBadge.svelte";
 
+  import {onMount} from 'svelte';
+  import {navigateTo} from '$lib/services/navigation';
+  import NaturalCapture from './NaturalCapture.svelte';
+  let {focusId=null,mode='active'}:{focusId?:number|null;mode?:'active'|'done'}=$props();
+  let focused=$state(false);
+  let scheduleId=$state<number|null>(null);
+  let scheduleStart=$state('');let scheduleEnd=$state('');let scheduleBusy=$state(false);
+  let progressTask=$state<Task|null>(null);
+  async function saveSchedule(){
+    if(scheduleId===null||scheduleBusy)return;scheduleBusy=true;error='';
+    try{await invoke('schedule_work_task',{id:scheduleId,start:toSec(scheduleStart),end:toSec(scheduleEnd)});scheduleId=null;invalidate('tasks','calendar','works','brief');await load();}
+    catch(e){error=String(e);}finally{scheduleBusy=false;}
+  }
+  onMount(async()=>{await load();if(focusId){const item=tasks.find(t=>t.id===focusId);if(item){filter='all';openEdit(item);focused=true;}else error=currentLocale==='en-US'?'This item no longer exists.':'该事项已不存在。';}});
   type Task = {
     id: number;
     work_id: number | null;
@@ -18,12 +40,21 @@
 
   let tasks = $state<Task[]>([]);
   let filter = $state("all"); // all | next | done | ...
+  let projectFilter=$state("all");
   let error = $state("");
   let newTitle = $state("");
   let newPriority = $state("normal");
   let newDue = $state("");
+  let formNotes = $state("");
+  let formWorkId = $state<number | null>(null);
+  let showForm = $state(false);
+  let editingId = $state<number | null>(null);
+  let saving = $state(false);
+  let works = $state<Array<{ id: number; title: string; status: string }>>([]);
+  let currentLocale = $derived($locale);
+  const tt = (key: Parameters<typeof t>[0], params: Record<string, string | number> = {}) => t(key, params, currentLocale);
 
-  const STATUS_ORDER = ["next", "scheduled", "waiting", "paused", "done"];
+  const STATUS_ORDER = ["next", "doing", "scheduled", "waiting", "paused", "done"];
 
   function nowSec() {
     return Math.floor(Date.now() / 1000);
@@ -51,27 +82,65 @@
     }
   }
 
-  async function createTask() {
-    if (!newTitle.trim()) return;
+  async function loadWorks() {
     try {
-      await invoke("create_task", {
-        workId: null,
-        title: newTitle.trim(),
-        priority: newPriority,
-        dueAt: toSec(newDue),
-        notes: null,
-      });
+      const all = await invoke<Array<{ id: number; title: string; status: string }>>("list_works", { status: null });
+      works = all;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  function openNew() {
+    editingId = null;
+    newTitle = "";
+    newPriority = "normal";
+    newDue = "";
+    formNotes = "";
+    formWorkId = null;
+    showForm = true;
+  }
+
+  function openEdit(task: Task) {
+    editingId = task.id;
+    newTitle = task.title;
+    newPriority = task.priority;
+    newDue = task.due_at ? fmtTime(task.due_at).replace(" ","T") : "";
+    formNotes = task.notes ?? "";
+    formWorkId = task.work_id;
+    showForm = true;
+  }
+
+  async function createTask() {
+    if (!newTitle.trim()) {
+      error = tt("common.required");
+      return;
+    }
+    saving = true;
+    error = "";
+    try {
+      if (editingId === null) {
+        await invoke("create_task", { workId: formWorkId, title: newTitle.trim(), priority: newPriority, dueAt: toSec(newDue), notes: formNotes.trim() || null });
+      } else {
+        await invoke("update_task", { id: editingId, workId: formWorkId, title: newTitle.trim(), priority: newPriority, dueAt: toSec(newDue), notes: formNotes.trim() || null });
+      }
+      showForm = false;
+      addToast(tt("settings.saved"), "success");
+      invalidate("tasks", "works", "brief");
       newTitle = "";
       newDue = "";
       await load();
     } catch (e) {
       error = String(e);
+    } finally {
+      saving = false;
     }
   }
 
   async function complete(t: Task) {
     try {
       await invoke("complete_task", { id: t.id });
+      invalidate("tasks", "works", "brief");
       await load();
     } catch (e) {
       error = String(e);
@@ -81,6 +150,7 @@
   async function remove(t: Task) {
     try {
       await invoke("delete_task", { id: t.id });
+      invalidate("tasks", "works", "brief");
       await load();
     } catch (e) {
       error = String(e);
@@ -92,58 +162,94 @@
   }
 
   function visibleTasks(): Task[] {
+    const scoped=tasks.filter(task=>(focused||mode==='done'||filter==='done'?focused||task.status==='done':task.status!=='done')).filter(task=>projectFilter==="all"||(projectFilter==="independent"?task.work_id===null:task.work_id===Number(projectFilter)));
     if (filter === "all") {
       // 未完成按截止时间排序
-      return [...tasks].sort((a, b) => (a.due_at ?? 9e15) - (b.due_at ?? 9e15));
+      return [...scoped].sort((a, b) => (a.due_at ?? 9e15) - (b.due_at ?? 9e15));
     }
-    return tasks;
+    return scoped;
   }
 
-  $effect(() => { load(); });
+  $effect(() => {
+    $dataRevision.tasks;
+    $dataRevision.works;
+    load();
+    loadWorks();
+  });
 </script>
 
 <div class="plan">
   <div class="row">
-    <h1>Plan</h1>
+    <h1>{currentLocale==='en-US'?(mode==='done'?'Completed tasks':'Your next actions'):(mode==='done'?'做完的事项':'接下来要做的事')}</h1>
+    <AppButton testid="task-create" label={tt("common.create")} onclick={() => openNew()} />
     <select bind:value={filter} onchange={load}>
-      <option value="all">全部</option>
+      <option value="all">{tt("common.all")}</option>
       {#each STATUS_ORDER as s (s)}
-        <option value={s}>{s}</option>
+        <option value={s}>{translateStatus(s, currentLocale)}</option>
       {/each}
     </select>
   </div>
 
   {#if error}<div class="status error">{error}</div>{/if}
+  <ProjectFilter {works} bind:value={projectFilter}/>
 
-  <div class="create-row">
-    <input bind:value={newTitle} placeholder="新任务…" onkeydown={(e) => e.key === "Enter" && createTask()} />
-    <select bind:value={newPriority}>
-      <option value="low">低</option>
-      <option value="normal">普通</option>
-      <option value="high">高</option>
-    </select>
-    <input type="datetime-local" bind:value={newDue} />
-    <button onclick={createTask}>添加</button>
-  </div>
+  <Modal bind:open={showForm} title={editingId === null ? tt("common.create") : tt("common.edit")} onclose={() => (showForm = false)}>
+    <form class="modal-form" onsubmit={(event) => { event.preventDefault(); createTask(); }}>
+      <label for="task-title">{tt("task.title")} *</label>
+      <input id="task-title" bind:value={newTitle} placeholder={tt("task.placeholder")} />
+      <ProjectScope {works} bind:value={formWorkId} id="task-work"/>
+      <label for="task-priority">{tt("task.priority.normal")}</label>
+      <select id="task-priority" bind:value={newPriority}>
+        <option value="low">{tt("task.priority.low")}</option>
+        <option value="normal">{tt("task.priority.normal")}</option>
+        <option value="high">{tt("task.priority.high")}</option>
+      </select>
+      <label for="task-due">{tt("task.due")}</label>
+      <input id="task-due" type="datetime-local" bind:value={newDue} />
+      <label for="task-notes">{tt("work.summary")}</label>
+      <textarea id="task-notes" rows="3" bind:value={formNotes}></textarea>
+      <div class="modal-actions">
+        <button type="button" onclick={() => (showForm = false)}>{tt("common.cancel")}</button>
+        <AppButton testid="task-save" type="submit" loading={saving} label={editingId === null ? tt("common.create") : tt("common.save")} />
+      </div>
+    </form>
+  </Modal>
 
+  <Modal open={scheduleId!==null} title={currentLocale==='en-US'?'Arrange this task':'为这件事安排时间'} onclose={()=>scheduleId=null}>
+    <form class="modal-form" onsubmit={e=>{e.preventDefault();void saveSchedule();}}>
+      <p>{currentLocale==='en-US'?'This same task will appear in Calendar. Clearing the time keeps the task.':'这件事会同时出现在日历中。清空时间只取消安排，事项仍保留。'}</p>
+      <label>{currentLocale==='en-US'?'Start':'开始时间'}<input data-testid="task-schedule-start" type="datetime-local" bind:value={scheduleStart}/></label>
+      <label>{currentLocale==='en-US'?'End (optional)':'结束时间（可选）'}<input data-testid="task-schedule-end" type="datetime-local" bind:value={scheduleEnd}/></label>
+      {#if error}<p role="alert">{error}</p>{/if}
+      <AppButton type="submit" testid="task-schedule-save" loading={scheduleBusy}>{tt('common.save')}</AppButton>
+    </form>
+  </Modal>
+  <Modal open={progressTask!==null} title={currentLocale==='en-US'?'Record progress':'记一下进展'} onclose={()=>progressTask=null}>
+    {#if progressTask}<NaturalCapture context={{workId:progressTask.work_id,entityKind:'task',entityId:progressTask.id}} label={progressTask.title}/>{/if}
+  </Modal>
   <ul class="task-list">
     {#each visibleTasks() as t (t.id)}
-      <li class:done={t.status === "done"} class:overdue={isOverdue(t)}>
-        <span class="prio prio-{t.priority}">{t.priority}</span>
-        <span class="title">{t.title}</span>
-        <span class="muted">{t.status}{t.due_at ? ` · 截止 ${fmtTime(t.due_at)}` : ""}</span>
-        {#if isOverdue(t)}<span class="badge overdue">逾期</span>{/if}
+      <li data-testid={`task-row-${t.id}`} class:done={t.status === "done"} class:overdue={isOverdue(t)}>
+        <span class="prio prio-{t.priority}">{tt(t.priority === "high" ? "task.priority.high" : t.priority === "low" ? "task.priority.low" : "task.priority.normal")}</span>
+        <div class="task-copy"><strong class="title">{t.title}</strong><div class="task-meta">
+        <ProjectBadge {works} workId={t.work_id}/>{#if t.scheduled_start}<span>{currentLocale==='en-US'?'Arranged':'已安排'} · {fmtTime(t.scheduled_start)}</span>{/if}
+        <span class="muted">{translateStatus(t.status, currentLocale)}{t.due_at ? ` · ${tt("task.due")} ${fmtTime(t.due_at)}` : ""}</span>
+        {#if isOverdue(t)}<span class="badge overdue">{tt("task.overdue")}</span>{/if}
+        </div></div>
         <span class="actions">
           {#if t.status !== "done"}
-            <button onclick={() => complete(t)}>完成</button>
+          <button onclick={() => complete(t)}>{tt("common.complete")}</button>
           {/if}
-          <button onclick={() => remove(t)}>删除</button>
+          <button data-testid={`task-schedule-${t.id}`} onclick={()=>{scheduleId=t.id;scheduleStart=t.scheduled_start?fmtTime(t.scheduled_start).replace(' ','T'):'';scheduleEnd=t.scheduled_end?fmtTime(t.scheduled_end).replace(' ','T'):'';}}>{currentLocale==='en-US'?'Set time':'安排时间'}</button>
+          <button onclick={()=>progressTask=t}>{currentLocale==='en-US'?'Record progress':'记进展'}</button>
+          <button onclick={() => openEdit(t)}>{tt("common.edit")}</button>
+          <button onclick={() => remove(t)}>{tt("common.delete")}</button>
         </span>
       </li>
     {/each}
   </ul>
-  {#if tasks.length === 0}
-    <div class="muted empty">（暂无任务）</div>
+  {#if visibleTasks().length === 0}
+    <div class="muted empty">{tt("common.empty")}</div>
   {/if}
 </div>
 
@@ -154,34 +260,23 @@
   }
   .row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     margin-bottom: 12px;
   }
-  .create-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 12px;
-  }
-  .create-row input:not([type]) {
-    flex: 1;
-    padding: 7px 10px;
-    border: 1px solid #c8ccd1;
-    border-radius: 6px;
-    font-size: 13px;
-  }
-  .create-row input[type="datetime-local"] {
-    padding: 6px 8px;
-    border: 1px solid #c8ccd1;
-    border-radius: 6px;
-    font-size: 12px;
-  }
+  .modal-form { display: grid; gap: 8px; }
+  .modal-form label { font-size: 12px; font-weight: 600; }
+  .modal-form input,
+  .modal-form textarea,
+  .modal-form select { width: 100%; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 9px 10px; background: var(--color-surface); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
   select,
   button {
     padding: 6px 10px;
-    border: 1px solid #c8ccd1;
+    border: 1px solid var(--color-border);
     border-radius: 6px;
-    background: #fff;
+    background: var(--color-surface-raised);
     font-size: 12px;
     cursor: pointer;
   }
@@ -191,60 +286,71 @@
     padding: 0;
   }
   .task-list li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border-bottom: 1px solid #f0f2f4;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+    padding: 16px;
+    border-bottom: 1px solid #e9eef0;
     font-size: 13px;
   }
   .task-list li.done .title {
     text-decoration: line-through;
-    color: #9aa0a6;
+    color: var(--color-subtle);
   }
   .task-list li.overdue {
-    background: #fdf3f2;
+    background: var(--color-danger-soft);
   }
   .prio {
-    font-size: 11px;
-    padding: 1px 6px;
+    font-size: 12px;
+    padding: 4px 9px;
     border-radius: 999px;
     color: #fff;
-    width: 34px;
+    width: max-content;
+    white-space: nowrap;
     text-align: center;
   }
   .prio-high {
-    background: #b3261e;
+    background: var(--color-danger);
   }
   .prio-normal {
-    background: #6b7280;
+    background: var(--color-muted);
   }
   .prio-low {
-    background: #9aa0a6;
+    background: var(--color-subtle);
   }
   .title {
-    flex: 1;
+    font-size: 15px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
   }
+  .task-copy { min-width: 0; display: grid; gap: 8px; }
+  .task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; line-height: 1.5; overflow-wrap: anywhere; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
   .muted {
-    color: #6b7280;
+    color: var(--color-muted);
     font-size: 12px;
   }
   .badge.overdue {
-    background: #b3261e;
+    background: var(--color-danger);
     color: #fff;
     font-size: 11px;
     padding: 1px 6px;
     border-radius: 4px;
   }
   .actions button {
-    margin-left: 4px;
+    margin: 0;
   }
   .status.error {
-    color: #b3261e;
+    color: var(--color-danger);
     font-size: 13px;
     margin: 6px 0;
   }
   .empty {
     padding: 12px 0;
+  }
+  @container (max-width: 720px) {
+    .task-list li { grid-template-columns: auto minmax(0, 1fr); }
+    .actions { grid-column: 2; justify-content: flex-start; }
   }
 </style>

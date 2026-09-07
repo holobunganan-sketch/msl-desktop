@@ -9,11 +9,15 @@
 
 pub mod ai;
 pub mod app_state;
+pub mod cognition;
 pub mod commands;
 pub mod db;
+pub mod documents;
 mod lifecycle;
 pub mod notifications;
+pub mod scheduler;
 mod single_instance;
+pub mod storage;
 pub mod workspace;
 
 use app_state::AppState;
@@ -39,7 +43,7 @@ fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         MAIN_WINDOW_LABEL,
         tauri::WebviewUrl::default(), // dev 模式自动使用 devUrl，prod 使用 frontendDist
     )
-    .title("MSL Desktop")
+    .title(format!("MSL Desktop · {}", app.package_info().version))
     .inner_size(1240.0, 720.0)
     .min_inner_size(1024.0, 640.0);
 
@@ -171,7 +175,10 @@ fn run_app() {
             // 打开数据库（默认路径 %APPDATA%\MSLDesktop\msl-desktop.db）。
             // 失败只告警不阻塞启动——后续命令会返回"数据库未初始化"。
             match Database::open(&db::default_db_path()) {
-                Ok(db) => app.state::<AppState>().set_database(db),
+                Ok(db) => {
+                    let _ = crate::db::jobs::recover(db.conn());
+                    app.state::<AppState>().set_database(db);
+                }
                 Err(e) => eprintln!("[db] failed to open default database: {e}"),
             }
 
@@ -181,21 +188,44 @@ fn run_app() {
                 crate::db::provider::AppSettingsRepo::new(db.conn()).get("main_workspace")
             }) {
                 if let Ok(Some(path)) = main_ws {
-                    match crate::workspace::watcher::FileWatcher::start(
-                        app.handle().clone(),
-                        std::path::PathBuf::from(&path),
-                    ) {
-                        Ok(w) => {
-                            state.set_watcher(w);
-                            eprintln!("[workspace] watching {path}");
+                    let workspace_id = state
+                        .with_database(|db| {
+                            crate::db::workspace::WorkspaceRepo::new(db.conn())
+                                .list()
+                                .ok()
+                                .and_then(|items| {
+                                    items
+                                        .into_iter()
+                                        .find(|ws| ws.enabled && ws.root_path == path)
+                                        .map(|ws| ws.id)
+                                })
+                        })
+                        .flatten();
+                    if workspace_id.is_some() {
+                        match crate::workspace::watcher::FileWatcher::start(
+                            app.handle().clone(),
+                            std::path::PathBuf::from(&path),
+                        ) {
+                            Ok(w) => {
+                                state.set_watcher(w);
+                                eprintln!("[workspace] watching {path}");
+                                if let Some(id) = workspace_id {
+                                    crate::commands::spawn_workspace_reconcile(
+                                        app.handle().clone(),
+                                        id,
+                                        path.clone(),
+                                    );
+                                }
+                            }
+                            Err(e) => eprintln!("[workspace] failed to watch {path}: {e}"),
                         }
-                        Err(e) => eprintln!("[workspace] failed to watch {path}: {e}"),
                     }
                 }
             }
 
             // 提醒调度（Resident Core 常驻，低频轮询）
             crate::notifications::spawn(app.handle().clone());
+            crate::scheduler::spawn(app.handle().clone());
 
             setup_tray(app.handle())?;
 
@@ -234,8 +264,36 @@ fn run_app() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::knowledge::list_qa_sessions,
+            commands::knowledge::create_qa_session,
+            commands::knowledge::list_qa_turns,
+            commands::knowledge::queue_qa_question,
+            commands::knowledge::delete_qa_session,
+            commands::knowledge::list_kol_experts,
+            commands::knowledge::save_kol_expert,
+            commands::knowledge::capture_kol_note,
+            commands::knowledge::list_kol_notes,
+            commands::knowledge::list_kol_drafts,
+            commands::knowledge::list_kol_insights,
+            commands::knowledge::list_kol_followups,
+            commands::knowledge::review_kol_draft,
+            commands::knowledge::review_kol_insight,
+            commands::flow::get_project_cognition,
+            commands::flow::capture_work_note,
+            commands::flow::get_entity_location,
+            commands::flow::schedule_work_task,
+            commands::flow::list_classification_memories,
+            commands::flow::edit_classification_memory,
+            commands::flow::confirm_ai_proposal_group,
+            commands::flow::list_confirmation_receipts,
+            commands::flow::undo_ai_confirmation,
             greet,
+            commands::jobs::start_ai_job,
+            commands::jobs::list_ai_jobs,
+            commands::jobs::get_ai_job,
             commands::bind_workspace,
+            commands::get_project_directories,
+            commands::remove_workspace,
             commands::list_dir,
             commands::open_file,
             commands::reveal_in_explorer,
@@ -243,6 +301,16 @@ fn run_app() {
             commands::get_workspaces,
             commands::set_watcher_paused,
             commands::watcher_status,
+            commands::workspace_sync_status,
+            commands::workspace_rescan,
+            commands::list_workspace_documents,
+            commands::workspace_document_status,
+            commands::reindex_workspace_documents,
+            commands::link_work_workspace,
+            commands::attach_work_folder,
+            commands::unlink_work_workspace,
+            commands::list_work_workspaces,
+            commands::list_workspace_works,
             commands::create_task,
             commands::update_task,
             commands::complete_task,
@@ -250,11 +318,13 @@ fn run_app() {
             commands::delete_task,
             commands::create_waiting,
             commands::resolve_waiting,
+            commands::update_waiting,
             commands::list_waiting,
             commands::delete_waiting,
             commands::create_inbox_item,
             commands::list_inbox,
             commands::convert_inbox_to_task,
+            commands::convert_inbox_to_resume_point,
             commands::convert_inbox_to_waiting,
             commands::convert_inbox_to_calendar,
             commands::delete_inbox_item,
@@ -265,6 +335,7 @@ fn run_app() {
             commands::create_work,
             commands::update_work,
             commands::archive_work,
+            commands::delete_work,
             commands::list_works,
             commands::get_work_detail,
             commands::create_resume_point,
@@ -277,10 +348,54 @@ fn run_app() {
             commands::search,
             commands::list_providers,
             commands::save_provider,
+            commands::provider_catalog::list_provider_connections,
+            commands::provider_catalog::create_provider_template,
+            commands::provider_catalog::save_provider_connection,
+            commands::provider_catalog::list_provider_models,
+            commands::provider_catalog::save_provider_model,
+            commands::provider_catalog::set_provider_model_enabled,
+            commands::provider_catalog::list_ai_task_routes,
+            commands::provider_catalog::save_ai_task_route,
+            commands::provider_catalog::refresh_provider_models,
+            commands::provider_catalog::test_provider_model,
+            commands::ai_secretary::list_ai_proposals,
+            commands::ai_secretary::list_latest_analysis_proposals,
+            commands::ai_secretary::list_recent_ai_proposals,
+            commands::ai_secretary::get_classification_memory_stats,
+            commands::ai_secretary::update_ai_proposal_draft,
+            commands::ai_secretary::update_ai_proposal_classification,
+            commands::ai_secretary::defer_ai_proposal,
+            commands::ai_secretary::confirm_ai_proposal,
+            commands::ai_secretary::reject_ai_proposal,
+            commands::ai_secretary::start_workspace_work_draft,
+            commands::ai_secretary::get_analysis_schedule,
+            commands::ai_secretary::save_analysis_schedule,
+            commands::ai_secretary::run_analysis_now,
+            commands::ai_secretary::list_analysis_runs,
+            commands::ai_secretary::get_ai_efficiency_stats,
+            commands::ai_secretary::retry_analysis_run,
+            commands::ai_secretary::keep_daily_brief,
+            commands::ai_secretary::translate_text,
+            commands::ai_secretary::get_storage_usage,
+            commands::ai_secretary::preview_storage_cleanup,
+            commands::ai_secretary::execute_storage_cleanup,
+            commands::ai_secretary::compact_storage_history,
+            commands::ai_secretary::clear_webview_data,
+            commands::reports::list_reports,
+            commands::reports::generate_report,
+            commands::reports::retry_report,
+            commands::reports::keep_report,
+            commands::reports::clear_report_history,
+            commands::reports::get_report_schedule,
+            commands::reports::save_report_schedule,
             commands::delete_provider,
             commands::provider_has_key,
             commands::test_provider_connection,
             commands::generate_morning_brief,
+            commands::preview_brief_snapshot,
+            commands::generate_brief,
+            commands::list_briefs,
+            commands::get_brief,
             commands::get_morning_brief,
             commands::set_autostart,
             commands::autostart_status,

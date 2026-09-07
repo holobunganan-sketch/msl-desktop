@@ -21,7 +21,7 @@ $cdpPy = Join-Path $scriptDir "smoke-cdp.py"
 $smokeDir = Join-Path $env:TEMP "msl-smoke"
 $dbPath = Join-Path $env:APPDATA "MSLDesktop\msl-desktop.db"
 
-$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222 --remote-allow-origins=*"
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
 
 $passCount = 0
 $failCount = 0

@@ -1,8 +1,8 @@
 //! activity_events repository（指南 §6.9，工作事实时间线核心）。
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use super::{DbError, DbResult, now_unix};
+use super::{now_unix, DbError, DbResult};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ActivityEvent {
@@ -64,8 +64,18 @@ impl<'a> ActivityRepo<'a> {
                (timestamp, event_type, workspace_id, work_id, entity_type, entity_id,
                 path, display_text, metadata_json, dedupe_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![ts, event_type, workspace_id, work_id, entity_type, entity_id,
-                    path, display_text, metadata_json, dedupe_key],
+            params![
+                ts,
+                event_type,
+                workspace_id,
+                work_id,
+                entity_type,
+                entity_id,
+                path,
+                display_text,
+                metadata_json,
+                dedupe_key
+            ],
         )?;
         let id = self.conn.last_insert_rowid();
         self.get(id)?
@@ -132,6 +142,35 @@ impl<'a> ActivityRepo<'a> {
             .map_err(DbError::from)
     }
 
+    /// 按时间在 SQL 层过滤 file.* 事件，避免先取全表再在调用层截断。
+    pub fn list_file_changes(
+        &self,
+        from_ts: Option<i64>,
+        to_ts: Option<i64>,
+        limit: u32,
+    ) -> DbResult<Vec<ActivityEvent>> {
+        let mut sql = String::from(
+            "SELECT id, timestamp, event_type, workspace_id, work_id, entity_type,
+                    entity_id, path, display_text, metadata_json, dedupe_key
+             FROM activity_events WHERE event_type LIKE 'file.%'",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(from) = from_ts {
+            sql.push_str(" AND timestamp >= ?");
+            params.push(Box::new(from));
+        }
+        if let Some(to) = to_ts {
+            sql.push_str(" AND timestamp <= ?");
+            params.push(Box::new(to));
+        }
+        sql.push_str(" ORDER BY timestamp DESC, id DESC LIMIT ?");
+        params.push(Box::new(limit as i64));
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), row_to_activity)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
+
     /// 按 dedupe_key 查重（用于文件事件 coalescing）。
     pub fn find_by_dedupe_key(&self, dedupe_key: &str) -> DbResult<Option<ActivityEvent>> {
         self.conn
@@ -189,12 +228,30 @@ mod tests {
             .unwrap();
 
         let a = repo
-            .insert("file.modified", None, Some(1), Some("file"), None,
-                    Some("C:\\Work\\IIT\\方案V3.docx"), "修改了 方案V3.docx", None, Some("dedupe:1"))
+            .insert(
+                "file.modified",
+                None,
+                Some(1),
+                Some("file"),
+                None,
+                Some("C:\\Work\\IIT\\方案V3.docx"),
+                "修改了 方案V3.docx",
+                None,
+                Some("dedupe:1"),
+            )
             .unwrap();
-        repo.insert("task.completed", None, Some(1), Some("task"), Some(7),
-                    None, "完成 核对入排标准", None, None)
-            .unwrap();
+        repo.insert(
+            "task.completed",
+            None,
+            Some(1),
+            Some("task"),
+            Some(7),
+            None,
+            "完成 核对入排标准",
+            None,
+            None,
+        )
+        .unwrap();
         assert!(a.id > 0);
 
         // 按 work 过滤
@@ -204,12 +261,23 @@ mod tests {
         assert_eq!(by_work[0].event_type, "task.completed");
 
         // 按 event_type 过滤
-        let files = repo.query(None, None, None, Some("file.modified"), None, None).unwrap();
+        let files = repo
+            .query(None, None, None, Some("file.modified"), None, None)
+            .unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path.as_deref(), Some("C:\\Work\\IIT\\方案V3.docx"));
 
         // 按 path 过滤
-        let by_path = repo.query(None, None, None, None, Some("C:\\Work\\IIT\\方案V3.docx"), None).unwrap();
+        let by_path = repo
+            .query(
+                None,
+                None,
+                None,
+                None,
+                Some("C:\\Work\\IIT\\方案V3.docx"),
+                None,
+            )
+            .unwrap();
         assert_eq!(by_path.len(), 1);
 
         // dedupe 查重

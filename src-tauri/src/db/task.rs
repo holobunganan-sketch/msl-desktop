@@ -1,8 +1,8 @@
 //! tasks + waiting_items repository（指南 §6.5 / §6.6）。
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use super::{DbError, DbResult, now_unix};
+use super::{now_unix, DbError, DbResult};
 
 // ---------- tasks ----------
 
@@ -108,14 +108,15 @@ impl<'a> TaskRepo<'a> {
     pub fn update(
         &self,
         id: i64,
+        work_id: Option<i64>,
         title: &str,
         priority: &str,
         due_at: Option<i64>,
         notes: Option<&str>,
     ) -> DbResult<()> {
         let affected = self.conn.execute(
-            "UPDATE tasks SET title = ?1, priority = ?2, due_at = ?3, notes = ?4, updated_at = ?5 WHERE id = ?6",
-            params![title, priority, due_at, notes, now_unix(), id],
+            "UPDATE tasks SET work_id = ?1, title = ?2, priority = ?3, due_at = ?4, notes = ?5, updated_at = ?6 WHERE id = ?7",
+            params![work_id, title, priority, due_at, notes, now_unix(), id],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound("task".into()));
@@ -136,9 +137,7 @@ impl<'a> TaskRepo<'a> {
     }
 
     pub fn delete(&self, id: i64) -> DbResult<()> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM tasks WHERE id = ?1", [id])?;
+        let affected = self.conn.execute("DELETE FROM tasks WHERE id = ?1", [id])?;
         if affected == 0 {
             return Err(DbError::NotFound("task".into()));
         }
@@ -271,6 +270,39 @@ impl<'a> WaitingRepo<'a> {
         Ok(())
     }
 
+    /// 编辑 waiting 字段并保留其当前状态。
+    pub fn update(
+        &self,
+        id: i64,
+        work_id: Option<i64>,
+        title: &str,
+        waiting_for: &str,
+        started_at: i64,
+        follow_up_at: Option<i64>,
+        notes: Option<&str>,
+    ) -> DbResult<()> {
+        let affected = self.conn.execute(
+            "UPDATE waiting_items
+             SET work_id = ?1, title = ?2, waiting_for = ?3, started_at = ?4,
+                 follow_up_at = ?5, notes = ?6, updated_at = ?7
+             WHERE id = ?8",
+            params![
+                work_id,
+                title,
+                waiting_for,
+                started_at,
+                follow_up_at,
+                notes,
+                now_unix(),
+                id
+            ],
+        )?;
+        if affected == 0 {
+            return Err(DbError::NotFound("waiting_item".into()));
+        }
+        Ok(())
+    }
+
     pub fn delete(&self, id: i64) -> DbResult<()> {
         let affected = self
             .conn
@@ -309,7 +341,9 @@ mod tests {
         let repo = TaskRepo::new(db.conn());
 
         let due = now_unix() + 86400;
-        let t = repo.insert(None, "核对入排标准", "high", Some(due), Some("对照方案 V3")).unwrap();
+        let t = repo
+            .insert(None, "核对入排标准", "high", Some(due), Some("对照方案 V3"))
+            .unwrap();
         assert_eq!(t.status, "next");
 
         repo.complete(t.id).unwrap();
@@ -330,11 +364,34 @@ mod tests {
         crate::db::work::WorkRepo::new(db.conn())
             .insert("Work A", "active")
             .unwrap();
-        repo.insert(Some(1), "A 的任务", "normal", None, None).unwrap();
+        repo.insert(Some(1), "A 的任务", "normal", None, None)
+            .unwrap();
         repo.insert(None, "独立任务", "normal", None, None).unwrap();
 
         assert_eq!(repo.list(None, Some(1)).unwrap().len(), 1);
         assert_eq!(repo.list(None, None).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn task_update_can_change_work_context() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Work A", "active")
+            .unwrap();
+        let repo = TaskRepo::new(db.conn());
+        let task = repo.insert(None, "任务", "normal", None, None).unwrap();
+        repo.update(
+            task.id,
+            Some(work.id),
+            "更新后的任务",
+            "high",
+            None,
+            Some("备注"),
+        )
+        .unwrap();
+        let updated = repo.get(task.id).unwrap().unwrap();
+        assert_eq!(updated.work_id, Some(work.id));
+        assert_eq!(updated.priority, "high");
     }
 
     #[test]
@@ -343,7 +400,9 @@ mod tests {
         let repo = WaitingRepo::new(db.conn());
 
         let follow = now_unix() + 172800;
-        let w = repo.insert(None, "统计方案反馈", "王老师", Some(follow), None).unwrap();
+        let w = repo
+            .insert(None, "统计方案反馈", "王老师", Some(follow), None)
+            .unwrap();
         assert_eq!(w.status, "open");
         assert_eq!(w.waiting_for, "王老师");
 
@@ -354,5 +413,29 @@ mod tests {
 
         let open = repo.list(Some("open"), None).unwrap();
         assert_eq!(open.len(), 0);
+    }
+
+    #[test]
+    fn waiting_update_preserves_open_status_and_changes_context() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Work waiting", "active")
+            .unwrap();
+        let repo = WaitingRepo::new(db.conn());
+        let waiting = repo.insert(None, "等待", "同事", None, None).unwrap();
+        repo.update(
+            waiting.id,
+            Some(work.id),
+            "更新等待",
+            "负责人",
+            now_unix(),
+            None,
+            Some("备注"),
+        )
+        .unwrap();
+        let updated = repo.get(waiting.id).unwrap().unwrap();
+        assert_eq!(updated.work_id, Some(work.id));
+        assert_eq!(updated.status, "open");
+        assert_eq!(updated.waiting_for, "负责人");
     }
 }

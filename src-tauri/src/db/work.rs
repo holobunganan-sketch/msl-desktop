@@ -1,8 +1,8 @@
 //! works + resume_points repository（指南 §6.2 / §6.3）。
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use super::{DbError, DbResult, now_unix};
+use super::{now_unix, DbError, DbResult};
 
 // ---------- works ----------
 
@@ -27,6 +27,28 @@ fn row_to_work(row: &Row) -> rusqlite::Result<Work> {
         updated_at: row.get(5)?,
         archived_at: row.get(6)?,
     })
+}
+
+pub fn validate_project_scope(conn: &Connection, kind: &str, work_id: Option<i64>) -> DbResult<()> {
+    if !matches!(kind, "task" | "waiting" | "calendar" | "resume_point") {
+        return Ok(());
+    }
+    let Some(id) = work_id else {
+        return if kind == "resume_point" {
+            Err(DbError::Migration("请先选择要归入的长期项目".into()))
+        } else {
+            Ok(())
+        };
+    };
+    let work = WorkRepo::new(conn).get(id)?.ok_or_else(|| {
+        DbError::Migration("所选项目已不存在，请重新选择项目或设为独立事项".into())
+    })?;
+    if work.status == "archived" {
+        return Err(DbError::Migration(
+            "所选项目已归档，请选择其他项目或先恢复项目".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub struct WorkRepo<'a> {
@@ -83,7 +105,13 @@ impl<'a> WorkRepo<'a> {
     }
 
     /// 更新标题 / 状态 / 摘要。
-    pub fn update(&self, id: i64, title: &str, status: &str, summary: Option<&str>) -> DbResult<()> {
+    pub fn update(
+        &self,
+        id: i64,
+        title: &str,
+        status: &str,
+        summary: Option<&str>,
+    ) -> DbResult<()> {
         let affected = self.conn.execute(
             "UPDATE works SET title = ?1, status = ?2, summary = ?3, updated_at = ?4 WHERE id = ?5",
             params![title, status, summary, now_unix(), id],
@@ -107,12 +135,39 @@ impl<'a> WorkRepo<'a> {
     }
 
     pub fn delete(&self, id: i64) -> DbResult<()> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM works WHERE id = ?1", [id])?;
+        let tx = super::write_transaction(self.conn)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM works WHERE id = ?1)",
+            [id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(DbError::NotFound("work".into()));
+        }
+
+        // Actionable records remain useful after a long-term project is removed.
+        // Detach them so they continue as temporary tasks, waits, and events.
+        for table in [
+            "tasks",
+            "waiting_items",
+            "calendar_events",
+            "activity_events",
+        ] {
+            tx.execute(
+                &format!("UPDATE {table} SET work_id = NULL WHERE work_id = ?1"),
+                [id],
+            )?;
+        }
+        // Progress snapshots and file links describe this work itself. Removing
+        // these database references never touches files in the linked workspace.
+        tx.execute("DELETE FROM resume_points WHERE work_id = ?1", [id])?;
+        tx.execute("DELETE FROM work_file_refs WHERE work_id = ?1", [id])?;
+
+        let affected = tx.execute("DELETE FROM works WHERE id = ?1", [id])?;
         if affected == 0 {
             return Err(DbError::NotFound("work".into()));
         }
+        tx.commit()?;
         Ok(())
     }
 
@@ -266,8 +321,13 @@ mod tests {
         assert_eq!(w.status, "active");
         assert!(w.archived_at.is_none());
 
-        repo.update(w.id, "老年破伤风 IIT（第二轮）", "paused", Some("等待统计反馈"))
-            .unwrap();
+        repo.update(
+            w.id,
+            "老年破伤风 IIT（第二轮）",
+            "paused",
+            Some("等待统计反馈"),
+        )
+        .unwrap();
         let updated = repo.get(w.id).unwrap().unwrap();
         assert_eq!(updated.status, "paused");
         assert_eq!(updated.summary.as_deref(), Some("等待统计反馈"));
@@ -285,15 +345,111 @@ mod tests {
     }
 
     #[test]
+    fn deleting_work_preserves_actionable_items_as_temporary_and_removes_owned_context() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = WorkRepo::new(db.conn());
+        let work = repo.insert("需要删除的长期项目", "active").unwrap();
+        let now = now_unix();
+
+        db.conn()
+            .execute(
+                "INSERT INTO resume_points (work_id,current_state,next_step,remember,source,created_at) VALUES (?1,'当前状态','下一步','','manual',?2)",
+                params![work.id, now],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO work_file_refs (work_id,path,label,pinned,created_at) VALUES (?1,'C:/project/plan.docx','方案',0,?2)",
+                params![work.id, now],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (work_id,title,status,priority,created_at,updated_at) VALUES (?1,'仍需处理的任务','next','normal',?2,?2)",
+                params![work.id, now],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO waiting_items (work_id,title,waiting_for,started_at,status,created_at,updated_at) VALUES (?1,'仍需跟进的等待事项','同事',?2,'open',?2,?2)",
+                params![work.id, now],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO calendar_events (work_id,title,start_at,all_day,kind,created_at,updated_at) VALUES (?1,'仍需保留的日程',?2,1,'other',?2,?2)",
+                params![work.id, now],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO activity_events (timestamp,event_type,work_id,display_text) VALUES (?1,'work.updated',?2,'历史活动')",
+                params![now, work.id],
+            )
+            .unwrap();
+
+        repo.delete(work.id).unwrap();
+
+        assert!(repo.get(work.id).unwrap().is_none());
+        for table in ["resume_points", "work_file_refs"] {
+            let count: i64 = db
+                .conn()
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE work_id=?1"),
+                    [work.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} belongs to the deleted work");
+        }
+        for table in [
+            "tasks",
+            "waiting_items",
+            "calendar_events",
+            "activity_events",
+        ] {
+            let (count, detached): (i64, i64) = db
+                .conn()
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*), SUM(CASE WHEN work_id IS NULL THEN 1 ELSE 0 END) FROM {table}"
+                    ),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                (count, detached),
+                (1, 1),
+                "{table} should be retained without a work link"
+            );
+        }
+    }
+
+    #[test]
     fn resume_point_history_and_latest() {
         let db = Database::open_in_memory().unwrap();
         let work = seed_work(db.conn());
         let repo = ResumePointRepo::new(db.conn());
 
-        let rp1 = repo.insert(work.id, "完成方案 V2 修订", "核对统计部分", "统计由王老师负责", "manual")
+        let rp1 = repo
+            .insert(
+                work.id,
+                "完成方案 V2 修订",
+                "核对统计部分",
+                "统计由王老师负责",
+                "manual",
+            )
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let rp2 = repo.insert(work.id, "方案 V3 开始", "等待伦理材料", "伦理联系人：李老师", "manual")
+        let rp2 = repo
+            .insert(
+                work.id,
+                "方案 V3 开始",
+                "等待伦理材料",
+                "伦理联系人：李老师",
+                "manual",
+            )
             .unwrap();
 
         assert_ne!(rp1.id, rp2.id);

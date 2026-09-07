@@ -1,0 +1,73 @@
+<style>
+  .direction-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:22px}
+  .direction{border:2px solid transparent;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 10px 32px rgba(15,23,42,.08);cursor:pointer;transition:.2s ease}
+  .direction:hover{transform:translateY(-3px);box-shadow:0 18px 44px rgba(15,23,42,.14)}
+  .direction.selected{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.12),0 18px 44px rgba(15,23,42,.14)}
+  .preview{height:360px;padding:14px;display:grid;grid-template-columns:58px 1fr;gap:10px}
+  .rail{border-radius:12px;padding:10px 7px;display:flex;flex-direction:column;gap:8px;align-items:center}
+  .rail-logo{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:9px;font-weight:800}
+  .rail-dot{width:30px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:11px}
+  .rail-dot.bottom{margin-top:auto}
+  .canvas{min-width:0;display:grid;grid-template-rows:34px 94px 52px 1fr;gap:8px}
+  .bar{display:flex;align-items:center;justify-content:space-between;padding:0 4px}
+  .tiny-brand{font-size:10px;font-weight:800;letter-spacing:.08em}
+  .bar-actions{display:flex;gap:5px}.chip{height:21px;border-radius:7px;padding:0 7px;display:flex;align-items:center;font-size:8px}
+  .brief{border-radius:12px;padding:12px;display:grid;grid-template-columns:1.4fr .8fr;gap:10px;overflow:hidden}
+  .kicker{font-size:7px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}.brief h4{font-size:14px;margin:4px 0 6px}.brief p{font-size:8px;line-height:1.4;margin:0;opacity:.75}
+  .brief-list{border-radius:9px;padding:7px;font-size:8px;line-height:1.65}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.metric{border-radius:9px;padding:7px}.metric strong{display:block;font-size:15px}.metric span{font-size:7px;opacity:.7}
+  .lower{display:grid;grid-template-columns:1.25fr .9fr .9fr;gap:7px;min-height:0}.panel{border-radius:10px;padding:9px;overflow:hidden}.panel-title{display:flex;justify-content:space-between;font-size:9px;font-weight:800;margin-bottom:7px}.row{border-radius:7px;padding:7px;margin-bottom:5px;font-size:8px}.row small{display:block;margin-top:3px;opacity:.6}.translate{height:62px;border-radius:8px;padding:7px;font-size:8px;opacity:.8}
+  .direction-copy{padding:17px 18px 19px;border-top:1px solid #e5e7eb}.direction-copy h3{margin:0 0 6px;font-size:17px}.direction-copy p{margin:0;color:#64748b;font-size:13px;line-height:1.55}.tagline{display:inline-block;margin-top:11px;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:700}
+
+  .clinical .preview{background:#edf4f3}.clinical .rail{background:#163432;color:#d8ebe7}.clinical .rail-logo{background:#d6a85f;color:#163432}.clinical .rail-dot.active{background:#2c5f5a;color:white}.clinical .canvas{color:#17322f}.clinical .chip{background:#fff;color:#32534f}.clinical .brief{background:#fffdf8;box-shadow:0 5px 16px rgba(31,65,61,.08)}.clinical .kicker{color:#aa7934}.clinical .brief-list{background:#edf5f2}.clinical .metric,.clinical .panel{background:#fff}.clinical .row{background:#f3f7f6}.clinical .translate{background:#edf5f2}.clinical .tagline{background:#e6f1ee;color:#1f5a53}
+
+  .operations .preview{background:#f4f6fa}.operations .rail{background:#101828;color:#d0d5dd}.operations .rail-logo{background:#5b7cfa;color:white}.operations .rail-dot.active{background:#253a70;color:#9db4ff}.operations .canvas{color:#101828}.operations .chip{background:#e8edff;color:#2949bc}.operations .brief{background:linear-gradient(135deg,#152554,#253e8e);color:white}.operations .kicker{color:#9db4ff}.operations .brief-list{background:rgba(255,255,255,.1)}.operations .metric,.operations .panel{background:#fff;border:1px solid #e4e7ec}.operations .row{background:#f5f7ff}.operations .translate{background:#f2f4f7}.operations .tagline{background:#e8edff;color:#2949bc}
+
+  .editorial .preview{background:#f4efe7}.editorial .rail{background:#2c2925;color:#e8dfd2}.editorial .rail-logo{background:#c85f46;color:white;border-radius:50%}.editorial .rail-dot.active{background:#514b43;color:#fff}.editorial .canvas{color:#292621}.editorial .chip{background:#e9dfd1;color:#5b5147}.editorial .brief{background:#fffaf2;border-left:4px solid #c85f46}.editorial .kicker{color:#a94b37}.editorial .brief h4{font-family:Georgia,'Microsoft YaHei',serif}.editorial .brief-list{background:#eee5d9}.editorial .metric{background:transparent;border-bottom:1px solid #cfc3b2;border-radius:0}.editorial .panel{background:#fffaf2}.editorial .row{background:#f4ede4}.editorial .translate{background:#eee5d9}.editorial .tagline{background:#f3dfd8;color:#9e4634}
+
+  @media(max-width:1100px){.direction-grid{grid-template-columns:1fr}.preview{height:390px}}
+</style>
+
+<h2>选择 MSL 工作台的视觉方向</h2>
+<p class="subtitle">三套方案都保留“简报置顶、无滚动首页、AI 秘书确认”的产品结构。请点击最接近你审美的一套。</p>
+
+<div class="direction-grid">
+  <div class="direction clinical" data-choice="clinical-command" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="rail"><div class="rail-logo">MSL</div><div class="rail-dot active">⌂</div><div class="rail-dot">▣</div><div class="rail-dot">✓</div><div class="rail-dot">◷</div><div class="rail-dot bottom">⚙</div></div>
+      <div class="canvas">
+        <div class="bar"><span class="tiny-brand">TODAY · 8月20日</span><div class="bar-actions"><span class="chip">快速记录</span><span class="chip">⌘ K</span></div></div>
+        <div class="brief"><div><div class="kicker">Morning Brief</div><h4>今天，先推进三件事</h4><p>院内会材料已更新；李院长拜访等待确认；医学洞察草稿需要在 15:00 前完成。</p></div><div class="brief-list">01 完成洞察草稿<br>02 确认拜访时间<br>03 审阅 2 条 AI 建议</div></div>
+        <div class="metrics"><div class="metric"><strong>3</strong><span>进行中工作</span></div><div class="metric"><strong>2</strong><span>今日任务</span></div><div class="metric"><strong>1</strong><span>待跟进</span></div><div class="metric"><strong>2</strong><span>AI 建议</span></div></div>
+        <div class="lower"><div class="panel"><div class="panel-title"><span>今日推进</span><span>全部</span></div><div class="row">院内会医学材料<small>下一步 · 完成核心信息页</small></div><div class="row">区域专家拜访<small>11:30 · 等待确认</small></div></div><div class="panel"><div class="panel-title"><span>秘书提醒</span><span>2</span></div><div class="row">建议建立随访任务</div><div class="row">日历时间存在冲突</div></div><div class="panel"><div class="panel-title"><span>AI 翻译</span><span>书面</span></div><div class="translate">输入中文或英文…</div></div></div>
+      </div>
+    </div>
+    <div class="direction-copy"><h3>A · 临床指挥台</h3><p>深墨绿、暖白与少量金色。专业、克制、可信，适合医学事务和高频日常工作。</p><span class="tagline">推荐 · 专业且有温度</span></div>
+  </div>
+
+  <div class="direction operations" data-choice="modern-operations" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="rail"><div class="rail-logo">MSL</div><div class="rail-dot active">⌂</div><div class="rail-dot">▦</div><div class="rail-dot">✓</div><div class="rail-dot">◷</div><div class="rail-dot bottom">⚙</div></div>
+      <div class="canvas">
+        <div class="bar"><span class="tiny-brand">WORKBENCH / OVERVIEW</span><div class="bar-actions"><span class="chip">+ Capture</span><span class="chip">Search</span></div></div>
+        <div class="brief"><div><div class="kicker">AI Daily Brief</div><h4>3 priorities need attention</h4><p>Two workstreams moved yesterday. One waiting item is approaching its follow-up time.</p></div><div class="brief-list">Priority score 86<br>2 decisions pending<br>Next analysis 14:00</div></div>
+        <div class="metrics"><div class="metric"><strong>3</strong><span>ACTIVE</span></div><div class="metric"><strong>2</strong><span>TODAY</span></div><div class="metric"><strong>1</strong><span>WAITING</span></div><div class="metric"><strong>2</strong><span>REVIEW</span></div></div>
+        <div class="lower"><div class="panel"><div class="panel-title"><span>WORKSTREAMS</span><span>VIEW</span></div><div class="row">Hospital meeting deck<small>In progress · 2 files</small></div><div class="row">KOL visit plan<small>Waiting for response</small></div></div><div class="panel"><div class="panel-title"><span>QUEUE</span><span>2</span></div><div class="row">Create follow-up task</div><div class="row">Resolve calendar conflict</div></div><div class="panel"><div class="panel-title"><span>TRANSLATE</span><span>Formal</span></div><div class="translate">Paste text to translate…</div></div></div>
+      </div>
+    </div>
+    <div class="direction-copy"><h3>B · 现代运营台</h3><p>石墨黑、亮蓝与高密度模块。效率感最强，风格接近成熟 SaaS 和企业数据产品。</p><span class="tagline">信息密度高 · 科技感强</span></div>
+  </div>
+
+  <div class="direction editorial" data-choice="editorial-secretary" onclick="toggleSelect(this)">
+    <div class="preview">
+      <div class="rail"><div class="rail-logo">M</div><div class="rail-dot active">⌂</div><div class="rail-dot">▤</div><div class="rail-dot">✓</div><div class="rail-dot">◷</div><div class="rail-dot bottom">⚙</div></div>
+      <div class="canvas">
+        <div class="bar"><span class="tiny-brand">星期四，八月二十日</span><div class="bar-actions"><span class="chip">记一件事</span><span class="chip">搜索</span></div></div>
+        <div class="brief"><div><div class="kicker">Secretary's Note</div><h4>早上好，今天从这里开始</h4><p>昨天完成了院内会材料更新。今天建议先确认专家拜访，再整理医学洞察草稿。</p></div><div class="brief-list">今日约定 · 1<br>等待回复 · 1<br>需要你确认 · 2</div></div>
+        <div class="metrics"><div class="metric"><strong>3</strong><span>手头工作</span></div><div class="metric"><strong>2</strong><span>今日事项</span></div><div class="metric"><strong>1</strong><span>等待回复</span></div><div class="metric"><strong>2</strong><span>秘书建议</span></div></div>
+        <div class="lower"><div class="panel"><div class="panel-title"><span>今天的节奏</span><span>查看日历</span></div><div class="row">10:30 · 整理医学洞察</div><div class="row">14:00 · 专家拜访准备</div></div><div class="panel"><div class="panel-title"><span>等你决定</span><span>2</span></div><div class="row">是否建立随访任务？</div><div class="row">是否调整日历安排？</div></div><div class="panel"><div class="panel-title"><span>随手翻译</span><span>书面</span></div><div class="translate">在这里写下需要翻译的内容…</div></div></div>
+      </div>
+    </div>
+    <div class="direction-copy"><h3>C · 编辑式秘书桌</h3><p>暖纸色、炭黑与陶土红。阅读体验更柔和，强调陪伴感和“私人工作秘书”的气质。</p><span class="tagline">温和从容 · 个性最鲜明</span></div>
+  </div>
+</div>

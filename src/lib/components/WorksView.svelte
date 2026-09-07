@@ -1,5 +1,19 @@
 <script lang="ts">
+  import NaturalCapture from './NaturalCapture.svelte';
+  import {navigateTo} from '$lib/services/navigation';
+  let {focusId=null,resumeId=null,onprojectchange=()=>{}}:{focusId?:number|null;resumeId?:number|null;onprojectchange?:(id:number)=>void}=$props();
+  let projectCapture=$state(false);
+  import CognitionPanel from "$lib/components/CognitionPanel.svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { locale, t, translateKind, translateStatus } from "$lib/i18n";
+  import Modal from "$lib/components/ui/Modal.svelte";
+  import AppButton from "$lib/components/ui/AppButton.svelte";
+  import Icon from "$lib/components/ui/Icon.svelte";
+  import { addToast } from "$lib/stores/toast";
+  import { dataRevision, invalidate } from "$lib/stores/dataRevision";
+  import { startWorkspaceWorkDraft } from "$lib/services/api";
+  import { open as dialogOpen } from "@tauri-apps/plugin-dialog";
+  import { aiJobs } from "$lib/stores/aiJobs";
 
   type Work = {
     id: number;
@@ -91,21 +105,41 @@
     calendar: CalendarEvent[];
     recent_activity: ActivityEvent[];
   };
+  type Workspace = {id:number; name:string; root_path:string};
+  let linkedFolders = $state<Workspace[]>([]);
+  let availableFolders = $state<Workspace[]>([]);
+  let existingFolderId = $state<number|null>(null);
+  let folderBusy = $state(false);
 
   let works = $state<Work[]>([]);
   let selectedId = $state<number | null>(null);
   let detail = $state<WorkDetail | null>(null);
   let error = $state("");
   let newTitle = $state("");
+  let newSummary = $state("");
+  let showCreate = $state(false);
+  let createLoading = $state(false);
+  let createError = $state("");
+  let showEdit = $state(false);
+  let editLoading = $state(false);
+  let editTitle = $state("");
+  let editSummary = $state("");
+  let editStatus = $state("active");
+  let showDelete = $state(false);
+  let deleteLoading = $state(false);
+  let deleteError = $state("");
+  let resumeError = $state("");
 
   // 新建 Resume Point 表单
   let rpState = $state("");
   let rpNext = $state("");
   let rpRemember = $state("");
+  let quickProgress = $state("");
 
-  // 关联文件表单
-  let filePath = $state("");
-  let fileLabel = $state("");
+  let organizeBusy = $derived($aiJobs.some(job=>job.command==="start_workspace_work_draft" && job.args.workId===selectedId && job.status==="running"));
+  let organizationWorkspaceId = $state<number | null>(null);
+  let currentLocale = $derived($locale);
+  const tt = (key: Parameters<typeof t>[0], params: Record<string, string | number> = {}) => t(key, params, currentLocale);
 
   function fmtTime(ts: number | null): string {
     if (!ts) return "";
@@ -117,31 +151,96 @@
   async function loadWorks() {
     try {
       works = await invoke("list_works", { status: null });
+      if(selectedId===null){
+        let id=focusId;
+        if(resumeId){const location=await invoke<{work_id:number}>('get_entity_location',{kind:'resume_point',id:resumeId});id=location.work_id;}
+        if(id)await openDetail(id);else if(works.length)await openDetail(works[0].id);
+      }
     } catch (e) {
       error = String(e);
     }
   }
 
   async function createWork() {
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim()) {
+      createError = tt("common.required");
+      return;
+    }
+    createLoading = true;
+    createError = "";
     try {
       const w: Work = await invoke("create_work", { title: newTitle.trim(), status: "active" });
+      if (newSummary.trim()) await invoke("update_work", {id:w.id,title:w.title,status:w.status,summary:newSummary.trim()});
       newTitle = "";
+      newSummary = "";
+      showCreate = false;
+      addToast(tt("settings.saved"), "success");
+      invalidate("works", "brief");
       await loadWorks();
       await openDetail(w.id);
     } catch (e) {
+      createError = String(e);
+    } finally {
+      createLoading = false;
+    }
+  }
+
+  function openCreate() {
+    newTitle = "";
+    newSummary = "";
+    createError = "";
+    showCreate = true;
+  }
+
+  function openEdit() {
+    if (!detail) return;
+    editTitle = detail.work.title;
+    editSummary = detail.work.summary ?? "";
+    editStatus = detail.work.status;
+    showEdit = true;
+  }
+
+  async function saveEdit() {
+    if (!detail) return;
+    if (!editTitle.trim()) {
+      error = tt("common.required");
+      return;
+    }
+    editLoading = true;
+    try {
+      await invoke("update_work", { id: detail.work.id, title: editTitle.trim(), status: editStatus, summary: editSummary.trim() || null });
+      showEdit = false;
+      error = "";
+      addToast(tt("settings.saved"), "success");
+      invalidate("works", "brief");
+      await loadWorks();
+      await openDetail(detail.work.id);
+    } catch (e) {
       error = String(e);
+    } finally {
+      editLoading = false;
     }
   }
 
   async function openDetail(id: number) {
     selectedId = id;
+    onprojectchange(id);
     rpState = "";
     rpNext = "";
     rpRemember = "";
-    filePath = "";
+    quickProgress = "";
     try {
-      detail = await invoke("get_work_detail", { id });
+      const [workDetail, linkedWorkspaceIds, folders] = await Promise.all([
+        invoke<WorkDetail>("get_work_detail", { id }),
+        invoke<number[]>("list_work_workspaces", { workId: id }),
+        invoke<Workspace[]>("get_workspaces"),
+      ]);
+      if (selectedId !== id) return;
+      detail = workDetail;
+      linkedFolders = folders.filter(folder=>linkedWorkspaceIds.includes(folder.id));
+      availableFolders = folders.filter(folder=>!linkedWorkspaceIds.includes(folder.id));
+      existingFolderId = null;
+      organizationWorkspaceId = linkedWorkspaceIds[0] ?? null;
     } catch (e) {
       error = String(e);
     }
@@ -158,7 +257,7 @@
   }
 
   async function archive(w: Work) {
-    if (!confirm(`归档 Work「${w.title}」？`)) return;
+    if (!confirm(tt("work.archiveMessage", { title: w.title }))) return;
     try {
       await invoke("archive_work", { id: w.id });
       await loadWorks();
@@ -171,8 +270,41 @@
     }
   }
 
+  function openDelete() {
+    if (!detail) return;
+    deleteError = "";
+    showDelete = true;
+  }
+
+  async function deleteWork() {
+    if (!detail || deleteLoading) return;
+    const id = detail.work.id;
+    deleteLoading = true;
+    deleteError = "";
+    try {
+      await invoke("delete_work", { id });
+      showDelete = false;
+      selectedId = null;
+      detail = null;
+      linkedFolders = [];
+      availableFolders = [];
+      addToast(tt("work.deleteSuccess"), "success");
+      invalidate("works", "tasks", "waiting", "calendar", "brief", "analysis");
+      await loadWorks();
+    } catch (e) {
+      deleteError = String(e);
+    } finally {
+      deleteLoading = false;
+    }
+  }
+
   async function saveResumePoint() {
     if (!selectedId) return;
+    if (!rpState.trim() && !rpNext.trim()) {
+      resumeError = tt("common.required");
+      return;
+    }
+    resumeError = "";
     try {
       await invoke("create_resume_point", {
         workId: selectedId,
@@ -180,25 +312,67 @@
         nextStep: rpNext.trim(),
         remember: rpRemember.trim(),
       });
+      addToast(tt("settings.saved"), "success");
+      invalidate("works", "brief");
       await openDetail(selectedId);
     } catch (e) {
       error = String(e);
     }
   }
 
-  async function addFile() {
-    if (!selectedId || !filePath.trim()) return;
+  async function saveQuickProgress() {
+    if (!selectedId || !quickProgress.trim()) {
+      resumeError = tt("common.required");
+      return;
+    }
+    resumeError = "";
     try {
-      await invoke("add_work_file_ref", {
+      await invoke("create_resume_point", {
         workId: selectedId,
-        workspaceId: null,
-        path: filePath.trim(),
-        label: fileLabel.trim() || null,
+        currentState: quickProgress.trim(),
+        nextStep: detail?.latest_resume?.next_step ?? "",
+        remember: detail?.latest_resume?.remember ?? "",
       });
+      addToast(tt("work.quickProgressSaved"), "success");
+      invalidate("works", "brief");
       await openDetail(selectedId);
     } catch (e) {
       error = String(e);
     }
+  }
+
+  async function organizeWork() {
+    if (!selectedId || organizeBusy) return;
+    error = "";
+    try {
+      await startWorkspaceWorkDraft(organizationWorkspaceId, selectedId);
+      addToast(tt("work.organizeComplete"), "success");
+    } catch (e) {
+      error = String(e);
+      addToast(error, "error");
+    }
+  }
+
+  async function attachFolder() {
+    if (!selectedId || folderBusy) return;
+    const id=selectedId;
+    folderBusy=true; error="";
+    try {
+      const path=await dialogOpen({directory:true,multiple:false,title:tt("work.attachFolder")});
+      if(typeof path!=="string") return;
+      await invoke("attach_work_folder",{workId:id,path});
+      invalidate("workspace","works"); await openDetail(id);
+    } catch(e){error=String(e);} finally{folderBusy=false;}
+  }
+  async function linkExisting() {
+    if (!selectedId || !existingFolderId) return;
+    const id=selectedId;
+    try {await invoke("link_work_workspace",{workId:id,workspaceId:existingFolderId,isPrimary:linkedFolders.length===0});invalidate("workspace","works");await openDetail(id);}catch(e){error=String(e);}
+  }
+  async function detachFolder(folder:Workspace) {
+    if(!selectedId) return;
+    const id=selectedId;
+    try{await invoke("unlink_work_workspace",{workId:id,workspaceId:folder.id});invalidate("workspace","works");await openDetail(id);}catch(e){error=String(e);}
   }
 
   async function togglePin(f: WorkFileRef) {
@@ -246,33 +420,50 @@
   }
 
   $effect(() => {
+    $dataRevision.works;
     loadWorks();
   });
 </script>
 
 <div class="works">
-  <h1>Works</h1>
+  <div class="page-head">
+    <div>
+      <h1>{currentLocale==='en-US'?'Projects':'长期项目'}</h1>
+      <p class="muted">{tt("work.description")}</p>
+    </div>
+    <AppButton testid="work-create" label={tt("work.new")} onclick={() => openCreate()} />
+  </div>
   {#if error}<div class="status error">{error}</div>{/if}
+
+  <Modal bind:open={showCreate} title={tt("work.new")} onclose={() => (showCreate = false)}>
+    <form class="modal-form" onsubmit={(event) => { event.preventDefault(); createWork(); }}>
+      <label for="new-work-title">{tt("work.title")} *</label>
+      <input id="new-work-title" bind:value={newTitle} placeholder={tt("work.placeholder")} />
+      <label for="new-work-summary">{tt("work.summary")}</label><textarea id="new-work-summary" bind:value={newSummary} rows="3"></textarea>
+      {#if createError}<div class="status error" role="alert">{createError}</div>{/if}
+      <div class="modal-actions">
+        <button type="button" onclick={() => (showCreate = false)}>{tt("common.cancel")}</button>
+        <AppButton testid="work-save" type="submit" loading={createLoading} label={tt("common.create")} />
+      </div>
+    </form>
+  </Modal>
 
   <div class="layout">
     <!-- 左侧：Work 列表 -->
     <div class="list-pane">
-      <div class="create-row">
-        <input bind:value={newTitle} placeholder="新 Work 标题…" onkeydown={(e) => e.key === "Enter" && createWork()} />
-        <button onclick={createWork}>新建</button>
-      </div>
+      <div class="pane-head"><strong>{tt("work.allWorks")}</strong><span>{works.length}</span></div>
       <ul class="work-list">
         {#each works as w (w.id)}
           <li class:active={selectedId === w.id}>
             <button class="work-item" onclick={() => openDetail(w.id)}>
               <span class="wt">{w.title}</span>
-              <span class="muted">{w.status}{w.updated_at ? ` · ${fmtTime(w.updated_at)}` : ""}</span>
+              <span class="muted">{translateStatus(w.status, currentLocale)}{w.updated_at ? ` · ${fmtTime(w.updated_at)}` : ""}</span>
             </button>
           </li>
         {/each}
       </ul>
       {#if works.length === 0}
-        <div class="muted empty">（暂无 Work）</div>
+        <div class="muted empty">{tt("work.none")}</div>
       {/if}
     </div>
 
@@ -282,35 +473,46 @@
         {@const w = detail.work}
         <div class="detail-head">
           <h2>{w.title}</h2>
-          <div class="status-actions">
+          <details class="project-options"><summary>{currentLocale==='en-US'?'Project settings':'项目设置'}</summary><div class="status-actions">
             {#each ["active", "paused", "waiting", "done"] as s (s)}
-              <button class:on={w.status === s} onclick={() => changeStatus(w, s)}>{s}</button>
+              <button class:on={w.status === s} onclick={() => changeStatus(w, s)}>{translateStatus(s, currentLocale)}</button>
             {/each}
-            <button onclick={() => archive(w)}>归档</button>
+            <button onclick={openEdit}>{tt("common.edit")}</button>
+            <button onclick={() => archive(w)}>{tt("common.archive")}</button>
+            <button class="delete-action" data-testid="work-delete" onclick={openDelete}>{tt("common.delete")}</button>
           </div>
-          {#if w.summary}<div class="muted summary">{w.summary}</div>{/if}
+          </details>
+          <div class="project-goal"><span>{currentLocale==='en-US'?'Goal':'希望达成什么'}</span><p>{w.summary||(currentLocale==='en-US'?'Record a few words or let the secretary help clarify the goal.':'可以先说几句话，随后让秘书帮您理清目标。')}</p></div>
+          <div class="project-primary-actions"><button data-testid="project-ask" onclick={()=>navigateTo({view:'qa',workId:w.id})}>{currentLocale==='en-US'?'Ask about this project':'问这个项目'}</button><button data-testid="project-record" onclick={()=>projectCapture=!projectCapture}>{currentLocale==='en-US'?'Record progress':'记进展'}</button><button onclick={()=>{projectCapture=true;}}>{currentLocale==='en-US'?'Add a matter':'加一件事'}</button><AppButton testid="organize-work-with-ai" loading={organizeBusy} onclick={organizeWork}>{currentLocale==='en-US'?'Let secretary organize':'让秘书整理'}</AppButton></div>
+          {#if organizeBusy}<p role="status">{tt('work.backgroundHint')}</p>{/if}
+          {#if projectCapture}<NaturalCapture context={{workId:w.id,entityKind:'work',entityId:w.id}} label={currentLocale==='en-US'?'Record for this project':'记在这个项目下'}/>{/if}
         </div>
 
         <!-- Current State / Next Step / Remember（置顶） -->
         <section class="resume card">
-          <div class="card-title">RESUME POINT</div>
+          <div class="card-title">{currentLocale==='en-US'?'Where we are · What comes next':'目前进展 · 下一步'}</div>
+          {#if detail.waiting.some(item=>item.status==="open")}<div class="project-blockers"><b>{currentLocale==="en-US"?"Waiting on":"当前等待"}</b><span>{detail.waiting.filter(item=>item.status==="open").slice(0,3).map(item=>item.title).join(" · ")}</span></div>{/if}
           {#if detail.latest_resume}
-            <div class="rp-current"><b>上次做到：</b>{detail.latest_resume.current_state || "—"}</div>
-            <div class="rp-next"><b>下一步：</b>{detail.latest_resume.next_step || "—"}</div>
-            <div class="rp-remember"><b>需要记住：</b>{detail.latest_resume.remember || "—"}</div>
+            <div class="rp-current"><b>{tt("work.resumeCurrent")}</b>{detail.latest_resume.current_state || "—"}</div>
+            <div class="rp-next"><b>{tt("work.resumeNext")}</b>{detail.latest_resume.next_step || "—"}</div>
+            <div class="rp-remember"><b>{tt("work.resumeRemember")}</b>{detail.latest_resume.remember || "—"}</div>
           {:else}
-            <div class="muted">还没有 Resume Point，记录一下当前进度吧。</div>
+            <div class="muted">{tt("work.resumeEmpty")}</div>
           {/if}
 
-          <div class="rp-form">
-            <input bind:value={rpState} placeholder="我现在做到…" />
-            <input bind:value={rpNext} placeholder="下一步…" />
-            <input bind:value={rpRemember} placeholder="需要记住…" />
-            <button onclick={saveResumePoint}>保存 Resume Point</button>
-          </div>
+          {#if resumeError}<div class="status error" role="alert">{resumeError}</div>{/if}
+          <details class="progress-details" data-testid="work-progress-details">
+            <summary>{tt("work.progressDetails")}</summary>
+            <div class="rp-form">
+              <label>{tt("work.resumeCurrent")}<input aria-label={tt("work.resumeCurrent")} bind:value={rpState} placeholder={tt("work.resumeState")} /></label>
+              <label>{tt("work.resumeNext")}<input aria-label={tt("work.resumeNext")} bind:value={rpNext} placeholder={tt("work.resumeNextPlaceholder")} /></label>
+              <label>{tt("work.resumeRemember")}<input aria-label={tt("work.resumeRemember")} bind:value={rpRemember} placeholder={tt("work.resumeRememberPlaceholder")} /></label>
+              <button onclick={saveResumePoint}>{tt("work.saveResume")}</button>
+            </div>
+          </details>
           {#if detail.resume_history.length > 1}
             <details class="history">
-              <summary>历史 Resume Points（{detail.resume_history.length}）</summary>
+              <summary>{tt("work.resumeHistory", { count: detail.resume_history.length })}</summary>
               {#each detail.resume_history as rp (rp.id)}
                 <div class="hist-item">
                   <div class="muted">{fmtTime(rp.created_at)}</div>
@@ -321,82 +523,116 @@
           {/if}
         </section>
 
+        <Modal bind:open={showEdit} title={tt("common.edit")} onclose={() => (showEdit = false)}>
+          <form class="modal-form" onsubmit={(event) => { event.preventDefault(); saveEdit(); }}>
+            <label for="edit-work-title">{tt("work.title")} *</label><input id="edit-work-title" bind:value={editTitle} />
+          <label for="edit-work-summary">{tt("work.summary")}</label><textarea id="edit-work-summary" bind:value={editSummary} rows="3"></textarea>
+            <label for="edit-work-status">{tt("common.status")}</label><select id="edit-work-status" bind:value={editStatus}>
+              {#each ["active", "paused", "waiting", "done"] as s (s)}
+                <option value={s}>{translateStatus(s, currentLocale)}</option>
+              {/each}
+            </select>
+            <div class="modal-actions">
+              <button type="button" onclick={() => (showEdit = false)}>{tt("common.cancel")}</button>
+              <AppButton type="submit" loading={editLoading} label={tt("common.save")} />
+            </div>
+          </form>
+        </Modal>
+
+        <Modal bind:open={showDelete} title={tt("work.deleteTitle")} onclose={() => (showDelete = false)}>
+          <div class="delete-confirmation">
+            <p>{tt("work.deleteMessage", { title: w.title })}</p>
+            <div class="delete-impact">{tt("work.deleteImpact")}</div>
+            {#if deleteError}<div class="status error" role="alert">{deleteError}</div>{/if}
+            <div class="modal-actions">
+              <AppButton variant="secondary" label={tt("common.cancel")} onclick={() => (showDelete = false)} />
+              <AppButton testid="work-delete-confirm" variant="danger" loading={deleteLoading} label={tt("common.delete")} onclick={deleteWork} />
+            </div>
+          </div>
+        </Modal>
+
         <!-- WAITING -->
         <section class="card">
-          <div class="card-title">WAITING</div>
+          <div class="card-title">{tt("work.waiting")}</div>
           {#if detail.waiting.filter((x) => x.status === "open").length === 0}
-            <div class="muted">无等待事项</div>
+            <div class="muted">{tt("work.noWaiting")}</div>
           {/if}
           {#each detail.waiting as wq (wq.id)}
             {#if wq.status === "open"}
               <div class="row-item">
-                <span>{wq.title}</span>
-                <span class="muted">等待：{wq.waiting_for}{wq.follow_up_at ? ` · 跟进 ${fmtTime(wq.follow_up_at)}` : ""}</span>
-                <button onclick={() => resolveWaiting(wq)}>解决</button>
+                <button class="entity-link" onclick={()=>navigateTo('waiting',wq.id)}>{wq.title}</button>
+                <span class="muted">{tt("work.waitingDetail", { person: wq.waiting_for || "—" })}{wq.follow_up_at ? ` · ${tt("work.followUpDetail", { time: fmtTime(wq.follow_up_at) })}` : ""}</span>
+                <button onclick={() => resolveWaiting(wq)}>{tt("common.resolve")}</button>
               </div>
             {/if}
           {/each}
         </section>
 
-        <!-- FILES -->
-        <section class="card">
-          <div class="card-title">FILES</div>
-          <div class="file-form">
-            <input bind:value={filePath} placeholder="文件路径（如 C:\Work\方案V3.docx）" />
-            <input bind:value={fileLabel} placeholder="标签（可选）" />
-            <button onclick={addFile}>关联文件</button>
+        <details class="card project-assistant" data-testid="work-folder-card">
+          <summary>{currentLocale==='en-US'?'Project folders & knowledge':'项目资料与目录认知'}</summary>
+          <div class="folder-toolbar"><button data-testid="attach-work-folder" onclick={attachFolder} disabled={folderBusy}><Icon name="folder" size={17}/>{tt("work.attachFolder")}</button>
+            {#if availableFolders.length}<select data-testid="existing-work-folder" aria-label={tt("work.existingFolder")} bind:value={existingFolderId}><option value={null}>{tt("work.existingFolder")}</option>{#each availableFolders as folder(folder.id)}<option value={folder.id}>{folder.name}</option>{/each}</select><button onclick={linkExisting} disabled={!existingFolderId}>{tt("work.linkFolder")}</button>{/if}
           </div>
+          {#each linkedFolders as folder(folder.id)}<div class="linked-folder"><Icon name="folder" size={17}/><span><strong>{folder.name}</strong><small>{folder.root_path}</small></span><button onclick={()=>detachFolder(folder)}>{tt("work.unlinkFolder")}</button></div>{/each}
+          <p class="folder-note">{linkedFolders.length?tt("work.folderSafeHint"):tt("work.noFolderHint")}</p>
+          <CognitionPanel scope="work" scopeId={w.id}/>
+          {#if organizeBusy}<p role="status">{tt("work.backgroundHint")}</p>{/if}
+        </details>
+
+        <!-- FILES -->
+        <details class="card project-details">
+          <summary>{tt("work.aiFiles")}</summary>
           {#if detail.files.length === 0}
-            <div class="muted">未关联文件</div>
+            <div class="muted ai-file-empty">{tt("work.noAiFiles")}</div>
           {/if}
           {#each detail.files as f (f.id)}
             <div class="row-item" class:file-pinned={f.pinned}>
               <button class="fname" onclick={() => openFile(f.path)} title={f.path}>
                 {f.pinned ? "📌" : "📄"} {f.label || f.path.split(/[\\/]/).pop()}
               </button>
-              <button onclick={() => togglePin(f)}>{f.pinned ? "取消置顶" : "置顶"}</button>
-              <button onclick={() => removeFile(f)}>移除</button>
+              <button onclick={() => togglePin(f)}>{f.pinned ? tt("common.unpin") : tt("common.pin")}</button>
+              <button onclick={() => removeFile(f)}>{tt("common.remove")}</button>
             </div>
           {/each}
-        </section>
+        </details>
 
         <!-- CALENDAR -->
-        <section class="card">
-          <div class="card-title">CALENDAR</div>
+        <details class="card project-details">
+          <summary>{tt("work.calendar")}</summary>
           {#if detail.calendar.length === 0}
-            <div class="muted">无关键日期</div>
+            <div class="muted">{tt("work.noCalendar")}</div>
           {/if}
           {#each detail.calendar as ev (ev.id)}
             <div class="row-item">
               <span>{fmtTime(ev.start_at)}</span>
-              <span>{ev.title}</span>
-              <span class="muted">{ev.kind}</span>
+              <button class="entity-link" onclick={()=>navigateTo('calendar',ev.id)}>{ev.title}</button>
+              <span class="muted">{translateKind(ev.kind, currentLocale)}</span>
             </div>
           {/each}
-        </section>
+        </details>
 
         <!-- TASKS -->
         <section class="card">
-          <div class="card-title">TASKS</div>
+          <div class="card-title">{tt("work.tasks")}</div>
           {#if detail.tasks.length === 0}
-            <div class="muted">无任务</div>
+            <div class="muted">{tt("work.noTasks")}</div>
           {/if}
           {#each detail.tasks as t (t.id)}
             <div class="row-item" class:task-done={t.status === "done"}>
-              <span class:strike={t.status === "done"}>{t.title}</span>
-              <span class="muted">{t.status}{t.due_at ? ` · ${fmtTime(t.due_at)}` : ""}</span>
+              <button class="entity-link" class:strike={t.status === "done"} onclick={()=>navigateTo('task',t.id)}>{t.title}</button>
+              <span class="muted">{translateStatus(t.status, currentLocale)}{t.due_at ? ` · ${fmtTime(t.due_at)}` : ""}</span>
               {#if t.status !== "done"}
-                <button onclick={() => completeTask(t)}>完成</button>
+                <button onclick={() => completeTask(t)}>{tt("common.complete")}</button>
               {/if}
             </div>
           {/each}
         </section>
 
         <!-- RECENT ACTIVITY -->
-        <section class="card">
-          <div class="card-title">RECENT ACTIVITY</div>
+        <details class="card project-details">
+          <summary>{tt("work.activity")}</summary>
           {#if detail.recent_activity.length === 0}
-            <div class="muted">暂无活动</div>
+            <div class="muted">{tt("work.noActivity")}</div>
           {/if}
           {#each detail.recent_activity as a (a.id)}
             <div class="row-item">
@@ -404,19 +640,31 @@
               <span>{a.display_text}</span>
             </div>
           {/each}
-        </section>
+        </details>
       {:else}
-        <div class="muted empty">从左侧选择一个 Work，或新建一个。</div>
+        <div class="muted empty">{tt("work.selectHint")}</div>
       {/if}
     </div>
+
   </div>
 </div>
 
 <style>
+  .project-blockers{display:flex;gap:12px;flex-wrap:wrap;font-size:15px;line-height:1.7;padding:12px;border-radius:10px;background:var(--color-warning-soft);color:var(--color-text);margin-bottom:12px}.project-blockers span{overflow-wrap:anywhere;min-width:0}
+  .project-assistant{background:linear-gradient(140deg,var(--color-primary-soft),var(--color-surface));padding:22px!important}
+  .folder-note{font-size:14px;line-height:1.65;color:var(--color-muted);margin:8px 0 0}.folder-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:20px}.folder-toolbar button{display:flex;align-items:center;gap:6px;min-height:40px;font-size:14px}.folder-toolbar select{min-width:0;max-width:100%;flex:1;padding:9px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);font-size:14px}.linked-folder{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--color-border)}.linked-folder>span{flex:1;min-width:0;display:grid;gap:4px}.linked-folder small{overflow-wrap:anywhere;color:var(--color-muted);font-size:13px}.linked-folder strong{font-size:15px}.linked-folder button{flex-shrink:0}
   h1 {
     font-size: 18px;
     margin: 0 0 12px;
   }
+  .page-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .page-head p { margin: -6px 0 0; }
   .layout {
     display: flex;
     gap: 16px;
@@ -430,18 +678,15 @@
     flex: 1;
     min-width: 0;
   }
-  .create-row {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 10px;
-  }
-  .create-row input {
-    flex: 1;
-    padding: 7px 10px;
-    border: 1px solid #c8ccd1;
-    border-radius: 6px;
-    font-size: 13px;
-  }
+  .modal-form { display: grid; gap: 8px; }
+  .modal-form label { font-size: 12px; font-weight: 600; }
+  .modal-form input,
+  .modal-form textarea,
+  .modal-form select { width: 100%; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 9px 10px; background: var(--color-surface); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  .delete-confirmation { display: grid; gap: 14px; }
+  .delete-confirmation p { margin: 0; font-size: 15px; line-height: 1.65; }
+  .delete-impact { padding: 12px 14px; border: 1px solid #ead7d2; border-radius: 10px; background: var(--color-danger-soft); color: #805f5f; font-size: 13px; line-height: 1.65; }
   .work-list {
     list-style: none;
     margin: 0;
@@ -491,9 +736,6 @@
   .status-actions button.on {
     background: #dbe9f7;
     font-weight: 600;
-  }
-  .summary {
-    margin-top: 6px;
   }
   .card {
     border: 1px solid #e4e7eb;
@@ -571,22 +813,73 @@
     font-size: 12px;
     cursor: pointer;
   }
-  .file-form {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 8px;
-  }
-  .file-form input {
-    flex: 1;
-    min-width: 120px;
-    padding: 6px 8px;
-    border: 1px solid #c8ccd1;
-    border-radius: 6px;
-    font-size: 12px;
-  }
+  .ai-file-empty { padding: 14px; border: 1px dashed var(--color-border); border-radius: 10px; background: var(--color-surface-muted); font-size: 12px; line-height: 1.55; }
   .status.error {
     color: #b3261e;
     font-size: 13px;
     margin: 6px 0;
   }
+
+  /* C1 editorial workspace */
+  .works { min-width: 0; display: grid; gap: 16px; }
+  .page-head { min-height: 54px; align-items: center; margin: 0; }
+  .page-head h1 { margin: 0 0 5px; font: 500 22px var(--font-serif); letter-spacing: .01em; }
+  .page-head p { margin: 0; color: var(--color-muted); font-size: 10px; }
+  .layout { min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr) 260px; gap: 12px; align-items: stretch; overflow: hidden; }
+  .list-pane,.detail-pane{ min-width: 0; min-height: 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-sm); }
+  .list-pane { width: auto; display: flex; flex-direction: column; align-self: start; overflow: hidden; }
+  .pane-head { height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; border-bottom: 1px solid #e5ebed; }
+  .pane-head strong { font-size: 11px; font-weight: 650; }
+  .pane-head span { min-width: 22px; height: 22px; display: grid; place-items: center; border-radius: 8px; background: var(--color-primary-soft); color: var(--color-primary); font-size: 9px; font-weight: 700; }
+  .work-list { flex: 1; min-height: 0; max-height: 650px; padding: 8px; overflow: auto; }
+  .work-list li { margin: 2px 0; }
+  .work-list li.active .work-item { background: var(--color-primary-soft); border-color: transparent; }
+  .work-item { min-height: 52px; padding: 9px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; gap: 5px; }
+  .work-item:hover { background: var(--color-surface-muted); }
+  .wt { font-size: 11px; font-weight: 650; }
+  .work-item .muted { font-size: 8px; color: #89989e; }
+  .detail-pane { padding: 15px 16px; overflow: auto; }
+  .detail-head { padding: 3px 2px 14px; border-bottom: 1px solid #e6ecee; margin-bottom: 12px; }
+  .detail-head h2 { margin: 0 0 7px; font: 500 19px var(--font-serif); }
+  .status-actions { gap: 5px; }
+  .status-actions button, .row-item button, .rp-form button, .modal-actions button { min-height: 29px; padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-raised); color: #667b84; font-size: 9px; }
+  .status-actions button.on { background: var(--color-primary-soft); border-color: #d2dfe3; color: #546e79; font-weight: 650; }
+  .status-actions button.delete-action { border-color: #e4cccc; color: var(--color-danger); }
+  .status-actions button.delete-action:hover { background: var(--color-danger-soft); }
+  .card { margin-bottom: 10px; padding: 12px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); }
+  .resume { background: linear-gradient(115deg, #f8fafa, #eef3f4); border-color: #d5e0e4; }
+  .card-title { color: #566d77; font-size: 10px; letter-spacing: .04em; }
+  .rp-current, .rp-next, .rp-remember { font-size: 10px; line-height: 1.5; }
+  .rp-form { display: grid; grid-template-columns: repeat(3, minmax(110px, 1fr)) auto; gap: 6px; }
+  .rp-form label { color: var(--color-muted); font-size: 8px; }
+  .rp-form input { width: 100%; min-width: 0; margin-top: 4px; padding: 7px; border-color: var(--color-border); border-radius: 8px; background: #fbfcfc; font-size: 9px; }.progress-details{margin-top:10px}.progress-details summary{width:max-content;color:#71858d;font-size:10px;cursor:pointer}.progress-details[open] summary{margin-bottom:8px}
+  .row-item { min-height: 34px; padding: 6px 0; border-bottom: 1px solid #edf1f2; font-size: 10px; }
+  .row-item:last-child { border-bottom: 0; }
+  .row-item .muted { font-size: 9px; }
+  .row-item .fname { color: #5c7884; font-size: 10px; }
+  .modal-form input, .modal-form textarea, .modal-form select { border-color: var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-raised); }
+  @container (max-width: 1120px) { .works{height:auto}.layout{grid-template-columns:220px minmax(0,1fr);overflow:visible}.rp-form{grid-template-columns:1fr 1fr}.rp-form button{align-self:end} }
+  @container (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); }.list-pane{max-height:280px} }
+  @container (max-width: 560px) { .works{height:auto}.layout{grid-template-columns:1fr;overflow:visible}.list-pane{max-height:260px}.detail-pane{overflow:visible}.rp-form{grid-template-columns:1fr} }
+  /* Readable compact work detail typography. */
+  .page-head p{font-size:12px}
+  .pane-head strong,.wt{font-size:13px}.pane-head span{font-size:11px}
+  .work-item .muted,.rp-form label{font-size:10px}
+  .status-actions button,.row-item button,.rp-form button,.modal-actions button,.rp-form input{font-size:11px}
+  .card-title,.rp-current,.rp-next,.rp-remember,.row-item,.row-item .fname{font-size:12px}.row-item .muted{font-size:11px}
+  .layout { overflow: visible; }
+  .detail-pane { overflow: visible; }
+  .detail-head h2,.wt{ overflow-wrap: anywhere; }
+  .row-item { flex-wrap: wrap; gap: 8px 12px; align-items: start; line-height: 1.6; }
+  .row-item>span { min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; }
+  .row-item button { flex-shrink: 0; }
+  .row-item .fname { min-width: 0; flex: 1 1 200px; overflow-wrap: anywhere; }
+  .page-head,.status-actions{ flex-wrap: wrap; }
+  .rp-current,.rp-next,.rp-remember{ font-size: 13px; line-height: 1.65; }
+  .pane-head { height: auto; min-height: 48px; padding-block: 10px; gap: 12px; }
+  .pane-head span { flex-shrink: 0; }
+  @container (max-width: 560px) { .row-item>span { flex-basis: 100%; } .rp-form { grid-template-columns: minmax(0,1fr); } }
+
+  .layout{display:grid;grid-template-columns:230px minmax(0,1fr);align-items:start;gap:22px}.detail-pane{display:flex;flex-direction:column;min-width:0;gap:18px;overflow:visible}.detail-head{display:flex;flex-wrap:wrap;align-items:start;gap:14px}.detail-head h2{flex:1 1 250px;font-size:27px;line-height:1.4}.project-options{margin-left:auto}.project-options summary,.project-details>summary,.project-assistant>summary{cursor:pointer;font-size:15px;font-weight:600;line-height:1.7;padding:5px 0}.status-actions{padding:12px 0;display:flex;flex-wrap:wrap;gap:8px}.project-goal{flex-basis:100%;font-size:15px;line-height:1.65}.project-goal span{color:var(--color-muted);font-size:13px}.project-goal p{margin:6px 0}.project-primary-actions{display:flex;flex-wrap:wrap;gap:9px;width:100%}.project-primary-actions button{padding:10px 15px;font-size:14px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface)}.detail-head :global(.natural-capture){width:100%}.entity-link{text-align:left;border:0!important;background:transparent!important;color:var(--color-primary);font-size:15px;text-decoration:underline;text-underline-offset:4px}.resume{padding:22px;font-size:15px;line-height:1.7}.project-assistant>div{margin-top:12px}.list-pane{max-height:none;overflow:visible}.work-list{max-height:none;overflow:visible}
+  @container(max-width:850px){.layout{grid-template-columns:1fr}.work-list{display:flex;flex-wrap:wrap;gap:8px}.work-list li{flex:1 1 180px}.project-options{margin-left:0}}
 </style>

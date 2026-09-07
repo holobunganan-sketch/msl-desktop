@@ -18,7 +18,7 @@ CDP_PORT = 9222
 def connect():
     pages = json.load(urllib.request.urlopen(f"http://localhost:{CDP_PORT}/json"))
     page = next(p for p in pages if p.get("type") == "page")
-    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=20)
+    ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=20, suppress_origin=True)
     mid = [0]
 
     def invoke(cmd, args):
