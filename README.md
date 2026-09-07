@@ -1,100 +1,154 @@
 # MSL Desktop
 
-面向 MSL（医学联络官）日常工作的**本地工作管理桌面**（Windows）。
+MSL Desktop 是一个本地优先的 Windows 工作台，服务于需要长期跟进项目、处理大量零散信息的人。它把项目、事项、日历、等待、收件箱、关联目录和阶段性回顾放在同一套工作流里，让用户少花时间维护记录，多把注意力留给实际工作。
 
-帮助用户在工作被打断后快速恢复上下文：知道自己正在做什么、上次做到哪里、
-下一步是什么、有什么正在等待、今天有什么不能忘。真实工作文件保留在原
-Windows 路径，软件只管理结构化数据与文件引用。
+应用默认使用中文，支持切换英文。当前版本为 `0.3.2`。
 
-> 本地 Alpha 版（v0.1.0）。Local-first，无云端、无远程仓库。界面默认中文，可切换英文。
+## 这套工作台解决什么
+
+日常工作很少按表单发生：一段对话、一个文件夹里的新资料、一条临时记录、一次需要等待的反馈，都可能影响正在推进的项目。MSL Desktop 提供一个先收集、再整理、持续推进的入口。
+
+日常使用可以很简单：记下一件事，查看秘书建议，确认后继续做手头的工作。需要深入整理时，再进入项目、事项、审阅或回顾页面。
+
+## 设计原则
+
+### 让记录跟着工作走
+
+系统将收件箱作为信息入口。用户可以先记录内容，暂时不必决定它属于哪个项目、是否要安排日历，或是否应当成为等待事项。后续由 AI 秘书给出可编辑建议，用户确认后写入正式记录。
+
+### 项目是长期工作的容器
+
+“工作”用于承载长期项目。一个项目可关联任务计划、等待事项、日历安排、进展记录和多个工作目录。任务、等待事项和日历安排也可以独立存在，用于处理临时事务。
+
+### AI 参与整理，用户保留决定权
+
+秘书可以分析工作目录变化与工作台记录，提出归类、推进、时间安排和后续行动建议。建议会先进入“需要您决定”和“AI 审阅”，用户可修改、确认、暂缓或保留在收件箱。未经确认的建议不会改写正式项目和事项。
+
+### 文件保留在原处
+
+应用可以读取用户绑定目录中受支持文件的内容，用于索引、分析和问答；它不创建、删除或修改工作区文件。每个项目和工作目录可以生成可更新的项目认知文件，帮助模型快速理解当前背景，再按需要读取更细的资料。
 
 ## 主要功能
 
-- **Dashboard**：Continue（最近进行中的 Work + Resume Point）、今日任务/日历/
-  截止、需跟进 Waiting、未处理 Inbox、最近文件变化和 Brief 汇总；指标卡可直接导航
-- **Workspace**：绑定真实 Windows 工作目录、惰性文件浏览、打开/Reveal、
-  文件监听（事件驱动，含 Office 临时文件过滤与 debounce）→ Activity
-- **Works**：工作上下文容器 + Resume Point（上次做到 / 下一步 / 需要记住，
-  无百分比）、相关文件（置顶/打开）、任务/等待/日历/最近活动聚合
-- **Plan / Waiting / Inbox / Calendar**：可创建、编辑、完成/解决、删除的任务与排程、
-  等待跟进、快速捕获（Quick Capture，含全局热键 Ctrl+Shift+Space）、本地日历（Day/Week）
-- **Search**：Ctrl+K 跨 Works/Files/Tasks/Calendar/Inbox/Resume/Activity 分组搜索
-- **Brief（本地优先）**：按昨天、过去 7 天或自定义范围汇总 Work、Resume、Task、
-  Waiting、Calendar、Inbox、Activity 与文件元数据变化；无 Provider/Key 或请求失败时
-  使用确定性的本地摘要，AI 只负责增强表达
-- **AI（可选）**：DeepSeek / OpenAI-compatible Provider（API Key 只存
-  Windows 凭据管理器，SQLite 仅保存 credential_ref）；未配置时 App 完整可用
-- **AI 秘书**：DeepSeek 与 OpenCode Go 固定模板；自定义 Provider 可选择 Chat
-  Completions、Responses 或 Anthropic Messages。六类任务可分别绑定模型，所有 AI
-  建议先进入可编辑的 AI 审阅队列，确认后才写入 Work/Task/Waiting/Calendar/Inbox/Resume。
-- **工作目录智能**：绑定目录后增量读取受支持的 DOCX、文本和 PDF 文本层文件；正文只进入
-  LOCALAPPDATA 下可清理的提取缓存，不写入 SQLite。扫描版 PDF 会标记为需要 OCR。
-- **调度、翻译与存储治理**：可设置每 30–1440 分钟周期分析及每日 06:00 分析；首页提供
-  中英自动检测翻译（书面/口语）；设置中可预览并确认缓存清理、压缩活动历史和调用 Tauri
-  WebView 清理 API，正式数据、源文件、凭据、已确认建议与保留简报始终受保护。
-- **常驻体验**：托盘常驻（窗口关闭不退出）、提醒通知、可选开机自启动
-  （后台模式）、窗口状态恢复、单实例
+### 今日工作台
 
-## 技术栈
+- 每日简报汇总近期项目变化、待推进事项、等待反馈、日历安排和收件箱线索。
+- “需要您决定”集中展示最近一次分析中最值得处理的建议。
+- “继续推进工作”帮助恢复上次的项目状态和下一步。
+- 首页按重点组织信息，辅助内容保持紧凑，适合在一个桌面窗口内快速浏览。
 
-| 层 | 技术 |
+### 项目与工作目录
+
+- 创建、编辑、归档或删除长期项目。
+- 为项目关联一个或多个工作目录；目录解除关联后会同步从工作目录页移除，磁盘上的文件保持原样。
+- 浏览目录、查看近期变化、打开或在资源管理器中定位文件。
+- 读取 DOCX、文本和带文本层的 PDF，用于索引与项目理解；扫描版 PDF 会提示需要 OCR。
+- 为总体目录和项目目录维护项目认知 Markdown，记录范围、状态、事项、关联目录和资料入口。
+
+### 事项如何流动
+
+- 任务计划：需要主动完成的下一步行动，可关联项目，也可作为临时事项存在。
+- 等待事项：依赖外部反馈、审批或他人动作的事项，可设置跟进节点。
+- 日历：承接确定的安排，也可接收用户确认后的时间建议。
+- 收件箱：保存还没有整理的信息；其中任意条目均可被整理为项目细项、任务、等待事项或日历安排。
+- AI 审阅：保留近期建议和处理记录，支持进一步编辑归属、时间、内容与处理方式。
+
+### AI 秘书与后台任务
+
+- 支持手动分析、周期分析和每日固定时间分析；默认周期和执行时间均可调整。
+- 结合项目、任务、等待事项、日历、收件箱、进展记录和目录变化生成建议与简报。
+- 分析、项目整理、翻译、问答、周报和月报在后台执行。切换页面不会中断已提交的任务。
+- 后台任务入口显示运行状态、结果和可重试的失败任务。
+- 系统会根据用户对建议的确认、修改和拒绝保留分类偏好，改善后续归类建议。
+
+### 周报与月报
+
+- 周报默认回顾过去七天，以序号列表呈现项目进展、临时工作、阻碍与下一步。
+- 支持指定起止日期生成额外周报，并可设置每周自动生成时间。
+- 月报回顾上一个自然月，参考周期内的工作台变动和相关周报，梳理跨项目进展与遗留问题。
+- 历史周报可清理，生成中的报告和月报会被保留。
+
+### 工作台问答
+
+- 以连续对话方式询问整个工作台：项目状态、未完成事项、等待中的问题、近期变化或已记录的专家信息。
+- 使用 `@项目名称` 聚焦一个或多个项目，同时检索相关的 SQLite 记录、目录认知和资料片段。
+- 回答显示可追溯的来源与资料缺口；问答界面只读取信息，不会直接修改业务记录。
+- 问答模型可以独立选择，不影响秘书、翻译或报告使用的模型。
+
+### 专家与洞察
+
+- 管理专家的姓名、机构、科室、专业领域、交流记录和关联项目。
+- 将临床实践障碍、证据需求、研究合作机会等信息沉淀为可追溯的洞察。
+- 支持跨专家分析，帮助发现共性、差异和后续工作线索。
+
+### 翻译与模型配置
+
+- 独立的 AI 翻译页面，自动识别中英文方向，提供书面与口语两种风格。
+- 提供 DeepSeek、OpenCode Go 固定模板，支持 Muse Spark 1.2 Contributor 的专用配置，以及自定义 Provider。
+- 可为秘书分析、翻译、周报、月报、问答和专家洞察分别选择模型。
+- API Key 通过 Windows 凭据管理器保存；SQLite 只记录凭据引用。
+
+### 外观与存储治理
+
+- 支持中文/英文、主题色和字号调整。
+- 提供缓存清理预览，用于处理可再生成的提取缓存、活动历史和 WebView 缓存。
+- 清理过程保护正式数据库、工作区文件、凭据、已确认建议、待确认建议和保留的简报。
+- 支持托盘常驻、通知、可选开机自启动、窗口状态恢复和单实例运行。
+
+## 本地数据与权限边界
+
+MSL Desktop 的业务数据保存在本地 SQLite 数据库中，使用迁移与 WAL 模式管理数据变更。工作文件仍留在用户指定的 Windows 路径。
+
+绑定目录后，应用仅处理目录结构、文件元数据和用户允许读取的文件内容。文档正文的提取结果写入可治理的本地缓存，不写入业务数据库。真实 API Key 不会写入 SQLite，也不会出现在应用日志或测试报告中。
+
+## 技术构成
+
+| 部分 | 使用技术 |
 | --- | --- |
-| 桌面框架 | Tauri 2（Rust 常驻核心，Windows 11 第一目标） |
-| 前端 | Svelte 5 + TypeScript + Vite (SvelteKit, adapter-static) |
-| 数据 | SQLite（rusqlite，WAL，显式 migration） |
-| 文件监听 | notify（ReadDirectoryChangesW） |
-| AI | reqwest（OpenAI-compatible /chat/completions）+ keyring |
+| 桌面端 | Tauri 2、Rust、Windows 11 |
+| 界面 | Svelte 5、TypeScript、Vite、SvelteKit |
+| 本地数据 | SQLite、rusqlite、WAL、显式迁移 |
+| 文件监听 | notify / ReadDirectoryChangesW |
+| 模型调用 | reqwest、Provider 路由、Windows Credential Manager |
 
-## 开发
+## 本地开发
 
-环境要求：Rust（MSVC toolchain）、Node.js、pnpm、WebView2 Runtime。
+环境要求：Node.js、pnpm、Rust（MSVC toolchain）和 WebView2 Runtime。
 
 ```bash
 pnpm install
-pnpm tauri dev        # 开发模式
+pnpm tauri dev
 ```
 
-质量检查：
+常用检查：
 
 ```bash
-pnpm check            # 前端 TypeScript/Svelte 检查
-cargo fmt --check     # Rust 格式检查
-  cargo test            # Rust 单元测试
-pnpm build            # 前端生产构建
+pnpm check
+cargo fmt --check
+cargo test
+pnpm build
 ```
 
-## 构建安装包
+## 构建 Windows 安装包
 
 ```bash
-pnpm tauri build      # 生成 NSIS setup.exe
+pnpm tauri build
 ```
 
-产物：
+构建完成后可在以下位置找到主要产物：
 
-- `src-tauri\target\release\msl-desktop.exe`
-- `src-tauri\target\release\bundle\nsis\msl-desktop_0.1.0_x64-setup.exe`
+- `src-tauri\\target\\release\\msl-desktop.exe`
+- `src-tauri\\target\\release\\bundle\\nsis\\msl-desktop_0.3.2_x64-setup.exe`
 
-安装为当前用户（`%LOCALAPPDATA%\msl-desktop`），卸载保留用户数据库
-（`%APPDATA%\MSLDesktop`）。
+安装程序默认安装到当前用户目录。卸载应用时会保留用户数据库，避免工作记录丢失。
 
-## 冒烟与性能
+## 测试与隔离运行
+
+项目中的冒烟和发布验证脚本使用隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP` 与 `TMP` 目录，避免触及正式数据库、缓存和真实工作目录。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\smoke-test.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\measure-memory.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\defender-scan.ps1   # 需管理员
-$env:MSL_CDP_PORT='9333'; python .\scripts\ui-smoke-cdp.py
-$env:MSL_CDP_PORT='9342'; python .\scripts\release-functional-cdp.py
+powershell -ExecutionPolicy Bypass -File .\\scripts\\smoke-test.ps1
+$env:MSL_CDP_PORT='9333'; python .\\scripts\\ui-smoke-cdp.py
 ```
 
-隔离冒烟同时设置 APPDATA、LOCALAPPDATA、TEMP、TMP 到
-`.test-runtime\luna-ai-secretary`，不会修改正式数据库；完整执行证据见
-`docs/luna-ai-secretary-iteration/EXECUTION_REPORT.md`，截图在该目录下的隔离 artifacts。
-
-## 已知限制
-
-- 未签名（SmartScreen"未知发布者"提示，属本地构建预期）；
-- 真实 DeepSeek 成功调用需用户提供 API Key；无 Key 时使用本地 Brief fallback；
-- 文件监听只读取路径、大小、修改时间等元数据；用户主动绑定目录并运行文档索引时，
-  仅对 DOCX、文本和 PDF 文本层读取正文，提取物进入可治理缓存并受大小/数量预算约束；
-- 未签名（SmartScreen“未知发布者”提示，属本地构建预期）。
+更多迭代记录、验收结果与架构说明见 `docs/` 目录。
