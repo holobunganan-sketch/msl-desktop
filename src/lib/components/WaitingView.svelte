@@ -1,4 +1,6 @@
 <script lang="ts">
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { locale, t } from "$lib/i18n";
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -8,6 +10,11 @@
   import ProjectScope from "./ProjectScope.svelte";
   import ProjectFilter from "./ProjectFilter.svelte";
   import ProjectBadge from "./ProjectBadge.svelte";
+  import ListPager from './ui/ListPager.svelte';
+  import {paginate} from '$lib/services/pagination';
+  let listPage=$state(1);
+  const waitingPage=$derived(paginate(sorted(),listPage));
+  $effect(()=>{projectFilter;mode;listPage=1;});
   let projectFilter=$state("all");
 
   import {onMount} from 'svelte';
@@ -173,8 +180,9 @@
     <h1>{currentLocale==='en-US'?(mode==='done'?'Resolved waiting':'Waiting for a response'):(mode==='done'?'已结束的等待':'正在等回应的事')}</h1>
     <AppButton testid="waiting-create" label={tt("common.create")} onclick={() => openNew()} />
   </div>
-  {#if error}<div class="status error">{error}</div>{/if}
+  <div class="status error stable-feedback"><StatusLine message={error}/></div>
   <ProjectFilter {works} bind:value={projectFilter}/>
+  <ListPager view={waitingPage} onchange={(page)=>listPage=page} testid="waiting-pagination"/>
 
   <Modal bind:open={showForm} title={editingId === null ? tt("common.create") : tt("common.edit")} onclose={() => (showForm = false)}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); create(); }}>
@@ -189,6 +197,7 @@
       <input id="waiting-follow" type="datetime-local" bind:value={newFollowUp} />
       <label for="waiting-notes">{tt("work.summary")}</label>
       <textarea id="waiting-notes" rows="3" bind:value={formNotes}></textarea>
+      <StatusLine message={error}/>
       <div class="modal-actions">
         <button type="button" onclick={() => (showForm = false)}>{tt("common.cancel")}</button>
         <AppButton testid="waiting-save" type="submit" loading={saving} label={editingId === null ? tt("common.create") : tt("common.save")} />
@@ -197,8 +206,9 @@
   </Modal>
 
   <Modal open={progressWaiting!==null} title={currentLocale==='en-US'?'Record an update':'收到回应了吗？'} onclose={()=>progressWaiting=null}>{#if progressWaiting}<NaturalCapture context={{workId:progressWaiting.work_id,entityKind:'waiting',entityId:progressWaiting.id}} label={progressWaiting.title}/>{/if}</Modal>
+  {#if sorted().length}
   <ul class="w-list">
-    {#each sorted() as w (w.id)}
+    {#each waitingPage.items as w (w.id)}
       <li class:resolved={w.status === "resolved"} class:overdue={needsFollowUp(w)}>
         <div class="waiting-copy"><strong class="title">{w.title}</strong><div class="waiting-meta">
         <ProjectBadge {works} workId={w.work_id}/>
@@ -218,8 +228,8 @@
       </li>
     {/each}
   </ul>
-  {#if sorted().length === 0}
-    <div class="muted empty">{tt("common.empty")}</div>
+  {:else}
+    <EmptyState compact framed title={tt("common.empty")}/>
   {/if}
 </div>
 
@@ -290,9 +300,6 @@
     color: var(--color-danger);
     font-size: 13px;
     margin: 6px 0;
-  }
-  .empty {
-    padding: 12px 0;
   }
   @container (max-width: 720px) {
     .w-list li { grid-template-columns: minmax(0,1fr); }

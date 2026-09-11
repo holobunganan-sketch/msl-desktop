@@ -198,6 +198,8 @@ pub fn build_report_request(
         } else {
             4000
         }),
+        output_format: crate::ai::output::OutputFormat::PromptJson,
+        budget: Default::default(),
     })
 }
 

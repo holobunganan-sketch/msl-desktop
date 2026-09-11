@@ -6,6 +6,7 @@
 
 pub mod activity;
 pub mod ai;
+pub mod ai_documents;
 pub mod brief;
 pub mod calendar;
 pub mod documents;
@@ -18,6 +19,7 @@ pub mod memory;
 pub mod provider;
 pub mod qa;
 pub mod reports;
+pub mod source_lifecycle;
 pub mod task;
 pub mod work;
 pub mod workspace;
@@ -35,6 +37,13 @@ pub const DB_FILE_NAME: &str = "msl-desktop.db";
 /// 应用数据目录名。
 pub const APP_DATA_DIR_NAME: &str = "MSLDesktop";
 
+pub fn latest_schema_version() -> i64 {
+    migrations::MIGRATIONS
+        .last()
+        .map(|m| m.version)
+        .unwrap_or(0)
+}
+
 /// 当前 Unix 时间戳（秒）。数据层统一使用 UTC 秒。
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
@@ -43,13 +52,18 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// 应用数据目录：`%APPDATA%\MSLDesktop`（无 APPDATA 时回退到本地目录）。
+pub fn resolve_data_directory(appdata: Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    let base = appdata
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or("Windows 用户数据目录不可用，已停止初始化，避免在程序目录创建个人数据")?;
+    Ok(base.join(APP_DATA_DIR_NAME))
+}
+
+/// Application data is always outside the executable's working directory.
 pub fn default_app_data_dir() -> PathBuf {
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        PathBuf::from(appdata).join(APP_DATA_DIR_NAME)
-    } else {
-        PathBuf::from(".").join("msl-desktop-data")
-    }
+    resolve_data_directory(std::env::var_os("APPDATA"))
+        .expect("User data path must be validated at startup")
 }
 
 /// 默认数据库路径：`%APPDATA%\MSLDesktop\msl-desktop.db`。
@@ -210,7 +224,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 21);
 
         // 业务表包含 Provider catalog、文档智能、AI secretary 与周期报告。
         let table_count: i64 = db
@@ -221,7 +235,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(table_count, 40);
+        assert_eq!(table_count, 64); // Includes durable edit capture and FTS tables.
 
         // WAL 已启用
         let journal: String = db
@@ -288,13 +302,13 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 21);
         // Each registered migration is recorded exactly once.
         let count: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 15);
+        assert_eq!(count, 21);
     }
 
     #[test]
@@ -311,7 +325,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM provider_settings", [], |r| r
                 .get::<_, i64>(0))
@@ -368,7 +382,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
         assert_eq!(
             conn.query_row(
                 "SELECT template_kind FROM provider_settings WHERE id = 1",
@@ -450,7 +464,7 @@ mod tests {
              INSERT INTO works (title, status, created_at, updated_at) VALUES ('work', 'active', 0, 0);",
         ).unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
         for table in ["work_workspace_links", "document_index", "cache_entries"] {
             assert_eq!(
                 conn.query_row(
@@ -497,7 +511,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0); INSERT INTO daily_briefs (brief_date,generated_at,content) VALUES ('2026-08-14',0,'kept brief');").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
         let schedule: (i64, i64, i64, i64) = conn.query_row("SELECT enabled, interval_minutes, daily_hour, daily_minute FROM analysis_schedule_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(schedule, (1, 180, 6, 0));
         assert_eq!(
@@ -527,7 +541,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            15
+            21
         );
     }
 
@@ -552,7 +566,7 @@ mod tests {
             .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0),(5,'ai_secretary',0); INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES ('cache_limit_bytes','123',1);").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
         assert_eq!(
             conn.query_row(
                 "SELECT value FROM app_settings WHERE key='cache_limit_bytes'",
@@ -593,7 +607,7 @@ mod tests {
 
         migrations::run(&mut conn).unwrap();
 
-        assert_eq!(migrations::current_version(&conn).unwrap(), 15);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
         assert_eq!(
             conn.query_row(
                 "SELECT kind || '|' || suggested_kind FROM ai_proposals WHERE dedupe_key='kept-proposal'",
@@ -664,7 +678,7 @@ mod tests {
         });
         drop(before);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 15);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 21);
         let counts_after = [
             "works",
             "tasks",
@@ -680,6 +694,18 @@ mod tests {
                 .unwrap()
         });
         assert_eq!(counts_after, counts_before);
+        assert_eq!(
+            db.conn()
+                .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert!(knowledge::rows(db.conn(), "PRAGMA foreign_key_check", &[])
+            .unwrap()
+            .is_empty());
+        drop(db);
+        let db = Database::open(&canonical).unwrap();
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 21);
         for table in ["reports", "report_schedule_state"] {
             assert_eq!(
                 db.conn()

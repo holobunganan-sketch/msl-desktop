@@ -143,14 +143,22 @@ pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePa
         ("analysis","SELECT id,trigger AS title,status,summary,period_start,period_end,created_at FROM analysis_runs","generated_summary"),
         ("kol_insight","SELECT * FROM kol_insights","reviewed_hypothesis"),
     ];
+    let materials = crate::materials::evidence(db, None, &scope, query)?;
+    let material_count = crate::materials::evidence_count(db, None, &scope)?;
+    pack.omitted += material_count.saturating_sub(materials.len());
+    pack.counts.insert("kol_material".into(), material_count);
+    pack.sources.extend(materials);
     for (kind, sql, trust) in global_queries {
         let mut items = rows(db.conn(), sql, &[])?;
+        if kind == "kol_insight" {
+            items.retain(|r| super::source_lifecycle::usable_insight(db.conn(), r));
+        }
         if !scope.is_empty() {
             if kind == "kol_insight" {
                 let note_ids = pack
                     .sources
                     .iter()
-                    .filter(|s| s.kind == "kol_note")
+                    .filter(|s| s.kind == "kol_note" || s.kind == "kol_material")
                     .map(|s| s.id.as_str())
                     .collect::<std::collections::HashSet<_>>();
                 items.retain(|r| {
@@ -174,6 +182,7 @@ pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePa
             .extend(items.iter().map(|r| evidence(kind, r, trust, query)));
     }
     add_documents(db, &scope_json, query, &mut pack)?;
+
     // Counts are from the complete scope before ranking, never from the sample.
     let stats = serde_json::json!({"id":0,"title":"范围统计 / Scope counts","as_of":pack.as_of,"scope_ids":scope,"counts":pack.counts});
     pack.sources.sort_by(|a, b| {

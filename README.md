@@ -2,7 +2,19 @@
 
 MSL Desktop 是一个本地优先的 Windows 工作台，服务于需要长期跟进项目、处理大量零散信息的人。它把项目、事项、日历、等待、收件箱、关联目录和阶段性回顾放在同一套工作流里，让用户少花时间维护记录，多把注意力留给实际工作。
 
-应用默认使用中文，支持切换英文。当前版本为 `0.3.2`。
+应用默认使用中文，支持切换英文。当前源码版本为 `0.3.8`。
+
+## 数据独立与备份
+
+源码、安装程序和个人数据分开保存。正式记录存放在 Windows 用户数据目录 `%APPDATA%\MSLDesktop`，缓存与临时数据存放在 `%LOCALAPPDATA%\MSLDesktop`。安装包与 GitHub 仓库不应包含个人数据库或资料。
+
+在 **设置 → 数据与备份** 中，可以选择本地文件夹、云盘客户端的同步文件夹或可访问的网络目录，手动或定时生成 `.mslbackup` 备份包，无需接入收费云服务。应用负责写入并校验备份，云端上传由对应客户端完成。自动备份需要应用或托盘保持运行。
+
+备份包含工作台记录、专家上传资料、问答、报告、记忆及设置。源工作文件继续保留在原来的工作目录，备份只保留其关联记录；缓存和 Windows 凭据不进入备份包。备份包未加密，请存放在私有文件夹。
+
+恢复前会检查备份完整性，并要求输入确认文字；数据切换在重启时执行，保留恢复前副本。更换电脑后需重新配置 API Key，核对工作目录，并按需重新开启分析与备份。详见 [备份与恢复指南](docs/backup-and-restore.md)。
+
+推送源码前运行 `pnpm check:publish` 检查待发布文件和本地可达历史中的数据文件路径，并人工核对文档、日志与宣传图片。路径检查不等同于完整隐私审计；已推送的历史数据无法通过 `.gitignore` 撤回。
 
 ## 这套工作台解决什么
 
@@ -99,7 +111,7 @@ MSL Desktop 是一个本地优先的 Windows 工作台，服务于需要长期�
 
 MSL Desktop 的业务数据保存在本地 SQLite 数据库中，使用迁移与 WAL 模式管理数据变更。工作文件仍留在用户指定的 Windows 路径。
 
-绑定目录后，应用仅处理目录结构、文件元数据和用户允许读取的文件内容。文档正文的提取结果写入可治理的本地缓存，不写入业务数据库。真实 API Key 不会写入 SQLite，也不会出现在应用日志或测试报告中。
+绑定目录后，应用仅处理目录结构、文件元数据和用户允许读取的文件内容。工作目录的提取结果进入本机可重建缓存；主动上传的专家资料属于正式附件，其读取片段、来源位置和分析结果会保存在应用数据目录与 SQLite 中。API Key 由 Windows 凭据管理器保管，SQLite 保存凭据引用。
 
 ## 技术构成
 
@@ -124,8 +136,8 @@ pnpm tauri dev
 
 ```bash
 pnpm check
-cargo fmt --check
-cargo test
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 pnpm build
 ```
 
@@ -138,17 +150,22 @@ pnpm tauri build
 构建完成后可在以下位置找到主要产物：
 
 - `src-tauri\\target\\release\\msl-desktop.exe`
-- `src-tauri\\target\\release\\bundle\\nsis\\msl-desktop_0.3.2_x64-setup.exe`
+- `src-tauri\\target\\release\\bundle\\nsis\\msl-desktop_0.3.8_x64-setup.exe`
 
 安装程序默认安装到当前用户目录。卸载应用时会保留用户数据库，避免工作记录丢失。
 
 ## 测试与隔离运行
 
-项目中的冒烟和发布验证脚本使用隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP` 与 `TMP` 目录，避免触及正式数据库、缓存和真实工作目录。
+运行冒烟和发布验证前，必须配置隔离的 `APPDATA`、`LOCALAPPDATA`、`TEMP` 与 `TMP` 目录，避免触及正式数据库、缓存和真实工作目录。完整环境要求和现行检查入口见 [检查清单](docs/smoke-checklist.md)。旧版无隔离保护的启动脚本已移除。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\\scripts\\smoke-test.ps1
-$env:MSL_CDP_PORT='9333'; python .\\scripts\\ui-smoke-cdp.py
-```
+测试前应将四个环境目录设置到仓库外的同一独立测试目录，并使用合成资料与本地模拟接口。原生界面检查支持通过 `MSL_TEST_PROFILE` 指定独立目录；布局组件检查使用 `MSL_TEST_ROOT`。测试输出、开发过程记录和个人数据不属于源码交付内容。
 
-更多迭代记录、验收结果与架构说明见 `docs/` 目录。
+使用与开发说明见 `docs/` 中的架构、备份恢复、同步范围及性能文档。功能测试、界面检查和多设备长期运行需分别验收；构建成功不代表已完成生产环境验收。
+
+## 源码与个人数据分离
+
+- 数据库、正式附件及应用设置保存在 `%APPDATA%\MSLDesktop`；缓存保存在 `%LOCALAPPDATA%\MSLDesktop`，均独立于安装目录和源码仓库。
+- API Key 保存在 Windows 凭据管理器。云盘同步目录和备份目录由用户选择，应放在源码仓库之外。
+- 仓库保留源码、迁移、文档、演示图片及回归测试。数据库、备份、同步包、测试产物和本机构建目录由 `.gitignore` 排除；不要强制添加这些文件，也不要将整个工作父目录打包上传。
+- 推送前运行 `pnpm check:publish` 检查危险文件名，并审阅 Git 待提交差异。该检查不读取密钥或数据库正文，不能证明所有历史内容均无敏感信息。
+- 已提交过的内容会留在 Git 历史中。移除当前文件或增加忽略规则不会清除历史；公开仓库前需另行检查旧文档与截图。

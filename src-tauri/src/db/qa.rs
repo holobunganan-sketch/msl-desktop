@@ -2,7 +2,7 @@ use super::{
     knowledge::{self, EvidencePack},
     Database, DbError, DbResult,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 
 pub fn sessions(db: &Database) -> DbResult<Vec<Value>> {
@@ -35,11 +35,22 @@ pub fn create(db: &Database, title: &str, scope: &[i64]) -> DbResult<Value> {
     .remove(0))
 }
 pub fn turns(db: &Database, session_id: i64) -> DbResult<Vec<Value>> {
-    knowledge::rows(
+    let mut rows = knowledge::rows(
         db.conn(),
         "SELECT * FROM qa_turns WHERE session_id=?1 ORDER BY id",
         &[&session_id],
-    )
+    )?;
+    for row in &mut rows {
+        if let Some(id) = row["id"].as_i64() {
+            if let Some(stored) =
+                super::ai_documents::get_document(db.conn(), "qa_turn", &id.to_string())?
+            {
+                row["document"] = serde_json::to_value(stored.document)
+                    .map_err(|e| DbError::Migration(e.to_string()))?;
+            }
+        }
+    }
+    Ok(rows)
 }
 pub fn get(db: &Database, id: i64) -> DbResult<Value> {
     knowledge::rows(db.conn(), "SELECT * FROM qa_turns WHERE id=?1", &[&id])?
@@ -72,7 +83,7 @@ pub fn claim(db: &Database, id: i64) -> DbResult<Value> {
     get(db, id)
 }
 pub fn history(db: &Database, turn: &Value) -> DbResult<Vec<Value>> {
-    let mut history=knowledge::rows(db.conn(),"SELECT question,answer_json,created_at FROM qa_turns WHERE session_id=?1 AND id<?2 AND scope_json=?3 AND status='completed' ORDER BY id DESC LIMIT 10",&[&turn["session_id"].as_i64(),&turn["id"].as_i64(),&turn["scope_json"].as_str()])?;
+    let mut history=knowledge::rows(db.conn(),"SELECT question,answer_json,created_at FROM qa_turns WHERE NOT EXISTS(SELECT 1 FROM json_each(qa_turns.evidence_json,'$.sources') s WHERE json_extract(s.value,'$.trust')='deleted') AND session_id=?1 AND id<?2 AND scope_json=?3 AND status='completed' ORDER BY id DESC LIMIT 10",&[&turn["session_id"].as_i64(),&turn["id"].as_i64(),&turn["scope_json"].as_str()])?;
     history.reverse();
     for row in &mut history {
         for key in ["question", "answer_json"] {
@@ -84,10 +95,13 @@ pub fn history(db: &Database, turn: &Value) -> DbResult<Vec<Value>> {
     Ok(history)
 }
 pub fn save_evidence(db: &Database, id: i64, pack: &EvidencePack) -> DbResult<()> {
-    db.conn().execute(
+    let tx = super::write_transaction(db.conn())?;
+    super::source_lifecycle::ensure_live(&tx, pack)?;
+    tx.execute(
         "UPDATE qa_turns SET evidence_json=?1 WHERE id=?2 AND status='running'",
         params![serde_json::to_string(pack).unwrap(), id],
     )?;
+    tx.commit()?;
     Ok(())
 }
 pub fn finish(
@@ -95,11 +109,46 @@ pub fn finish(
     id: i64,
     result: Result<&crate::ai::knowledge_contract::Answer, &str>,
 ) -> DbResult<()> {
+    let tx = super::write_transaction(db.conn())?;
     let (status, answer, error) = match result {
-        Ok(a) => ("completed", Some(serde_json::to_string(a).unwrap()), None),
-        Err(e) => ("failed", None, Some(crate::cognition::bounded(e, 1000))),
+        Ok(value) => {
+            let question: Option<String> = tx
+                .query_row(
+                    "SELECT question FROM qa_turns WHERE id=?1 AND status='running'",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(question) = question else {
+                tx.commit()?;
+                return Ok(());
+            };
+            let document = value.to_document(&question);
+            crate::ai::output::parse_document(&serde_json::to_string(&document).unwrap())
+                .map_err(|error| DbError::Migration(error.to_string()))?;
+            crate::db::ai_documents::save_document(
+                &tx,
+                "qa_turn",
+                &id.to_string(),
+                &document,
+                "",
+                crate::ai::prompts::PROMPT_VERSION,
+                "configured workbench model",
+            )?;
+            (
+                "completed",
+                Some(serde_json::to_string(value).unwrap()),
+                None,
+            )
+        }
+        Err(message) => (
+            "failed",
+            None,
+            Some(crate::cognition::bounded(message, 1000)),
+        ),
     };
-    db.conn().execute("UPDATE qa_turns SET status=?1,answer_json=?2,error=?3,finished_at=?4 WHERE id=?5 AND status='running'",params![status,answer,error,super::now_unix(),id])?;
+    tx.execute("UPDATE qa_turns SET status=?1,answer_json=?2,error=?3,finished_at=?4 WHERE id=?5 AND status='running'",params![status,answer,error,super::now_unix(),id])?;
+    tx.commit()?;
     Ok(())
 }
 pub fn remove(db: &Database, id: i64) -> DbResult<()> {
@@ -111,6 +160,10 @@ pub fn remove(db: &Database, id: i64) -> DbResult<()> {
     )? {
         return Err(DbError::Migration("会话仍在处理，完成后可删除".into()));
     }
+    tx.execute(
+        "DELETE FROM ai_readable_documents WHERE owner_kind='qa_turn' AND owner_id IN (SELECT CAST(id AS TEXT) FROM qa_turns WHERE session_id=?1)",
+        [id],
+    )?;
     tx.execute("DELETE FROM qa_sessions WHERE id=?1", [id])?;
     tx.commit()?;
     Ok(())

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { command, createInboxItem } from "$lib/services/api";
   import { aiJobs } from "$lib/stores/aiJobs";
@@ -168,7 +170,7 @@
     </div>
     <span class="count">{items.filter((item) => !item.processed_at).length}</span>
   </div>
-  {#if error}<div class="status error" role="alert">{error}</div>{/if}
+  <div class="status error stable-feedback"><StatusLine message={error}/></div>
 
   <Modal open={conversion !== null} title={projectMode?tt("inbox.toProject"):tt("inbox.convertTitle", { type: conversion === "task" ? tt("inbox.toTask") : conversion === "waiting" ? tt("inbox.toWaiting") : tt("inbox.toCalendar") })} onclose={closeConversion}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); convert(); }}>
@@ -198,13 +200,14 @@
         <button type="button" onclick={closeConversion}>{tt("common.cancel")}</button>
         <AppButton type="submit" loading={saving} label={tt("common.save")} />
       </div>
-      {#if error}<div class="status error" role="alert">{error}</div>{/if}
+      <div class="status error stable-feedback"><StatusLine message={error}/></div>
     </form>
   </Modal>
 
   <NaturalCapture/>
   <label class="history-switch"><input type="checkbox" bind:checked={showHistory}/>{currentLocale==='en-US'?'Include organized notes':'同时查看已整理的原始记录'}</label>
   {#if queued}<p class="organize-note">{currentLocale==="en-US"?"You can keep working. Suggestions appear in AI Review when ready.":"可以继续工作。整理完成后，建议会出现在 AI 审阅中。"}<button onclick={()=>window.dispatchEvent(new CustomEvent("dashboard:navigate",{detail:"review"}))}>{currentLocale==="en-US"?"Open review":"查看审阅"}</button></p>{/if}
+  {#if items.some(item=>showHistory||!item.processed_at)}
   <ul class="in-list">
     {#each items.filter(item=>showHistory||!item.processed_at) as item (item.id)}
       <li data-inbox-id={item.id} class:focused={focusId===item.id} class:processed={item.processed_at !== null}>
@@ -225,7 +228,7 @@
       </li>
     {/each}
   </ul>
-  {#if items.length === 0}<div class="muted empty">{tt("inbox.empty")}</div>{/if}
+  {:else}<EmptyState compact framed title={tt("inbox.empty")}/>{/if}
 </div>
 
 <style>
@@ -249,5 +252,4 @@
   .modal-form input, .modal-form textarea, .modal-form select { width: 100%; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 9px 10px; background: var(--color-surface); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
   .status.error { color: var(--color-danger); font-size: 13px; margin: 6px 0; }
-  .empty { padding: 18px 0; }
 </style>

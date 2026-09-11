@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { getVersion } from "@tauri-apps/api/app";
   import { locale, t, setLocale } from "$lib/i18n";
@@ -9,6 +10,8 @@
   import Icon from "$lib/components/ui/Icon.svelte";
   import AnalysisScheduleSettings from "$lib/components/AnalysisScheduleSettings.svelte";
   import StorageSettings from "$lib/components/StorageSettings.svelte";
+  import BackupSettings from "$lib/components/BackupSettings.svelte";
+  import SyncSettings from "$lib/components/SyncSettings.svelte";
   import AppearanceSettings from "$lib/components/AppearanceSettings.svelte";
   import { addToast } from "$lib/stores/toast";
 
@@ -31,7 +34,7 @@
 
 <div class="settings">
   <div class="page-head"><div><h1>{tt("settings.title")}</h1><p>{tt("settings.pageHint")}</p></div><AppButton variant="secondary" onclick={() => setLocale(currentLocale === "zh-CN" ? "en-US" : "zh-CN")}><Icon name="languages" size={15} />{currentLocale === "zh-CN" ? tt("common.english") : tt("common.chinese")}</AppButton></div>
-  {#if error}<div class="status error" role="alert">{error}</div>{/if}{#if info}<div class="status ok">{info}</div>{/if}
+  <div class="status error status ok stable-feedback"><StatusLine message={error||info} error={!!error}/></div>
   <div class="settings-layout">
     <aside class="settings-nav" aria-label={tt("settings.categories")}>
       <a href="#providers"><Icon name="sparkles" size={15} />{tt("settings.providers")}</a>
@@ -39,6 +42,7 @@
       <a href="#routing"><Icon name="review" size={15} />{tt("settings.aiRouting")}</a>
       <a href="#schedule"><Icon name="clock" size={15} />{tt("settings.analysisSchedule")}</a>
       <a href="#storage"><Icon name="archive" size={15} />{tt("storage.title")}</a>
+      <a href="#backup"><Icon name="archive" size={15} />{currentLocale === 'en-US' ? 'Data & sync' : '数据与同步'}</a>
       <a href="#system"><Icon name="settings" size={15} />{tt("settings.system")}</a>
     </aside>
 
@@ -49,6 +53,10 @@
       <section id="routing" class="settings-section"><AiRoutingSettings /></section>
       <section id="schedule" class="settings-section"><AnalysisScheduleSettings /></section>
       <section id="storage" class="settings-section"><StorageSettings /></section>
+      <section id="backup" class="settings-section data-section">
+        <div class="section-heading"><h2>{currentLocale === 'en-US' ? 'Data & sync' : '数据与同步'}</h2><p>{currentLocale === 'en-US' ? 'Keep your devices up to date, with separate snapshots for recovery.' : '日常同步衔接多台电脑，历史备份保留可恢复的时间点。'}</p></div>
+        <SyncSettings /><BackupSettings />
+      </section>
       <section id="system" class="settings-section system-section">
         <div class="section-heading"><h2>{tt("settings.system")}</h2><p>{tt("settings.systemHint")}</p><p class="build-id" data-testid="app-version">MSL Desktop · {appVersion}</p></div>
         <div class="setting-row"><div><strong>{tt("settings.language")}</strong><small>{tt("settings.appearance")}</small></div><AppButton variant="secondary" onclick={() => setLocale(currentLocale === "zh-CN" ? "en-US" : "zh-CN")}>{currentLocale === "zh-CN" ? tt("common.chinese") : tt("common.english")}</AppButton></div>
@@ -68,6 +76,7 @@
   @container(max-width:760px){.settings{height:auto}.settings-layout{grid-template-columns:1fr}.settings-nav{display:flex;overflow:auto}.settings-nav a{flex:0 0 auto}.settings-content{overflow:visible}.sync-strip{flex-wrap:wrap}.setting-row{align-items:flex-start;flex-direction:column;padding:10px 0}}
   .page-head p{font-size:12px}.settings-nav a{font-size:13px}.sync-strip,.setting-row small,.check,.inline-control,.status{font-size:11px}.sync-strip strong,.setting-row strong{font-size:12px}.section-heading h2,.settings-section :global(h2){font-size:17px}.section-heading p,.settings-section :global(p){font-size:12px}.settings-section :global(input),.settings-section :global(select),.settings-section :global(textarea){font-size:13px}.settings-section :global(label),.settings-section :global(.muted){font-size:11px}
   .build-id { margin-top: 10px; color: var(--color-primary); font-weight: 600; }
+  .data-section { display: grid; gap: 20px; align-content: start; }
   .settings-content { overflow: visible; min-width: 0; padding: 0; }
   .settings-layout { align-items: start; }
   .settings-nav { position: sticky; top: 0; }

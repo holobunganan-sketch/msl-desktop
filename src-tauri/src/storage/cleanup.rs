@@ -56,6 +56,7 @@ pub fn preview(db: &Database, categories: &[String]) -> DbResult<CleanupPlan> {
         ("expert_notes", "SELECT COUNT(*) FROM kol_notes"),
         ("expert_drafts", "SELECT COUNT(*) FROM kol_drafts"),
         ("expert_insights", "SELECT COUNT(*) FROM kol_insights"),
+        ("expert_materials", "SELECT COUNT(*) FROM kol_materials"),
         (
             "pending_proposals",
             "SELECT COUNT(*) FROM ai_proposals WHERE status='pending'",

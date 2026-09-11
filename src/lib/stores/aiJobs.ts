@@ -7,7 +7,7 @@ import { locale } from "$lib/i18n";
 export type AiJob = { id:number; command:string; args:Record<string,unknown>; status:"running"|"completed"|"failed"|"interrupted"; result:unknown; error:string|null; created_at:number; finished_at:number|null };
 export const aiJobs = writable<AiJob[]>([]);
 export const translationDraft:{source:string;result:string;style:"written"|"spoken"}={source:"",result:"",style:"written"};
-export const jobCommands = new Set(["ask_workbench","analyze_kol","run_analysis_now","start_workspace_work_draft","retry_analysis_run","translate_text","generate_report","retry_report","generate_brief","refresh_project_cognition","organize_inbox_item"]);
+export const jobCommands = new Set(["import_kol_materials","read_kol_materials","ask_workbench","analyze_kol","run_analysis_now","start_workspace_work_draft","retry_analysis_run","translate_text","generate_report","retry_report","generate_brief","refresh_project_cognition","organize_inbox_item"]);
 let refreshing = false;
 const notified = new Set<number>();
 function notifyFinished(job:AiJob) {

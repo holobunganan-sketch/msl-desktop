@@ -204,6 +204,8 @@ mod tests {
                 messages: Vec::new(),
                 temperature: None,
                 max_output_tokens: None,
+                output_format: crate::ai::output::OutputFormat::Text,
+                budget: Default::default(),
             },
         ))
         .unwrap_err();

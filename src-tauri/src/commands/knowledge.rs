@@ -43,6 +43,23 @@ pub fn list_kol_experts(state: State<AppState>) -> Result<Vec<Value>, String> {
     with_db(&state, db::kol::experts)
 }
 #[tauri::command]
+pub async fn delete_kol_expert(
+    id: i64,
+    confirmation_name: String,
+    expected_revision: i64,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = db::Database::open(&db::default_db_path()).map_err(|e| e.to_string())?;
+        db::kol::delete_expert(&db, id, &confirmation_name, expected_revision)
+            .map_err(|e| e.to_string())?;
+        let pending = crate::materials::purge_unused(&db, &crate::materials::root())
+            .map_err(|e| e.to_string())?;
+        Ok(json!({"removed":true,"pending_cleanup":pending}))
+    })
+    .await
+    .map_err(|_| "专家删除任务中断")?
+}
+#[tauri::command]
 pub fn save_kol_expert(
     state: State<AppState>,
     id: Option<i64>,
@@ -165,6 +182,8 @@ async fn model_output(
         }],
         temperature: Some(0.1),
         max_output_tokens: Some(8000),
+        output_format: crate::ai::output::OutputFormat::PromptJson,
+        budget: Default::default(),
     };
     for attempt in 0..2 {
         let response = crate::ai::provider::complete_model(

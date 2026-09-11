@@ -272,6 +272,8 @@ pub async fn test_provider_model(
             }],
             temperature: Some(0.0),
             max_output_tokens: Some(5),
+            output_format: crate::ai::output::OutputFormat::Text,
+            budget: Default::default(),
         },
     )
     .await

@@ -20,6 +20,13 @@ pub struct AiMessage {
     pub role: String, // system | user
     pub content: String,
 }
+/// Binary inputs stay separate from durable text prompts and are never logged.
+#[derive(Clone)]
+pub struct AiAttachment {
+    pub filename: String,
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiRequest {
@@ -42,6 +49,11 @@ pub struct AiTextRequest {
     pub messages: Vec<AiMessage>,
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub output_format: crate::ai::output::OutputFormat,
+    /// Clones used for format repair retain the same logical request budget.
+    #[serde(skip)]
+    pub budget: std::sync::Arc<std::sync::Mutex<crate::ai::output::RequestBudget>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +62,14 @@ pub struct AiTextResponse {
     pub model: Option<String>,
     pub usage: Option<serde_json::Value>,
     pub request_id: Option<String>,
+    pub completion: Completion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Completion {
+    Complete,
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -197,6 +217,8 @@ pub async fn complete(
             messages: request.messages.clone(),
             temperature: request.temperature,
             max_output_tokens: request.max_tokens,
+            output_format: crate::ai::output::OutputFormat::Text,
+            budget: Default::default(),
         },
     )
     .await?;

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { locale, t, translateStatus } from "$lib/i18n";
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -8,6 +10,9 @@
   import ProjectScope from "./ProjectScope.svelte";
   import ProjectFilter from "./ProjectFilter.svelte";
   import ProjectBadge from "./ProjectBadge.svelte";
+  import ListPager from './ui/ListPager.svelte';
+  import {paginate} from '$lib/services/pagination';
+  let listPage=$state(1);
 
   import {onMount} from 'svelte';
   import {navigateTo} from '$lib/services/navigation';
@@ -169,6 +174,8 @@
     }
     return scoped;
   }
+  const taskPage=$derived(paginate(visibleTasks(),listPage));
+  $effect(()=>{filter;projectFilter;mode;listPage=1;});
 
   $effect(() => {
     $dataRevision.tasks;
@@ -190,8 +197,9 @@
     </select>
   </div>
 
-  {#if error}<div class="status error">{error}</div>{/if}
+  <div class="status error stable-feedback"><StatusLine message={error}/></div>
   <ProjectFilter {works} bind:value={projectFilter}/>
+  <ListPager view={taskPage} onchange={(page)=>listPage=page} testid="task-pagination"/>
 
   <Modal bind:open={showForm} title={editingId === null ? tt("common.create") : tt("common.edit")} onclose={() => (showForm = false)}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); createTask(); }}>
@@ -208,6 +216,7 @@
       <input id="task-due" type="datetime-local" bind:value={newDue} />
       <label for="task-notes">{tt("work.summary")}</label>
       <textarea id="task-notes" rows="3" bind:value={formNotes}></textarea>
+      <StatusLine message={error}/>
       <div class="modal-actions">
         <button type="button" onclick={() => (showForm = false)}>{tt("common.cancel")}</button>
         <AppButton testid="task-save" type="submit" loading={saving} label={editingId === null ? tt("common.create") : tt("common.save")} />
@@ -220,15 +229,16 @@
       <p>{currentLocale==='en-US'?'This same task will appear in Calendar. Clearing the time keeps the task.':'这件事会同时出现在日历中。清空时间只取消安排，事项仍保留。'}</p>
       <label>{currentLocale==='en-US'?'Start':'开始时间'}<input data-testid="task-schedule-start" type="datetime-local" bind:value={scheduleStart}/></label>
       <label>{currentLocale==='en-US'?'End (optional)':'结束时间（可选）'}<input data-testid="task-schedule-end" type="datetime-local" bind:value={scheduleEnd}/></label>
-      {#if error}<p role="alert">{error}</p>{/if}
+      <StatusLine message={error}/>
       <AppButton type="submit" testid="task-schedule-save" loading={scheduleBusy}>{tt('common.save')}</AppButton>
     </form>
   </Modal>
   <Modal open={progressTask!==null} title={currentLocale==='en-US'?'Record progress':'记一下进展'} onclose={()=>progressTask=null}>
     {#if progressTask}<NaturalCapture context={{workId:progressTask.work_id,entityKind:'task',entityId:progressTask.id}} label={progressTask.title}/>{/if}
   </Modal>
+  {#if taskPage.total}
   <ul class="task-list">
-    {#each visibleTasks() as t (t.id)}
+    {#each taskPage.items as t (t.id)}
       <li data-testid={`task-row-${t.id}`} class:done={t.status === "done"} class:overdue={isOverdue(t)}>
         <span class="prio prio-{t.priority}">{tt(t.priority === "high" ? "task.priority.high" : t.priority === "low" ? "task.priority.low" : "task.priority.normal")}</span>
         <div class="task-copy"><strong class="title">{t.title}</strong><div class="task-meta">
@@ -248,8 +258,8 @@
       </li>
     {/each}
   </ul>
-  {#if visibleTasks().length === 0}
-    <div class="muted empty">{tt("common.empty")}</div>
+  {:else}
+    <EmptyState compact framed title={tt("common.empty")}/>
   {/if}
 </div>
 
@@ -345,9 +355,6 @@
     color: var(--color-danger);
     font-size: 13px;
     margin: 6px 0;
-  }
-  .empty {
-    padding: 12px 0;
   }
   @container (max-width: 720px) {
     .task-list li { grid-template-columns: auto minmax(0, 1fr); }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { onMount } from "svelte";
   import {reportBlocks} from "$lib/services/reportReading";
   import AppButton from "$lib/components/ui/AppButton.svelte";
@@ -72,7 +73,7 @@
 
 <div class="reports-page">
   <header class="page-head"><div><h1>{tt("reports.title")}</h1><p>{currentLocale==='en-US'?'Read results, project progress, blockers and the next useful actions.':'看清这段时间做成了什么、项目推进到哪里，以及下一步如何推进。'}</p></div><div class="primary-actions"><AppButton testid="generate-weekly-report" loading={busy === "weekly-default"} onclick={() => generate("weekly")}>{tt("reports.generateWeekly")}</AppButton><AppButton testid="generate-monthly-report" variant="secondary" loading={busy === "monthly-default"} onclick={() => generate("monthly")}>{tt("reports.generateMonthly")}</AppButton></div></header>
-  {#if error}<div class="feedback error" role="alert">{error}</div>{/if}{#if message}<div class="feedback success">{message}</div>{/if}
+  <div class="feedback error feedback success stable-feedback"><StatusLine message={error||message} error={!!error}/></div>
   <div class="reports-grid" class:without-reports={!reports.length}>
     <aside class="report-history">
       <div class="panel-head"><div><h2>{tt("reports.history")}</h2><small>{reports.length}</small></div><div class="history-actions"><button class="clear-history" data-testid="clear-weekly-history" onclick={clearWeeklyHistory} disabled={busy === "clear-weekly"}>{tt("reports.clearWeeklyHistory")}</button><button onclick={load} aria-label={tt("common.refresh")}><Icon name="refresh" size={15} /></button></div></div>

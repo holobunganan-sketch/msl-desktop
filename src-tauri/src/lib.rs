@@ -9,16 +9,25 @@
 
 pub mod ai;
 pub mod app_state;
+pub mod backup;
 pub mod cognition;
 pub mod commands;
 pub mod db;
 pub mod documents;
 mod lifecycle;
+pub mod materials;
 pub mod notifications;
 pub mod scheduler;
 mod single_instance;
 pub mod storage;
+pub mod sync;
 pub mod workspace;
+
+#[cfg(test)]
+mod sync_contract_tests;
+
+#[cfg(test)]
+mod ai_output_contract_tests;
 
 use app_state::AppState;
 use db::Database;
@@ -139,6 +148,10 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// 启动应用。先做单实例检查：已有实例时静默退出。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = single_instance::wait_for_previous_process() {
+        eprintln!("[restart] {error}");
+        return;
+    }
     // 性能：优化 WebView2 内存占用（指南 §4 预算）。
     // - 禁用 GPU 进程（简单 UI 不受影响）；
     // - 限制 renderer 进程数为 1（单窗口应用）。
@@ -172,12 +185,16 @@ fn run_app() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
+            let data=db::resolve_data_directory(std::env::var_os("APPDATA")).map_err(std::io::Error::other)?;
+            backup::restore::apply_pending(&data).map_err(std::io::Error::other)?;
             // 打开数据库（默认路径 %APPDATA%\MSLDesktop\msl-desktop.db）。
             // 失败只告警不阻塞启动——后续命令会返回"数据库未初始化"。
             match Database::open(&db::default_db_path()) {
                 Ok(db) => {
                     let _ = crate::db::jobs::recover(db.conn());
+                    let _=db.conn().execute("UPDATE kol_materials SET status=CASE WHEN EXISTS(SELECT 1 FROM material_segments WHERE material_id=kol_materials.id) THEN 'partial' ELSE 'failed' END,error='上次读取中断，资料已保存，可重新读取' WHERE status='reading'",[]);
                     app.state::<AppState>().set_database(db);
+                    tauri::async_runtime::spawn_blocking(||{if let Ok(db)=Database::open(&db::default_db_path()){let _=crate::materials::purge_unused(&db,&crate::materials::root());}});
                 }
                 Err(e) => eprintln!("[db] failed to open default database: {e}"),
             }
@@ -226,6 +243,8 @@ fn run_app() {
             // 提醒调度（Resident Core 常驻，低频轮询）
             crate::notifications::spawn(app.handle().clone());
             crate::scheduler::spawn(app.handle().clone());
+            crate::backup::service::spawn();
+            crate::sync::service::spawn();
 
             setup_tray(app.handle())?;
 
@@ -264,6 +283,22 @@ fn run_app() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::sync::sync_status,
+            commands::sync::probe_sync_folder,
+            commands::sync::connect_sync_folder,
+            commands::sync::save_sync_schedule,
+            commands::sync::run_sync_now,
+            commands::sync::list_sync_conflicts,
+            commands::sync::resolve_sync_conflict,
+            commands::sync::make_sync_ai_primary,
+            commands::backup::backup_status,
+            commands::backup::save_backup_settings,
+            commands::backup::prepare_private_cloud_folder,
+            commands::backup::create_backup,
+            commands::backup::preview_backup_restore,
+            commands::backup::confirm_backup_restore,
+            commands::backup::discard_backup_preview,
+            commands::backup::restart_after_restore,
             commands::knowledge::list_qa_sessions,
             commands::knowledge::create_qa_session,
             commands::knowledge::list_qa_turns,
@@ -336,6 +371,12 @@ fn run_app() {
             commands::update_work,
             commands::archive_work,
             commands::delete_work,
+            commands::knowledge::delete_kol_expert,
+            commands::materials::list_kol_materials,
+            commands::materials::update_kol_material,
+            commands::materials::remove_kol_material,
+            commands::materials::get_kol_material_preview,
+            commands::materials::reveal_kol_material,
             commands::list_works,
             commands::get_work_detail,
             commands::create_resume_point,

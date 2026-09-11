@@ -1,4 +1,6 @@
 <script lang="ts">
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { locale, t, translateKind } from "$lib/i18n";
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -263,7 +265,7 @@
     <button data-testid="calendar-create" onclick={openNew}>{tt("calendar.new")}</button>
   </div>
 
-  {#if error}<div class="status error">{error}</div>{/if}
+  <div class="status error stable-feedback"><StatusLine message={error}/></div>
   <ProjectFilter {works} bind:value={projectFilter}/>
 
   <Modal bind:open={showForm} title={editing ? tt("common.edit") : tt("calendar.new")} onclose={() => { showForm = false; editing = null; }}>
@@ -288,6 +290,7 @@
       <input id="calendar-location" bind:value={formLocation} />
       <label for="calendar-notes">{tt("calendar.notes")}</label>
       <textarea id="calendar-notes" rows="3" bind:value={formNotes}></textarea>
+      <StatusLine message={error}/>
       <div class="modal-actions">
         {#if editing}<button type="button" class="danger" data-testid="calendar-delete" onclick={() => remove(editing as CalendarEvent)}>{tt("common.delete")}</button>{/if}
         <button type="button" onclick={() => { showForm = false; editing = null; }}>{tt("common.cancel")}</button>
@@ -329,7 +332,7 @@
     </div>
   {/if}
   {#if sorted().length === 0}
-    <div class="muted empty">{tt("calendar.empty")}</div>
+    <EmptyState compact framed title={tt("calendar.empty")}/>
   {/if}
 </div>
 
@@ -366,7 +369,7 @@
   }
   .modal-form { display: grid; gap: 8px; }
   .modal-form label { font-size: 12px; font-weight: 600; }
-  .modal-form input,
+  .modal-form input:not([type="checkbox"]),
   .modal-form textarea,
   .modal-form select { width: 100%; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 9px 10px; background: var(--color-surface); }
   .modal-form .check { display: flex; align-items: center; gap: 8px; }
@@ -392,10 +395,8 @@
     font-size: 13px;
     margin: 6px 0;
   }
-  .empty {
-    padding: 12px 0;
-  }
 .calendar-hint{font-size:14px;line-height:1.6;color:var(--color-muted);margin:12px 0}.event-card.completed{opacity:.65}.event-card.completed>span:not(.event-time){text-decoration:line-through}
+  .modal-form input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 18px; padding: 0; margin: 0; }
   @container(max-width:1000px){.week-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.day-column{min-height:130px}.all-day-slot:empty{display:none}.event-card{font-size:14px}}
   @container(max-width:650px){.week-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.day-column>header{flex-wrap:wrap}}
 </style>

@@ -13,6 +13,43 @@ use windows_sys::Win32::System::Threading::CreateMutexW;
 
 const MUTEX_NAME: &str = "Local\\MSLDesktop_SingleInstance_v1";
 
+/// A replacement process waits before acquiring the single-instance mutex.
+pub fn wait_for_previous_process() -> io::Result<()> {
+    let Some(arg) = std::env::args().find(|a| a.starts_with("--restore-wait-pid=")) else {
+        return Ok(());
+    };
+    let pid = arg
+        .trim_start_matches("--restore-wait-pid=")
+        .parse::<u32>()
+        .map_err(|_| io::Error::other("Invalid restart process"))?;
+    if pid == std::process::id() {
+        return Err(io::Error::other("Cannot wait for own process"));
+    }
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            let e = io::Error::last_os_error();
+            return if e.raw_os_error() == Some(87) {
+                Ok(())
+            } else {
+                Err(e)
+            };
+        }
+        let result = WaitForSingleObject(handle, 30_000);
+        CloseHandle(handle);
+        if result != WAIT_OBJECT_0 {
+            return Err(io::Error::other(
+                "Previous application did not exit; restore remains pending",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// 持有单实例 mutex 的守卫；Drop 时释放句柄。
 pub struct SingleInstanceGuard(HANDLE);
 

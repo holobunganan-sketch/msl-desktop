@@ -10,11 +10,14 @@ use crate::db::{Database, DbError, DbResult};
 use crate::workspace::{self, inventory, watcher::FileWatcher, DirEntry, RecentFile};
 
 pub mod ai_secretary;
+pub mod backup;
 pub mod flow;
 pub mod jobs;
 pub mod knowledge;
+pub mod materials;
 pub mod provider_catalog;
 pub mod reports;
+pub mod sync;
 pub use ai_secretary::{
     confirm_ai_proposal, list_ai_proposals, reject_ai_proposal, update_ai_proposal_draft,
 };
@@ -1109,14 +1112,19 @@ pub fn archive_work(state: State<AppState>, id: i64) -> Result<(), String> {
 
 /// 删除 Work。保留任务、等待事项和日程，并解除它们与 Work 的关联。
 #[tauri::command]
-pub fn delete_work(state: State<AppState>, id: i64) -> Result<(), String> {
+pub fn delete_work(
+    state: State<AppState>,
+    id: i64,
+    confirmation_name: String,
+    expected_revision: i64,
+) -> Result<(), String> {
     let title = with_db(&state, |db| {
         let repo = crate::db::work::WorkRepo::new(db.conn());
         let title = repo
             .get(id)?
             .ok_or_else(|| DbError::NotFound("work".into()))?
             .title;
-        repo.delete(id)?;
+        repo.delete_confirmed(id, &confirmation_name, expected_revision)?;
         Ok(title)
     })?;
     stop_retired_watcher(&state);
@@ -2013,7 +2021,7 @@ mod validation_tests {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(version, 15);
+        assert_eq!(version, 21);
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let _ = std::fs::remove_dir_all(root);

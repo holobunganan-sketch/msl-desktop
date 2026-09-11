@@ -1,176 +1,76 @@
-# MSL Desktop — Architecture
+# MSL Desktop 架构
 
-> 版本：2.1（AI 秘书与存储治理第二阶段）
-> 对应开发指南：`DEEPSEEK_V4_FLASH_MSL_DESKTOP_DEVELOPMENT_GUIDE.md`
-> 状态：Dashboard/CRUD/Workspace 文档索引/AI 审阅/调度/翻译/存储治理已实现；release NSIS setup.exe 已构建，视觉审阅仍由用户确认。
+## 设计边界
 
-## 1. 产品定位
+不要让记录工作成为比工作本身更重要的事，要让工作在工作台中被自然而然地整理和流动。
 
-MSL（医学联络官）本地工作管理桌面。
+项目承载长期工作；任务、等待和日历可以归属项目，也可以独立存在。随手记和外部变化进入收件箱或分析上下文，模型给出可编辑建议，用户确认后写入正式记录。工作目录源文件只读；应用可以打开、定位和建立关联，不增删源文件。
 
-- 帮助用户知道"正在做什么、上次做到哪里、下一步是什么"；
-- 管理工作，不承担重型专业工作本身；
-- Local-first：真实文件保留在原 Windows 路径，软件只保存引用与结构化数据；
-- 长期常驻，RAM 受严格约束。
+## 运行结构
 
-## 2. 技术栈
+- Svelte 5、TypeScript 和 WebView2 提供界面，Tauri IPC 连接 Rust 业务层。
+- Rust 管理 SQLite、目录监听、索引、后台任务、定时分析、备份、同步及托盘生命周期。
+- 页面切换不取消已提交的后台分析。任务状态持久保存，中断恢复不自动重放可能收费的模型请求。
+- 长任务列表及项目内明细按页展示，分页只影响呈现，不裁剪正式记录或模型检索范围。
 
-| 层 | 技术 | 说明 |
-| --- | --- | --- |
-| 桌面框架 | Tauri 2（`custom-protocol` + `tray-icon` + `image-png`） | Rust 常驻核心，Windows 11 第一目标 |
-| UI 渲染 | Windows WebView2 | 单一主窗口，可销毁/重建；`--disable-gpu --renderer-process-limit=1` 优化内存 |
-| 前端 | Svelte 5 + TypeScript + Vite (SvelteKit, adapter-static, SPA) | 无大型 UI 框架，单页内视图切换 |
-| 包管理 | pnpm | |
-| 数据库 | SQLite（rusqlite bundled，WAL） | `%APPDATA%\MSLDesktop\msl-desktop.db`，显式 migration |
-| 文件监听 | notify（ReadDirectoryChangesW） | 事件驱动，2s debounce，Office 临时文件过滤 |
-| AI | reqwest（三协议 adapter）+ keyring | DeepSeek/OpenCode Go preset；API Key 存 Windows 凭据管理器 |
-| 通知/快捷键 | tauri-plugin-notification / global-shortcut | Windows toast、Ctrl+Shift+Space 热键 |
-| 托盘 | tauri tray | 打开 / Quick Capture / 退出；左键单击重建窗口 |
+## 数据关系
 
-## 3. 运行时三层结构
+- `works`：长期项目。
+- `tasks`、`waiting_items`、`calendar_events`：可选项目归属的行动与安排。
+- `inbox_items`、`capture_context`：原始记录及整理上下文。
+- `resume_points`、`activity_events`：项目推进状态与变动时间线。
+- `analysis_runs`、`daily_briefs`、`ai_proposals`、`review_decisions`：秘书分析与确认流程。
+- `reports`、`qa_sessions`、`qa_turns`：周期报告和连续问答。
+- 专家、机构、科室、项目关联、交流记录、洞察和附件使用独立实体及关联表。
+- SQLite 使用 WAL 和事务；迁移逐次追加。当前迁移版本为 21，历史迁移文件保留。
 
-```text
-MSL Desktop
-│
-├── Resident Core（常驻）
-│   ├── SQLite（Database：WAL / migration / graceful close）
-│   ├── Workspace Registry + File Watcher（notify，UI 销毁后继续）
-│   ├── Activity Recorder（命令操作 + 文件事件 → activity_events）
-│   ├── Reminder Scheduler（30s 低频轮询：waiting/task/calendar 到期通知）
-│   ├── Tray（打开 / Quick Capture / 退出）
-│   └── lifecycle（autostart / --background / window state / graceful shutdown）
-│
-├── Desktop UI（可销毁重建）
-│   ├── Dashboard（指标 / Continue / 时间线 / Waiting / Inbox / 文件变化 / Brief）
-│   ├── Workspace（文件浏览 / 绑定 / 打开 / Reveal）
-│   ├── Works（Work 详情：Resume Point 置顶 + 各区块聚合）
-│   ├── Plan / Waiting / Inbox / Calendar
-│   ├── Search（Ctrl+K 覆盖层）
-│   └── Settings（语言外观 / 同步健康 / AI Provider / Notifications / Autostart / 快捷键）
-│
-└── On-demand（按需，任务结束即释放）
-    ├── AI 请求（Chat Completions / Responses / Anthropic Messages，request-scoped client）
-    ├── Analysis Scheduler（周期/每日 06:00；调度状态跨重启持久化）
-    ├── Document Intelligence（DOCX/PDF/text → LOCALAPPDATA cache → bounded snapshot）
-    ├── Proposal Review（结构化建议 → 可编辑队列 → 用户确认事务）
-    ├── Morning Brief（snapshot 构造 → optional model/local fallback → draft/kept）
-    ├── Translation（中英方向检测；仅组件内存，不落库）
-    ├── Storage Governance（usage/preview/cleanup/rollup；受保护对象永不删除）
-    ├── 文件元数据刷新 / list_dir（惰性单层）
-    └── 提醒检查（进程内去重）
-```
+项目删除需要名称及版本确认。任务、等待和日历保留并解除项目归属。删除专家按确认的影响范围处理专属资料，源工作文件保持原样。
 
-生命周期：主窗口关闭 → 保存窗口状态 → 销毁 WebView → Core + Tray 常驻；
-托盘点击 → 重建窗口（恢复位置大小）；托盘"退出" → WAL checkpoint 后退出；
-`--background` 启动（自启动）不创建主窗口。
+## 存储分离
 
-## 4. 项目结构
+| 内容 | 位置 |
+| --- | --- |
+| 正式数据库、附件副本、备份恢复状态 | `%APPDATA%\MSLDesktop` |
+| 可重建缓存、临时文件与日志 | `%LOCALAPPDATA%\MSLDesktop` |
+| API Key | Windows 凭据管理器；数据库只存引用 |
+| 用户工作文件 | 用户绑定的原目录 |
+| 同步及备份文件 | 用户选定的独立本地或云盘目录 |
 
-```text
-msl-desktop/
-├── src/                        # SvelteKit 前端（SPA）
-│   ├── routes/+page.svelte     # 应用壳：导航 + 视图切换
-│   └── lib/components/         # Today/Workspace/Works/Plan/Waiting/
-│                               #   Inbox/Calendar/Search/Settings/QuickCapture
-├── src-tauri/
-│   ├── migrations/0001_init.sql + 0002_workbench_reliability.sql
-│   ├── capabilities/default.json
-│   └── src/
-│       ├── lib.rs              # Builder/setup/生命周期/命令注册
-│       ├── app_state.rs        # DB + watcher + 窗口/退出状态
-│       ├── commands/           # IPC 边界层（~50 命令）
-│       ├── db/                 # Database + 8 个域 repository
-│       ├── workspace/          # 目录浏览 + watcher + metadata inventory/reconcile
-│       ├── ai/                 # adapters/catalog/router/analysis/proposals/translation/Brief snapshot
-│       ├── documents/          # DOCX/PDF/text extraction, chunks, incremental indexer
-│       ├── storage/            # safe cache paths, usage, cleanup and activity compaction
-│       ├── scheduler/          # interval/daily due logic with injected-clock tests
-│       ├── notifications/      # reminder 调度
-│       └── lifecycle.rs        # autostart/window state/background
-├── scripts/
-│   ├── measure-memory.ps1      # 内存测量（子进程归属/状态标记/CSV）
-│   ├── smoke-test.ps1 + smoke-cdp.py
-│   ├── defender-scan.ps1
-│   └── generate-large-dir.ps1  # 10,000 文件大目录
-├── tests/fixtures/workspace-small
-└── docs/                       # architecture/performance/stage-0~12/smoke-checklist
-```
+缺少可用 Windows 用户数据路径时停止初始化，避免向源码目录写入个人数据。缓存清理使用明确的归属和保护规则，不能删除正式附件、正式实体或源文件。专家附件的提取片段和读取结果可以持久保存于 SQLite；源目录的可重建索引放在缓存目录。
 
-原则：单文件单职责；IPC command 只做边界转换；前端不直接接触数据库。
+## 模型调用与证据
 
-## 5. 数据模型（v7；正式数据库仍位于 APPDATA）
+支持 Chat Completions、Responses 和 Anthropic Messages 三类适配。供应商、模型能力、任务路由及凭据分别管理。固定供应商模板和自定义连接共用受控调用层。
 
-workspaces / works / resume_points / work_file_refs / tasks / waiting_items /
-inbox_items / calendar_events / activity_events / daily_briefs /
-provider_settings / app_settings / provider_connections / provider_models /
-ai_task_routes / work_workspace_links / document_index / cache_entries /
-analysis_schedule_state / analysis_runs / ai_proposals / daily_activity_rollups /
-storage_cleanup_runs / reports / report_schedule_state（+ schema_migrations）。
+调用流程：
 
-关键约束：work_file_refs 只存路径引用；workspace_file_state 只存文件元数据；
-API Key 不落 SQLite（keyring，数据库仅存 credential_ref）；Brief source_snapshot_json
-只保存结构化事实，不保存工作文件正文、Provider header 或密钥；
-activity_events 是工作事实时间线核心（事件驱动、dedupe_key、多条件查询）。
+1. 根据任务及项目范围收集结构化记录、变动和适用资料。
+2. 优先使用目录认知和既有索引，按需补充详细片段。
+3. 发送任务规格与证据，限制格式、来源与写入动作，不限定工作主题。
+4. 检验 JSON 结构、引用、明确截断、拒绝和体积限制；传输重试与格式修复共用预算。
+5. 保存可阅读结果；业务变动建议进入确认队列。
 
-迁移 0003–0007 均保留已有业务数据：Provider 目录与任务路由、文档智能元数据、AI 运行/建议与
-保留状态、活动 rollup/清理审计、周报/月报及其调度分别加入；长正文不进入 SQLite，凭据只保存 credential_ref。
+事实、推断、建议和待验证问题有明确区分。文件与模型文本均视为不可信材料，不执行其中的指令、宏或任意 SQL。资料预览通过读取片段及内容摘要验证，不使用另一台设备正文中携带的整数 ID 直接打开附件。
 
-## 6.1 Brief source pipeline
+## 同步与恢复
 
-`workspace inventory / command mutations → activity_events + document_index →
-AnalysisSnapshot（预算/来源 hash） → optional router/adapter → ai_proposals + daily_briefs`
+运行中的数据库始终位于本机。同步采用设备独立、内容摘要命名的状态文件，支持完整性验证、记录分块、稳定实体身份、结构化关系映射、字段因果关系和显式冲突。
 
-Brief snapshot 明确记录 period、locale、source_counts、truncated 和有限来源预览。
-本地 renderer 固定建议排序（逾期高优任务、今日安排、Waiting、Resume next_step、Inbox），
-AI 不得改变事实范围；Provider 缺失、Key 缺失、HTTP 错误或空响应都回退到本地摘要。
+原始编辑与业务事务同时记录。接收前先捕获本机未发布修改，接收过程事务化；冲突及比较基线保存失败时整批回滚。无变化时复用检查点，旧状态只按可验证归属清理。
 
-## 7. AI 秘书与存储边界
+备份提供可恢复快照。首次切换到文件夹基线前生成恢复副本；恢复备份后暂停同步并重新确认连接方向。
 
-- watcher/reconcile 只更新 dirty/index 状态，不直接调用 AI；调度按用户设置触发分析。
-- AI 输出只允许 create/update 的 Work、Task、Waiting、Calendar、Inbox、Resume Point；
-  所有结果先入 `ai_proposals`，用户可编辑并确认，确认事务才写业务表。
-- 受支持文件正文仅在用户绑定目录并发起索引/分析时读取；snapshot 限制 20 文件、单文件
-  40,000 字符、总计 120,000 字符，source_ref 为相对路径/文档 id。
-- cleanup 只处理安全 cache root 下可重建条目和明确过期历史；pending/confirmed proposal、
-  kept Brief、保留报告、正式实体、凭据和源目录列为 protected；WebView 只能通过 Tauri API 清理。
+详细范围与限制见 [同步数据范围](sync-data-catalog.md) 和 [备份与恢复](backup-and-restore.md)。云盘客户端的网络完成状态、离线跨设备锁和外部工作文件备份不由本机协议保证。
 
-## 7.1 决策工作流与周期报告
+## 源码组织
 
-- 首页“需要您决定”仅加载最近一次已完成分析的待确认建议；每条建议可调整为 Work、Task、Waiting、Calendar 或 Inbox。
-- Work 表示长期项目；Task 与 Waiting 可关联 Work，也可标记为临时事务。建议可暂缓，确认事务完成前不写业务表。
-- AI 审阅加载最近 7 天记录，可按状态和分析批次筛选；待确认与已暂缓记录可深入编辑，已处理记录保持只读。
-- 周报默认覆盖生成日前 7 天，正文使用序号列表；月报默认覆盖上一个自然月，并引用周期重叠的周报作为综合分析证据。
-- 报告生成必须配置 `weekly_report` 或 `monthly_report` 路由；运行、完成和失败状态均持久化，失败记录可重试。
-- 调度器每分钟判断分析、周报和月报是否到期，并利用周期键去重。默认周报为星期日 17:00，月报为每月 1 日 09:00。
-- 报告快照汇总 Work、Task、Waiting、Calendar、Inbox、Resume Point、活动时间线与工作目录变化，排除 AI 翻译记录。
-- AI 审阅默认筛选待确认建议，并展示最近一次分析的运行状态；失败时显示安全截断的错误原因和重新分析入口。
-- 首页只读取最近一次已完成分析的建议。最新分析没有建议时返回空列表，不回流旧批次建议。
-- Provider HTTP 客户端启用 Windows 系统代理；localhost、127.0.0.0/8 与 IPv6 loopback 保持直连，供本地 Mock 和离线服务使用。
+- `src/lib/components`：页面与公共控件。
+- `src/lib/services`、`stores`、`types`：交互、后台状态与数据约定。
+- `src-tauri/src/commands`、`db`：IPC 边界和数据库业务层。
+- `ai`、`cognition`、`documents`、`materials`：模型工作流、目录认知、提取和正式资料。
+- `workspace`、`scheduler`、`storage`：只读目录监控、调度和缓存治理。
+- `sync`、`backup`：多端记录同步与备份恢复。
+- `src-tauri/migrations`：追加式数据库升级。
+- `tests`、`scripts`：回归测试、合成数据生成和隔离验证。
 
-## 8. 关键工程约束
-
-- "精巧"：常驻只保留必须工作的核心；AI/文档解析按需调用；
-- 文件监控事件驱动，禁止周期遍历；2s debounce 合并同路径同事件族；
-- Office 临时文件（`~$*`、`*.tmp`、`*.swp`、Thumbs.db、desktop.ini）过滤；
-- 无向量数据库 / Embedding / RAG / Electron；
-- 性能（Release）：托盘 Working Set 28–36 MB（预算 ≤80），窗口 Private
-  141–155 MB（预算 ≤220），idle CPU 0.017%，10× reopen +7.56 MB；
-- 文件安全：当前仅"打开/定位"，无删除操作（后续须回收站 + 二次确认）。
-
-## 9. 开发阶段（已完成）
-
-Stage 0 初始化 → 1 Resident Core/Tray → 2 SQLite → 3 Workspace/Watcher →
-4 Plan/Waiting/Inbox/Calendar/Quick Capture → 5 Works/Resume Point →
-6 Today → 7 Search → 8 AI/Morning Brief → 9 Notification/Autostart →
-10 性能加固 → 11 回归/Smoke → 12 本地 NSIS setup.exe。
-
-关键缺陷修复：Stage 10 发现 Release 需 `custom-protocol` feature
-（否则误按 dev 加载 devUrl 导致 IPC Origin 校验失败）。
-
-## 10. 交付状态
-
-- 安装包：`src-tauri\target\release\bundle\nsis\msl-desktop_0.1.0_x64-setup.exe`
-- 安装验证：release exe/NSIS 已生成；隔离 release layout 4/4、基础 UI smoke 17/17、
-  AI Review/Workspace/Provider/Schedule/Storage 功能 smoke 11/11 ✅
-- Defender：实时保护无检测（自定义扫描脚本需管理员运行）
-- Git：本次执行未初始化、提交、reset、checkout、clean 或修改 Git 状态；项目现有 worktree 事实已记录在执行报告。
+运行时提示词规格属于应用功能依赖。个人数据、测试运行目录、构建产物及执行报告不进入源码版本控制。

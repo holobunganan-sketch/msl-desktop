@@ -11,6 +11,15 @@ use tauri::{Emitter, Manager, State};
     rename_all_fields = "camelCase"
 )]
 pub enum JobRequest {
+    ImportKolMaterials {
+        expert_id: i64,
+        paths: Vec<String>,
+    },
+    ReadKolMaterials {
+        expert_id: i64,
+        ids: Vec<i64>,
+        force: bool,
+    },
     AskWorkbench {
         turn_id: i64,
         locale: Option<String>,
@@ -63,6 +72,14 @@ impl JobRequest {
     async fn execute(self, app: &tauri::AppHandle) -> Result<Value, String> {
         let s = app.state::<AppState>();
         match self {
+            Self::ImportKolMaterials { expert_id, paths } => {
+                super::materials::import(expert_id, paths).await
+            }
+            Self::ReadKolMaterials {
+                expert_id,
+                ids,
+                force,
+            } => crate::materials::reading::read(expert_id, ids, force).await,
             Self::AskWorkbench { turn_id, locale } => {
                 super::knowledge::ask_workbench(s, turn_id, locale).await
             }

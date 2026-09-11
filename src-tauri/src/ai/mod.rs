@@ -8,6 +8,7 @@ pub mod brief;
 pub mod catalog;
 pub mod efficiency;
 pub mod knowledge_contract;
+pub mod output;
 pub mod prompts;
 pub mod provider;
 pub mod receipts;

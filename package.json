@@ -1,9 +1,10 @@
 {
   "name": "msl-desktop",
-  "version": "0.3.2",
+  "version": "0.3.8",
   "description": "",
   "type": "module",
   "scripts": {
+    "check:publish": "node scripts/check-publish-safety.mjs --history",
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import AppButton from "$lib/components/ui/AppButton.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
   import { command } from "$lib/services/api";
@@ -31,7 +32,7 @@
     <article class="panel source-panel"><div class="panel-head"><div><strong>{tt("translation.source")}</strong><span>{tt("translation.direction", { direction })}</span></div><span>{source.length}/20000</span></div><textarea data-testid="translation-source" bind:value={source} maxlength="20000" placeholder={tt("translation.placeholder")} onkeydown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") translate(); }}></textarea><div class="panel-actions"><AppButton onclick={translate} loading={busy} disabled={!source.trim()}><Icon name="sparkles" size={15} />{tt("translation.translate")}</AppButton><AppButton variant="ghost" onclick={clear} disabled={!source && !result}>{tt("common.clear")}</AppButton><span>{tt("translation.shortcut")}</span></div></article>
     <article class="panel result-panel"><div class="panel-head"><div><strong>{tt("translation.result")}</strong><span>{result ? tt("translation.resultReady") : tt("translation.resultEmpty")}</span></div>{#if result}<button class="copy" onclick={copy} aria-label={tt("translation.copy")}><Icon name="copy" size={16} />{tt("translation.copy")}</button>{/if}</div><div data-testid="translation-result" class:empty={!result} class="result">{result || tt("translation.resultPlaceholder")}</div></article>
   </section>
-  {#if error}<div class="error" role="alert">{error}</div>{/if}
+  <div class="error stable-feedback"><StatusLine message={error}/></div>
 </div>
 
 <style>

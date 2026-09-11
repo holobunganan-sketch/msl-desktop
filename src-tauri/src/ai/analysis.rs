@@ -32,6 +32,8 @@ pub fn build_request(
         }],
         temperature: Some(0.2),
         max_output_tokens: Some(8000),
+        output_format: crate::ai::output::OutputFormat::PromptJson,
+        budget: Default::default(),
     }
 }
 
@@ -72,6 +74,8 @@ pub fn build_workspace_intake_request(
         }],
         temperature: Some(0.2),
         max_output_tokens: Some(8000),
+        output_format: crate::ai::output::OutputFormat::PromptJson,
+        budget: Default::default(),
     }
 }
 

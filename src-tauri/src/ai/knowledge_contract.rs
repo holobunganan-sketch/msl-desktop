@@ -17,8 +17,75 @@ pub struct Claim {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Answer {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<crate::ai::output::AiDocument>,
     pub claims: Vec<Claim>,
     pub gaps: Vec<String>,
+}
+
+impl Answer {
+    pub fn to_document(&self, title: &str) -> crate::ai::output::AiDocument {
+        if let Some(document) = &self.document {
+            return document.clone();
+        }
+        use crate::ai::output::{
+            AiDocument, Basis, Block, Citation as DocCitation, Section, Statement,
+        };
+        let mut sections = Vec::new();
+        if !self.claims.is_empty() {
+            sections.push(Section {
+                title: "回答".into(),
+                blocks: self
+                    .claims
+                    .iter()
+                    .map(|claim| Block::Paragraph {
+                        content: Statement {
+                            text: claim.text.clone(),
+                            basis: match claim.basis.as_str() {
+                                "fact" => Basis::Fact,
+                                "inference" => Basis::Inference,
+                                "suggestion" => Basis::Suggestion,
+                                _ => Basis::Unknown,
+                            },
+                            citations: claim
+                                .citations
+                                .iter()
+                                .map(|citation| DocCitation {
+                                    source_id: citation.source_id.clone(),
+                                    quote: citation.quote.clone(),
+                                })
+                                .collect(),
+                        },
+                    })
+                    .collect(),
+            });
+        }
+        if !self.gaps.is_empty() {
+            sections.push(Section {
+                title: "尚待补充".into(),
+                blocks: vec![Block::Bullets {
+                    items: self
+                        .gaps
+                        .iter()
+                        .map(|gap| Statement {
+                            text: gap.clone(),
+                            basis: Basis::Unknown,
+                            citations: Vec::new(),
+                        })
+                        .collect(),
+                }],
+            });
+        }
+        AiDocument {
+            schema_version: "msl.readable.v1".into(),
+            title: if title.trim().is_empty() {
+                "工作台回答".into()
+            } else {
+                title.trim().into()
+            },
+            sections,
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,34 +160,76 @@ pub fn citations(values: &[Citation], pack: &EvidencePack) -> Result<(), String>
     Ok(())
 }
 pub fn parse_answer(raw: &str, pack: &EvidencePack) -> Result<Answer, String> {
+    if raw.len() > 2 * 1024 * 1024 {
+        return Err("回答超过安全读取限制，请拆分问题后重试".into());
+    }
     let answer: Answer = serde_json::from_str(&super::schema::strip_single_code_fence(raw))
         .map_err(|_| "问答输出格式无效，未保存为成功回答")?;
-    if answer.claims.len() > 16
-        || answer.gaps.len() > 8
-        || (answer.claims.is_empty() && answer.gaps.is_empty())
-    {
+    if answer.claims.is_empty() && answer.gaps.is_empty() && answer.document.is_none() {
         return Err("回答条目数量无效".into());
     }
     for claim in &answer.claims {
         text(&claim.text, 2000, true)?;
-        if !["fact", "inference"].contains(&claim.basis.as_str()) {
-            return Err("回答必须区分事实与推断".into());
+        if !["fact", "inference", "suggestion", "unknown"].contains(&claim.basis.as_str()) {
+            return Err("回答必须区分事实、推断、建议和待核实内容".into());
         }
-        citations(&claim.citations, pack)?;
+        if !claim.citations.is_empty() || matches!(claim.basis.as_str(), "fact" | "inference") {
+            citations(&claim.citations, pack)?;
+        }
+        if claim.basis == "fact"
+            && claim.citations.iter().any(|c| {
+                pack.sources
+                    .iter()
+                    .any(|s| s.id == c.source_id && s.trust == "model_reading")
+            })
+        {
+            return Err("模型解读尚未核验，必须标记为推断".into());
+        }
     }
     for gap in &answer.gaps {
         text(gap, 500, true)?;
     }
+    if let Some(document) = &answer.document {
+        crate::ai::output::parse_document(&serde_json::to_string(document).unwrap())
+            .map_err(|e| e.to_string())?;
+        for statement in document
+            .sections
+            .iter()
+            .flat_map(|s| &s.blocks)
+            .flat_map(|b| b.statements())
+        {
+            let refs: Vec<_> = statement
+                .citations
+                .iter()
+                .map(|c| Citation {
+                    source_id: c.source_id.clone(),
+                    quote: c.quote.clone(),
+                })
+                .collect();
+            if !refs.is_empty() {
+                citations(&refs, pack)?;
+            }
+            if statement.basis == crate::ai::output::Basis::Fact
+                && refs.iter().any(|c| {
+                    pack.sources
+                        .iter()
+                        .any(|s| s.id == c.source_id && s.trust == "model_reading")
+                })
+            {
+                return Err("模型解读须标为推断，不能作为原始事实".into());
+            }
+        }
+    }
     Ok(answer)
 }
 pub fn parse_kol(raw: &str, pack: &EvidencePack) -> Result<KolOutput, String> {
+    if raw.len() > 2 * 1024 * 1024 {
+        return Err("专家整理超过安全读取限制，请分批整理".into());
+    }
     let output: KolOutput = serde_json::from_str(&super::schema::strip_single_code_fence(raw))
         .map_err(|_| "专家整理输出格式无效")?;
     text(&output.summary, 2500, true)?;
     citations(&output.citations, pack)?;
-    if output.insights.len() > 8 || output.actions.len() > 8 {
-        return Err("请优先保留少量有用的洞察和动作".into());
-    }
     for insight in &output.insights {
         text(&insight.title, 200, true)?;
         for value in [
@@ -133,14 +242,22 @@ pub fn parse_kol(raw: &str, pack: &EvidencePack) -> Result<KolOutput, String> {
         }
         if insight.observation.trim().is_empty()
             || insight.categories.is_empty()
-            || insight.categories.len() > 3
-            || insight.categories.iter().any(|s| {
-                !["practice_barrier", "evidence_need", "research_opportunity"].contains(&s.as_str())
-            })
+            || insight
+                .categories
+                .iter()
+                .any(|s| s.trim().is_empty() || s.len() > 256)
         {
             return Err("洞察需要原始观察及有效分类".into());
         }
         citations(&insight.citations, pack)?;
+        if insight.citations.iter().any(|c| {
+            pack.sources
+                .iter()
+                .any(|s| s.id == c.source_id && s.trust == "model_reading")
+        }) && insight.uncertainty.trim().is_empty()
+        {
+            return Err("资料模型解读需要明确说明待核实之处".into());
+        }
     }
     for action in &output.actions {
         text(&action.title, 200, true)?;
@@ -208,13 +325,54 @@ mod tests {
         assert!(parse_answer(r#"{"claims":[],"gaps":[]}"#, &pack).is_err());
     }
     #[test]
+    fn open_answer_preserves_forty_findings_and_unverified_suggestions() {
+        let pack = pack();
+        let claims:Vec<_>=(0..40).map(|i|json!({"text":format!("开放事项 {i}"),"basis":"fact","citations":[{"source_id":"kol_note:1","quote":"希望了解长期随访证据"}]})).collect();
+        let mut value = json!({"claims":claims,"gaps":[]});
+        assert_eq!(
+            parse_answer(&value.to_string(), &pack)
+                .unwrap()
+                .claims
+                .len(),
+            40
+        );
+        value["claims"] =
+            json!([{"text":"建议下次讨论信息交接方式","basis":"suggestion","citations":[]}]);
+        assert!(parse_answer(&value.to_string(), &pack).is_ok());
+    }
+    #[test]
+    fn qa_document_tables_are_evidence_checked_and_preserved() {
+        let document = json!({"schema_version":"msl.readable.v1","title":"问题梳理","sections":[{"title":"资料比较","blocks":[{"type":"table","columns":["观察"],"rows":[[{"text":"希望了解长期随访证据","basis":"fact","citations":[{"source_id":"kol_note:1","quote":"希望了解长期随访证据"}]}]]}]}]});
+        let input = json!({"claims":[],"gaps":[],"document":document});
+        let answer = parse_answer(&input.to_string(), &pack()).unwrap();
+        assert!(serde_json::to_string(&answer.to_document("test"))
+            .unwrap()
+            .contains("table"));
+        let bad = input.to_string().replace("kol_note:1", "kol_note:999");
+        assert!(parse_answer(&bad, &pack()).is_err());
+    }
+    #[test]
+    fn expert_topics_are_open_and_not_capped_at_eight() {
+        let citation = json!([{"source_id":"kol_note:1","quote":"希望了解长期随访证据"}]);
+        let insights:Vec<_>=(0..12).map(|i|json!({"title":format!("跨团队事项 {i}"),"categories":["知识交接"],"observation":"希望了解长期随访证据","implication":"需要确认","uncertainty":"尚待核实","next_question":"如何交接？","citations":citation})).collect();
+        let output =
+            json!({"summary":"交流事项","citations":citation,"insights":insights,"actions":[]});
+        assert_eq!(
+            parse_kol(&output.to_string(), &pack())
+                .unwrap()
+                .insights
+                .len(),
+            12
+        );
+    }
+    #[test]
     fn knowledge_kol_preserves_three_categories_and_rejects_invented_times() {
         let pack = pack();
         let citation = json!([{"source_id":"kol_note:1","quote":"希望了解长期随访证据"}]);
         let good = json!({"summary":"准备补充长期证据。","citations":citation,"insights":[{"title":"长期证据需求","categories":["practice_barrier","evidence_need","research_opportunity"],"observation":"希望了解长期随访证据","implication":"可能需要补充材料","uncertainty":"具体问题未明","next_question":"您最关心哪类结局？","citations":citation}],"actions":[]});
         assert!(parse_kol(&good.to_string(), &pack).is_ok());
         let mut bad = good.clone();
-        bad["insights"][0]["categories"] = json!(["prescribing_potential"]);
+        bad["insights"][0]["categories"] = json!([""]);
         assert!(parse_kol(&bad.to_string(), &pack).is_err());
         let mut bad = good;
         bad["actions"] = json!([{"enabled":true,"kind":"calendar","title":"交流","work_id":null,"notes":"","waiting_for":"","at":null,"time_basis":"unknown","time_reason":"","citations":citation}]);

@@ -43,6 +43,7 @@ impl Drop for LocalAppDataTestGuard {
 pub fn local_app_root() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
         .map(|path| path.join(crate::db::APP_DATA_DIR_NAME))
         .unwrap_or_else(|| crate::db::default_app_data_dir().join("local"))
 }

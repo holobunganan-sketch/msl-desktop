@@ -1,4 +1,5 @@
 <script lang="ts">
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import CognitionPanel from "$lib/components/CognitionPanel.svelte";
@@ -119,7 +120,7 @@
 
 <div class="workspace-view">
   <header class="page-head"><div><div class="eyebrow">MSL Desktop</div><h1>{tt("workspace.title")}</h1><p>{en ? "Folders linked to your projects, kept in sync automatically." : "项目关联的目录集中在这里，随项目绑定关系自动同步。"}</p></div><AppButton variant="secondary" onclick={() => navigateProject()}>{en ? "Link a folder in Projects" : "前往项目绑定目录"}</AppButton></header>
-  {#if error}<div class="error" role="alert">{error}</div>{/if}
+  <div class="error stable-feedback"><StatusLine message={error}/></div>
   <section class="directory-list" data-testid="project-directory-list" aria-label={en ? "Project directories" : "项目关联目录"}>
     {#each directories as directory (directory.id)}
       {@const blockers = protectedProjects(directory)}
@@ -148,7 +149,7 @@
 </div>
 <Modal bind:open={removalOpen} title={en ? "Remove directory from workbench" : "从工作台移除目录"}>
   <p class="remove-message">{en ? `Remove “${removalTarget?.name ?? ""}” and its archived-project links? Files and folders on disk will not be changed. Existing reports and historical evidence remain available.` : `确定移除“${removalTarget?.name ?? ""}”及其已归档项目关联？磁盘上的文件夹和文件保持不变，已有报告和历史证据继续保留。`}</p>
-  {#if removalError}<p class="error" role="alert">{removalError}</p>{/if}
+  <div class="error stable-feedback"><StatusLine message={removalError}/></div>
   <div class="modal-actions"><AppButton variant="secondary" testid="directory-remove-cancel" disabled={removing} onclick={() => removalOpen = false}>{tt("common.cancel")}</AppButton><AppButton variant="danger" testid="directory-remove-confirm" loading={removing} onclick={removeDirectory}>{en ? "Remove from workbench" : "确认移除"}</AppButton></div>
 </Modal>
 

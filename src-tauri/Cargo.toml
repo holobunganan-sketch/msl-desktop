@@ -1,8 +1,8 @@
 [package]
 name = "msl-desktop"
-version = "0.3.2"
-description = "A Tauri App"
-authors = ["you"]
+version = "0.3.8"
+description = "MSL Desktop workbench"
+authors = ["MSL Desktop contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -38,6 +38,7 @@ keyring = { version = "3", features = ["windows-native"] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Security", "Win32_System_Registry"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+base64 = "0.22"
 zip = "2"
 quick-xml = "0.37"
 pdf-extract = "0.7"

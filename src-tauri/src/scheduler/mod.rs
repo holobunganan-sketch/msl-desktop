@@ -120,6 +120,10 @@ pub fn mark_report_attempt(schedule: &mut crate::db::reports::ReportSchedule, du
 async fn poll_once(app: &tauri::AppHandle) {
     use tauri::Manager;
 
+    if !crate::sync::service::allows_automatic_ai(&crate::db::default_app_data_dir()) {
+        return;
+    }
+
     let state = app.state::<crate::app_state::AppState>();
     let now = Local::now();
     let analysis_due = state.with_database(|db| {

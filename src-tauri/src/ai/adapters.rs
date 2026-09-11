@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use super::AiAttachment;
+use base64::Engine;
 use reqwest::header::{HeaderValue, USER_AGENT};
 use serde_json::Value;
 
@@ -229,6 +231,122 @@ fn anthropic_messages_body(request: &AiTextRequest) -> Value {
     body
 }
 
+pub fn attachment_supported(model: &ProviderModel, mime: &str, size: u64) -> Result<(), AiError> {
+    let caps: Value = serde_json::from_str(&model.capabilities_json).unwrap_or_default();
+    let limit = caps["max_file_bytes"]
+        .as_u64()
+        .unwrap_or(20 * 1024 * 1024)
+        .min(24 * 1024 * 1024);
+    if size > limit {
+        return Err(AiError::Config(
+            "文件已保存，但超过本接口单次读取限制；请分段导入或提供较小版本".into(),
+        ));
+    }
+    let image = matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    );
+    let audio = matches!(mime, "audio/wav" | "audio/mpeg");
+    let modality = if image {
+        "image"
+    } else if audio {
+        "audio"
+    } else {
+        "file"
+    };
+    if let Some(modes) = caps["input_modalities"].as_array() {
+        if !modes.iter().any(|m| m == modality) {
+            return Err(AiError::Config(
+                "所选模型声明不支持此类资料，文件已保存".into(),
+            ));
+        }
+    }
+    let supported = match model.protocol.as_str() {
+        "chat_completions" => image || audio || mime == "application/pdf",
+        "responses" => {
+            image
+                || mime == "application/pdf"
+                || mime.starts_with("text/")
+                || matches!(
+                    mime,
+                    "application/msword"
+                        | "application/rtf"
+                        | "application/json"
+                        | "application/xml"
+                        | "application/vnd.oasis.opendocument.text"
+                        | "application/vnd.ms-powerpoint"
+                        | "application/vnd.ms-excel"
+                )
+                || mime.starts_with("application/vnd.openxmlformats-officedocument.")
+        }
+        "anthropic_messages" => image || mime == "application/pdf",
+        _ => false,
+    };
+    if supported {
+        Ok(())
+    } else {
+        Err(AiError::Config(
+            "当前接口没有此格式的文件读取通道，资料已保存；可更换专家分析模型后重试".into(),
+        ))
+    }
+}
+fn request_body(
+    protocol: &str,
+    request: &AiTextRequest,
+    parts: &[AiAttachment],
+) -> Result<Value, AiError> {
+    let mut body = match protocol {
+        "chat_completions" => chat_completions_body(request),
+        "responses" => responses_body(request),
+        "anthropic_messages" => anthropic_messages_body(request),
+        _ => return Err(AiError::Config("不支持的文件接口协议".into())),
+    };
+    crate::ai::output::apply_output_format(protocol, &mut body, &request.output_format)
+        .map_err(|error| AiError::Config(error.to_string()))?;
+    if parts.is_empty() {
+        return Ok(body);
+    }
+    let key = if protocol == "responses" {
+        "input"
+    } else {
+        "messages"
+    };
+    let message = body[key]
+        .as_array_mut()
+        .and_then(|messages| messages.iter_mut().rev().find(|m| m["role"] == "user"))
+        .ok_or_else(|| AiError::Config("文件读取缺少用户请求".into()))?;
+    let text = message["content"].as_str().unwrap_or("").to_string();
+    let mut content = vec![
+        serde_json::json!({"type":if protocol=="responses"{"input_text"}else{"text"},"text":text}),
+    ];
+    for part in parts {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&part.data);
+        let data_url = format!("data:{};base64,{encoded}", part.media_type);
+        let image = part.media_type.starts_with("image/");
+        let value = match protocol {
+            "responses" if image => serde_json::json!({"type":"input_image","image_url":data_url}),
+            "responses" => {
+                serde_json::json!({"type":"input_file","filename":part.filename,"file_data":data_url})
+            }
+            "chat_completions" if image => {
+                serde_json::json!({"type":"image_url","image_url":{"url":data_url}})
+            }
+            "chat_completions" if part.media_type.starts_with("audio/") => {
+                serde_json::json!({"type":"input_audio","input_audio":{"data":encoded,"format":if part.media_type=="audio/wav"{"wav"}else{"mp3"}}})
+            }
+            "chat_completions" => {
+                serde_json::json!({"type":"file","file":{"filename":part.filename,"file_data":data_url}})
+            }
+            _ => {
+                serde_json::json!({"type":if image{"image"}else{"document"},"source":{"type":"base64","media_type":part.media_type,"data":encoded}})
+            }
+        };
+        content.push(value);
+    }
+    message["content"] = Value::Array(content);
+    Ok(body)
+}
+
 async fn send_json(
     client: &reqwest::Client,
     url: reqwest::Url,
@@ -237,9 +355,26 @@ async fn send_json(
     api_key: &str,
     body: Value,
     anthropic: bool,
+    budget: &std::sync::Mutex<crate::ai::output::RequestBudget>,
 ) -> Result<Value, AiError> {
     let opencode_session = format!("msl-desktop-{}", uuid::Uuid::new_v4());
     for attempt in 1..=MAX_ATTEMPTS {
+        {
+            use crate::ai::output::AttemptKind;
+            let mut budget = budget
+                .lock()
+                .map_err(|_| AiError::Api("请求预算不可用".into()))?;
+            let kind = if attempt > 1 {
+                AttemptKind::TransportRetry
+            } else if budget.used() == 0 {
+                AttemptKind::Initial
+            } else {
+                AttemptKind::FormatRepair
+            };
+            budget
+                .claim(kind)
+                .map_err(|e| AiError::Api(e.to_string()))?;
+        }
         let mut request = client
             .post(url.clone())
             .bearer_auth(api_key)
@@ -256,7 +391,7 @@ async fn send_json(
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01");
         }
-        let response = match request.send().await {
+        let mut response = match request.send().await {
             Ok(value) => value,
             // Only retry failed connection establishment. A response timeout
             // may already have consumed generation tokens; do not start over.
@@ -274,6 +409,19 @@ async fn send_json(
         };
         let status = response.status();
         if !status.is_success() {
+            if status.as_u16() == 429 {
+                let retry = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok());
+                return Err(AiError::Api(match retry {
+                    Some(seconds) => {
+                        format!("模型接口限流，请在 {seconds} 秒后重试；本次未自动重复请求")
+                    }
+                    None => "模型接口限流，请稍后重试；本次未自动重复请求".into(),
+                }));
+            }
             if attempt < MAX_ATTEMPTS
                 && (status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error())
             {
@@ -283,11 +431,31 @@ async fn send_json(
             // Error bodies may echo the submitted document or credential.
             return Err(http_status_error(status, model, attempt));
         }
-        let text = response
-            .text()
+        // Bound decoded bytes as they arrive, including chunked responses without Content-Length.
+        const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+        let too_large = || {
+            AiError::Api(
+                "模型响应超过 4 MiB 安全上限，请缩小本次分析范围后重试；未保存不完整结果".into(),
+            )
+        };
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|error| transport_error(&error, model, attempt))?;
-        return serde_json::from_str(&text).map_err(|error| {
+            .map_err(|error| transport_error(&error, model, attempt))?
+        {
+            if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+                return Err(too_large());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        return serde_json::from_slice(&bytes).map_err(|error| {
             AiError::Api(format!(
                 "Provider={} model={} 响应解析失败: {}",
                 connection.display_name,
@@ -332,12 +500,69 @@ fn response_model(body: &Value, fallback: &str) -> Option<String> {
         .or_else(|| Some(fallback.into()))
 }
 
+fn completion_status(body: &Value, protocol: &str) -> Result<super::Completion, AiError> {
+    let reason = match protocol {
+        "chat_completions" => body.pointer("/choices/0/finish_reason"),
+        "responses" => body.get("status"),
+        _ => body.get("stop_reason"),
+    }
+    .and_then(Value::as_str);
+    let refusal = body
+        .pointer("/choices/0/message/refusal")
+        .is_some_and(|v| !v.is_null())
+        || body
+            .get("output")
+            .and_then(Value::as_array)
+            .is_some_and(|a| {
+                a.iter().any(|i| {
+                    i.get("content")
+                        .and_then(Value::as_array)
+                        .is_some_and(|c| c.iter().any(|p| p["type"] == "refusal"))
+                })
+            });
+    if refusal || matches!(reason, Some("content_filter" | "refusal")) {
+        return Err(AiError::Api(
+            "模型未提供此内容，本次已停止；未进行格式修复或重复生成".into(),
+        ));
+    }
+    if matches!(
+        reason,
+        Some(
+            "length"
+                | "max_tokens"
+                | "incomplete"
+                | "failed"
+                | "cancelled"
+                | "in_progress"
+                | "queued"
+                | "tool_calls"
+                | "tool_use"
+                | "pause_turn"
+        )
+    ) {
+        return Err(AiError::Api(
+            "模型输出尚未完整结束，未保存为成功结果；可调整输出上限后重试".into(),
+        ));
+    }
+    Ok(
+        if matches!(
+            reason,
+            Some("stop" | "end_turn" | "stop_sequence" | "completed")
+        ) {
+            super::Completion::Complete
+        } else {
+            super::Completion::Unknown
+        },
+    )
+}
+
 async fn chat_completions(
     client: &reqwest::Client,
     connection: &ProviderConnection,
     model: &ProviderModel,
     api_key: &str,
     request: &AiTextRequest,
+    parts: &[AiAttachment],
 ) -> Result<AiTextResponse, AiError> {
     let body = send_json(
         client,
@@ -345,10 +570,12 @@ async fn chat_completions(
         connection,
         model,
         api_key,
-        chat_completions_body(request),
+        request_body("chat_completions", request, parts)?,
         false,
+        &request.budget,
     )
     .await?;
+    let completion = completion_status(&body, "chat_completions")?;
     let content = body
         .pointer("/choices/0/message/content")
         .and_then(text_content)
@@ -367,6 +594,7 @@ async fn chat_completions(
         })?;
     Ok(AiTextResponse {
         content,
+        completion,
         model: response_model(&body, &model.model_id),
         usage: body.get("usage").cloned(),
         request_id: body.get("id").and_then(Value::as_str).map(str::to_string),
@@ -379,6 +607,7 @@ async fn responses(
     model: &ProviderModel,
     api_key: &str,
     request: &AiTextRequest,
+    parts: &[AiAttachment],
 ) -> Result<AiTextResponse, AiError> {
     let body = send_json(
         client,
@@ -386,10 +615,12 @@ async fn responses(
         connection,
         model,
         api_key,
-        responses_body(request),
+        request_body("responses", request, parts)?,
         false,
+        &request.budget,
     )
     .await?;
+    let completion = completion_status(&body, "responses")?;
     let content = body
         .get("output_text")
         .and_then(Value::as_str)
@@ -414,6 +645,7 @@ async fn responses(
         })?;
     Ok(AiTextResponse {
         content,
+        completion,
         model: response_model(&body, &model.model_id),
         usage: body.get("usage").cloned(),
         request_id: body.get("id").and_then(Value::as_str).map(str::to_string),
@@ -426,6 +658,7 @@ async fn anthropic_messages(
     model: &ProviderModel,
     api_key: &str,
     request: &AiTextRequest,
+    parts: &[AiAttachment],
 ) -> Result<AiTextResponse, AiError> {
     let body = send_json(
         client,
@@ -433,10 +666,12 @@ async fn anthropic_messages(
         connection,
         model,
         api_key,
-        anthropic_messages_body(request),
+        request_body("anthropic_messages", request, parts)?,
         true,
+        &request.budget,
     )
     .await?;
+    let completion = completion_status(&body, "anthropic_messages")?;
     let content = body
         .get("content")
         .and_then(Value::as_array)
@@ -452,6 +687,7 @@ async fn anthropic_messages(
         .ok_or_else(|| AiError::Api("Anthropic 响应缺少 content[].text".into()))?;
     Ok(AiTextResponse {
         content,
+        completion,
         model: response_model(&body, &model.model_id),
         usage: body.get("usage").cloned(),
         request_id: body.get("id").and_then(Value::as_str).map(str::to_string),
@@ -464,6 +700,30 @@ pub async fn complete(
     api_key: &str,
     request: &AiTextRequest,
 ) -> Result<AiTextResponse, AiError> {
+    complete_multimodal(connection, model, api_key, request, &[]).await
+}
+
+pub async fn complete_multimodal(
+    connection: &ProviderConnection,
+    model: &ProviderModel,
+    api_key: &str,
+    request: &AiTextRequest,
+    parts: &[AiAttachment],
+) -> Result<AiTextResponse, AiError> {
+    let url = endpoint_url(connection, model)?;
+    if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") && !endpoint_is_loopback(&url) {
+        return Err(AiError::Config("隔离测试只允许本地模拟接口".into()));
+    }
+    let mut size = 0u64;
+    for part in parts {
+        size += part.data.len() as u64;
+        attachment_supported(model, &part.media_type, part.data.len() as u64)?;
+    }
+    if size > 24 * 1024 * 1024 {
+        return Err(AiError::Config(
+            "本次文件批量超过读取限制，请分批读取".into(),
+        ));
+    }
     let client = http_client(&endpoint_url(connection, model)?, GENERATION_TIMEOUT)?;
     // The budget includes the automatic connection/status retry. Two validated
     // generations (including a JSON repair) remain below the 10-minute stale-run
@@ -471,11 +731,11 @@ pub async fn complete(
     let completion = async {
         match model.protocol.as_str() {
             "chat_completions" => {
-                chat_completions(&client, connection, model, api_key, request).await
+                chat_completions(&client, connection, model, api_key, request, parts).await
             }
-            "responses" => responses(&client, connection, model, api_key, request).await,
+            "responses" => responses(&client, connection, model, api_key, request, parts).await,
             "anthropic_messages" => {
-                anthropic_messages(&client, connection, model, api_key, request).await
+                anthropic_messages(&client, connection, model, api_key, request, parts).await
             }
             other => Err(AiError::Config(format!("未知模型协议: {other}"))),
         }
@@ -506,6 +766,7 @@ pub async fn probe(
                 api_key,
                 chat_completions_body(request),
                 false,
+                &request.budget,
             )
             .await?
         }
@@ -518,6 +779,7 @@ pub async fn probe(
                 api_key,
                 responses_body(request),
                 false,
+                &request.budget,
             )
             .await?
         }
@@ -530,6 +792,7 @@ pub async fn probe(
                 api_key,
                 anthropic_messages_body(request),
                 true,
+                &request.budget,
             )
             .await?
         }
@@ -625,6 +888,12 @@ mod tests {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 };
+                // Winsock may inherit the listener's nonblocking mode. A client can
+                // connect before its first bytes arrive; wait instead of panicking.
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
                 let index = captured.fetch_add(1, Ordering::SeqCst);
                 let mut buffer = [0_u8; 16_384];
                 let _ = stream.read(&mut buffer).unwrap();
@@ -666,7 +935,185 @@ mod tests {
             }],
             temperature: Some(0.0),
             max_output_tokens: Some(20),
+            output_format: crate::ai::output::OutputFormat::Text,
+            budget: Default::default(),
         }
+    }
+    #[test]
+    fn logical_generation_and_repair_share_three_http_attempts() {
+        tauri::async_runtime::block_on(async {
+            let (base, count, handle) = sequence_server(vec![
+                (500, "{}"),
+                (
+                    200,
+                    r#"{"choices":[{"message":{"content":"invalid format"},"finish_reason":"stop"}]}"#,
+                ),
+                (500, "{}"),
+                (
+                    200,
+                    r#"{"choices":[{"message":{"content":"must not be called"},"finish_reason":"stop"}]}"#,
+                ),
+            ]);
+            let request = request();
+            let m = model("chat_completions", "/chat/completions");
+            let c = connection(&base);
+            assert!(complete(&c, &m, "synthetic", &request).await.is_ok());
+            let repair = request.clone();
+            assert!(complete(&c, &m, "synthetic", &repair).await.is_err());
+            handle.join().unwrap();
+            assert_eq!(count.load(Ordering::SeqCst), 3);
+        });
+    }
+    #[test]
+    fn oversized_chunked_provider_response_stops_at_the_transport_boundary() {
+        tauri::async_runtime::block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let handle = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = [0u8; 16384];
+                stream.read(&mut request).unwrap();
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").unwrap();
+                let body = serde_json::json!({"choices":[{"message":{"content":"x".repeat(5*1024*1024)},"finish_reason":"stop"}]}).to_string();
+                for chunk in body.as_bytes().chunks(32768) {
+                    if write!(stream, "{:x}\r\n", chunk.len())
+                        .and_then(|_| stream.write_all(chunk))
+                        .and_then(|_| stream.write_all(b"\r\n"))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = stream.write_all(b"0\r\n\r\n");
+            });
+            let result = complete(
+                &connection(&format!("http://{address}")),
+                &model("chat_completions", "/chat/completions"),
+                "synthetic",
+                &request(),
+            )
+            .await;
+            handle.join().unwrap();
+            assert!(
+                result.is_err(),
+                "Oversized output must be rejected before allocating an unbounded JSON document"
+            );
+            assert!(result.unwrap_err().to_string().contains("4 MiB"));
+        });
+    }
+    #[test]
+    fn explicit_truncation_and_refusal_never_become_completed_content() {
+        tauri::async_runtime::block_on(async {
+            for (protocol, path, response) in [
+                (
+                    "chat_completions",
+                    "/chat/completions",
+                    r#"{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}"#,
+                ),
+                (
+                    "responses",
+                    "/responses",
+                    r#"{"status":"incomplete","output_text":"partial"}"#,
+                ),
+                (
+                    "anthropic_messages",
+                    "/messages",
+                    r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"partial"}]}"#,
+                ),
+                (
+                    "chat_completions",
+                    "/chat/completions",
+                    r#"{"choices":[{"message":{"content":"refused","refusal":"cannot answer"},"finish_reason":"stop"}]}"#,
+                ),
+            ] {
+                let (base, _, handle) = server(200, response);
+                assert!(
+                    complete(
+                        &connection(&base),
+                        &model(protocol, path),
+                        "synthetic",
+                        &request()
+                    )
+                    .await
+                    .is_err(),
+                    "incomplete {protocol} response was accepted"
+                );
+                handle.join().unwrap();
+            }
+        });
+    }
+    #[test]
+    fn multimodal_mock_receives_real_file_bytes_in_all_three_protocols() {
+        tauri::async_runtime::block_on(async {
+            for (protocol, path, response, expected) in [
+                (
+                    "chat_completions",
+                    "/chat/completions",
+                    r#"{"choices":[{"message":{"content":"read"}}]}"#,
+                    "file_data",
+                ),
+                (
+                    "responses",
+                    "/responses",
+                    r#"{"output_text":"read"}"#,
+                    "input_file",
+                ),
+                (
+                    "anthropic_messages",
+                    "/messages",
+                    r#"{"content":[{"type":"text","text":"read"}]}"#,
+                    "document",
+                ),
+            ] {
+                let (base, capture, handle) = server(200, response);
+                let part = super::super::AiAttachment {
+                    filename: "synthetic.pdf".into(),
+                    media_type: "application/pdf".into(),
+                    data: b"%PDF-test".to_vec(),
+                };
+                let result = complete_multimodal(
+                    &connection(&base),
+                    &model(protocol, path),
+                    "synthetic-key",
+                    &request(),
+                    &[part],
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.content, "read");
+                handle.join().unwrap();
+                let wire = capture.lock().unwrap();
+                assert!(
+                    wire.contains("JVBERi10ZXN0"),
+                    "Actual bytes must reach provider"
+                );
+                assert!(wire.contains(expected));
+            }
+        });
+    }
+
+    #[test]
+    fn attachment_capabilities_and_limits_do_not_depend_on_model_name() {
+        let mut m = model("responses", "/responses");
+        assert!(attachment_supported(&m, "application/pdf", 1024).is_ok());
+        assert!(attachment_supported(&m, "application/octet-stream", 10).is_err());
+        assert!(attachment_supported(&m, "application/pdf", 25 * 1024 * 1024).is_err());
+        m.capabilities_json = r#"{"input_modalities":["text"],"max_file_bytes":100}"#.into();
+        assert!(attachment_supported(&m, "image/png", 10).is_err());
+        m.capabilities_json = r#"{"input_modalities":["image"],"max_file_bytes":100}"#.into();
+        assert!(attachment_supported(&m, "image/png", 10).is_ok());
+        assert!(attachment_supported(&m, "image/png", 101).is_err());
+        m.protocol = "anthropic_messages".into();
+        m.capabilities_json = "{}".into();
+        assert!(attachment_supported(
+            &m,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            100
+        )
+        .is_err());
     }
 
     #[test]
@@ -931,6 +1378,7 @@ mod tests {
                 "synthetic-private-key",
                 chat_completions_body(&request()),
                 false,
+                &std::sync::Mutex::new(crate::ai::output::RequestBudget::default()),
             )
             .await;
             handle.join().unwrap();

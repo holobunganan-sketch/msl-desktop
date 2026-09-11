@@ -1,0 +1,54 @@
+// Isolated regression for a cloud folder covered by an ancestor Git repository.
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {createRequire} from 'node:module';
+import {execFileSync} from 'node:child_process';
+assert.ok(process.env.MSL_TEST_PROFILE);
+const root=path.resolve(process.env.MSL_TEST_PROFILE);
+for(const [key,part] of Object.entries({APPDATA:'appdata',LOCALAPPDATA:'localappdata',TEMP:'temp',TMP:'temp'}))assert.equal(path.resolve(process.env[key]),path.join(root,part));
+const {chromium}=createRequire(path.join(process.env.MSL_NODE_MODULES,'runtime.cjs'))('playwright');
+let browser;
+for(const host of ['127.0.0.1','[::1]'])try{browser=await chromium.connectOverCDP(`http://${host}:${process.env.MSL_CDP_PORT}`);break}catch{}
+assert.ok(browser);
+const page=browser.contexts()[0].pages()[0];
+const call=(command,args={})=>page.evaluate(({command,args})=>window.__TAURI_INTERNALS__.invoke(command,args),{command,args});
+const until=async fn=>{for(let i=0;i<100;i++){if(await fn())return;await page.waitForTimeout(100);}throw Error('State did not settle');};
+try {
+ await page.reload();await page.locator('.content-scroll').waitFor();
+ assert.equal(path.resolve((await call('backup_status')).data_directory),path.join(root,'appdata','MSLDesktop'));
+ const parent=path.resolve(root,`../../wps-private-cloud-fixture-${Date.now()}`),cloud=path.join(parent,'WPS云盘');
+ assert.ok(!parent.split(path.sep).includes('.test-runtime'),'Cloud fixture must exercise production Git protection without a test-repo bypass');
+ assert.equal(fs.existsSync(parent),false,'Use a fresh synthetic profile');
+ fs.mkdirSync(cloud,{recursive:true});
+ execFileSync('git',['init','--quiet',parent]);
+ fs.writeFileSync(path.join(cloud,'keep.txt'),'Synthetic original; do not modify');
+ execFileSync('git',['-C',parent,'add','--','WPS云盘/keep.txt']);
+ await page.evaluate(()=>window.dispatchEvent(new CustomEvent('dashboard:navigate',{detail:{view:'settings'}})));
+ await page.getByTestId('backup-history').locator(':scope > summary').click();
+ await page.getByTestId('backup-advanced').locator(':scope > summary').click();
+ await page.getByTestId('backup-directory').fill(cloud);
+ await page.getByTestId('backup-save').click();
+ await page.locator('.backup-settings').getByRole('button',{name:'创建私有云盘子文件夹',exact:true}).click();
+ const child=path.join(cloud,'MSLDesktop-private');
+ await until(async()=>await page.getByTestId('backup-directory').inputValue()===child);
+ await page.getByTestId('backup-save').click();
+ await until(async()=>(await call('backup_status')).config.directory===child);
+ await page.getByTestId('backup-now').click();
+ await until(async()=>{const s=await call('backup_status');return s.state.last_success>0&&path.dirname(s.state.last_file)===child;});
+ const backup=(await call('backup_status')).state.last_file;
+ assert.ok(fs.existsSync(backup));
+ const preview=await call('preview_backup_restore',{path:backup});
+ await call('discard_backup_preview',{token:preview.token});
+ await page.getByTestId('sync-directory').fill(cloud);
+ await page.getByTestId('sync-connect').click();
+ await page.locator('.sync-settings').getByRole('button',{name:'创建私有云盘子文件夹',exact:true}).click();
+ await page.getByRole('dialog').getByRole('button',{name:'建立数据集并上传本机数据',exact:true}).click();
+ await until(async()=>{const s=await call('sync_status');return !!s.config.dataset_id&&s.config.directory===child;});
+ assert.equal((await call('sync_status')).config.directory,child);
+ assert.equal(fs.readFileSync(path.join(cloud,'keep.txt'),'utf8'),'Synthetic original; do not modify');
+ assert.equal(fs.readFileSync(path.join(child,'.gitignore'),'utf8'),'*\n');
+ assert.equal(execFileSync('git',['-C',child,'ls-files','--','.'],{encoding:'utf8'}),'');
+ for(const file of [backup,path.join(child,'MSLDesktop.sync','manifest.json')])execFileSync('git',['-C',child,'check-ignore','--quiet','--',file]);
+ console.log('PASS native private cloud flow: protected parent, safe child, saved/verified backup, sync connection, Git exclusion, original file unchanged');
+}finally{await browser.close();}

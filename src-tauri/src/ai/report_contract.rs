@@ -37,16 +37,16 @@ fn valid_text(text: &str, max: usize, required: bool) -> bool {
         ]
         .iter()
         .any(|v| lower.contains(v))
-        && !text.contains('\n')
-        && !text.contains('\r')
 }
 pub fn validate_and_render(snapshot: &ReportSnapshot, raw: &str) -> Result<String, String> {
+    if raw.len() > 2 * 1024 * 1024 {
+        return Err("报告超过安全读取限制，请按阶段分别生成".into());
+    }
     let output: ReportOutput =
         serde_json::from_str(&crate::ai::schema::strip_single_code_fence(raw))
             .map_err(|_| "报告须返回 report-spec-v2 的 JSON 对象".to_string())?;
-    let max = if snapshot.kind == "weekly" { 16 } else { 32 };
-    if output.items.is_empty() || output.items.len() > max {
-        return Err(format!("报告条目应为 1–{max} 项"));
+    if output.items.is_empty() {
+        return Err("报告未返回可供阅读的条目".into());
     }
     let mut allowed = snapshot
         .analysis
@@ -61,26 +61,18 @@ pub fn validate_and_render(snapshot: &ReportSnapshot, raw: &str) -> Result<Strin
     let mut lines = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for item in output.items {
-        if ![
-            "result",
-            "progress",
-            "temporary",
-            "blocker",
-            "next",
-            "coverage",
-        ]
-        .contains(&item.category.as_str())
+        if item.category.trim().is_empty()
             || !["observed", "inferred", "unknown"].contains(&item.certainty.as_str())
             || !["period", "current", "next"].contains(&item.horizon.as_str())
         {
             return Err("报告分类、事实判断或时间范围无效".into());
         }
         if !valid_text(&item.headline, 100, true)
-            || !valid_text(&item.change, if max == 16 { 700 } else { 1500 }, true)
-            || !valid_text(&item.impact, 600, false)
-            || !valid_text(&item.next_action, 700, false)
+            || !valid_text(&item.change, 128 * 1024, true)
+            || !valid_text(&item.impact, 128 * 1024, false)
+            || !valid_text(&item.next_action, 128 * 1024, false)
         {
-            return Err("报告含内部字段、换行或过长/空白内容，请改为易读短句".into());
+            return Err("报告含内部字段或空白/超出安全限制的内容".into());
         }
         let project = match item.project_id {
             Some(id) => Some(
@@ -305,6 +297,22 @@ mod tests {
         assert!(rendered.contains("下一步：与同事确认使用范围。"));
         assert!(!rendered.contains("entity_id"));
         assert!(!rendered.contains("{\"items\""));
+    }
+    #[test]
+    fn reports_preserve_forty_evidenced_topics_and_multiline_content() {
+        let (snapshot, output) = fixture();
+        let items: Vec<_> = (0..40)
+            .map(|i| {
+                let mut item = output["items"][0].clone();
+                item["headline"] = json!(format!("开放事项 {i}"));
+                item["category"] = json!("知识交接");
+                item["change"] = json!("第一段\n第二段");
+                item
+            })
+            .collect();
+        let rendered = validate_and_render(&snapshot, &json!({"items":items}).to_string()).unwrap();
+        assert!(rendered.contains("40. "));
+        assert!(rendered.contains("第一段\n第二段"));
     }
     #[test]
     fn rejects_fake_sources_unknown_projects_and_technical_text() {

@@ -1,4 +1,8 @@
 <script lang="ts">
+  import StatusLine from "$lib/components/ui/StatusLine.svelte";
+  import ListPager from './ui/ListPager.svelte';
+  import {paginate} from '$lib/services/pagination';
+  import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import NaturalCapture from './NaturalCapture.svelte';
   import {navigateTo} from '$lib/services/navigation';
   let {focusId=null,resumeId=null,onprojectchange=()=>{}}:{focusId?:number|null;resumeId?:number|null;onprojectchange?:(id:number)=>void}=$props();
@@ -7,6 +11,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { locale, t, translateKind, translateStatus } from "$lib/i18n";
   import Modal from "$lib/components/ui/Modal.svelte";
+  import TypedDeleteDialog from './ui/TypedDeleteDialog.svelte';
   import AppButton from "$lib/components/ui/AppButton.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
   import { addToast } from "$lib/stores/toast";
@@ -17,6 +22,7 @@
 
   type Work = {
     id: number;
+    revision:number;
     title: string;
     status: string;
     summary: string | null;
@@ -114,6 +120,12 @@
   let works = $state<Work[]>([]);
   let selectedId = $state<number | null>(null);
   let detail = $state<WorkDetail | null>(null);
+  let taskListPage=$state(1),waitingListPage=$state(1),calendarListPage=$state(1),fileListPage=$state(1);
+  const projectTasks=$derived(paginate(detail?.tasks??[],taskListPage));
+  const projectWaiting=$derived(paginate(detail?.waiting.filter(item=>item.status==='open')??[],waitingListPage));
+  const projectCalendar=$derived(paginate(detail?.calendar??[],calendarListPage));
+  const projectFiles=$derived(paginate(detail?.files??[],fileListPage));
+  $effect(()=>{selectedId;taskListPage=1;waitingListPage=1;calendarListPage=1;fileListPage=1;});
   let error = $state("");
   let newTitle = $state("");
   let newSummary = $state("");
@@ -126,6 +138,7 @@
   let editSummary = $state("");
   let editStatus = $state("active");
   let showDelete = $state(false);
+  let deleteSnapshot=$state<Work|null>(null);
   let deleteLoading = $state(false);
   let deleteError = $state("");
   let resumeError = $state("");
@@ -273,16 +286,17 @@
   function openDelete() {
     if (!detail) return;
     deleteError = "";
+    deleteSnapshot={...detail.work};
     showDelete = true;
   }
 
-  async function deleteWork() {
-    if (!detail || deleteLoading) return;
-    const id = detail.work.id;
+  async function deleteWork(confirmationName:string) {
+    if (!deleteSnapshot || deleteLoading) return;
+    const id = deleteSnapshot.id;
     deleteLoading = true;
     deleteError = "";
     try {
-      await invoke("delete_work", { id });
+      await invoke("delete_work", { id, confirmationName, expectedRevision:deleteSnapshot.revision });
       showDelete = false;
       selectedId = null;
       detail = null;
@@ -433,14 +447,14 @@
     </div>
     <AppButton testid="work-create" label={tt("work.new")} onclick={() => openCreate()} />
   </div>
-  {#if error}<div class="status error">{error}</div>{/if}
+  <div class="status error stable-feedback"><StatusLine message={error}/></div>
 
   <Modal bind:open={showCreate} title={tt("work.new")} onclose={() => (showCreate = false)}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); createWork(); }}>
       <label for="new-work-title">{tt("work.title")} *</label>
       <input id="new-work-title" bind:value={newTitle} placeholder={tt("work.placeholder")} />
       <label for="new-work-summary">{tt("work.summary")}</label><textarea id="new-work-summary" bind:value={newSummary} rows="3"></textarea>
-      {#if createError}<div class="status error" role="alert">{createError}</div>{/if}
+      <div class="status error stable-feedback"><StatusLine message={createError}/></div>
       <div class="modal-actions">
         <button type="button" onclick={() => (showCreate = false)}>{tt("common.cancel")}</button>
         <AppButton testid="work-save" type="submit" loading={createLoading} label={tt("common.create")} />
@@ -452,6 +466,7 @@
     <!-- 左侧：Work 列表 -->
     <div class="list-pane">
       <div class="pane-head"><strong>{tt("work.allWorks")}</strong><span>{works.length}</span></div>
+      {#if works.length}
       <ul class="work-list">
         {#each works as w (w.id)}
           <li class:active={selectedId === w.id}>
@@ -462,8 +477,8 @@
           </li>
         {/each}
       </ul>
-      {#if works.length === 0}
-        <div class="muted empty">{tt("work.none")}</div>
+      {:else}
+        <EmptyState compact title={currentLocale==='en-US'?'No projects yet':'还没有项目'}/>
       {/if}
     </div>
 
@@ -500,7 +515,7 @@
             <div class="muted">{tt("work.resumeEmpty")}</div>
           {/if}
 
-          {#if resumeError}<div class="status error" role="alert">{resumeError}</div>{/if}
+          <div class="status error stable-feedback"><StatusLine message={resumeError}/></div>
           <details class="progress-details" data-testid="work-progress-details">
             <summary>{tt("work.progressDetails")}</summary>
             <div class="rp-form">
@@ -539,17 +554,12 @@
           </form>
         </Modal>
 
-        <Modal bind:open={showDelete} title={tt("work.deleteTitle")} onclose={() => (showDelete = false)}>
+        <TypedDeleteDialog bind:open={showDelete} title={tt("work.deleteTitle")} name={deleteSnapshot?.title??w.title} busy={deleteLoading} error={deleteError} testid="work-delete" onconfirm={deleteWork}>
           <div class="delete-confirmation">
             <p>{tt("work.deleteMessage", { title: w.title })}</p>
             <div class="delete-impact">{tt("work.deleteImpact")}</div>
-            {#if deleteError}<div class="status error" role="alert">{deleteError}</div>{/if}
-            <div class="modal-actions">
-              <AppButton variant="secondary" label={tt("common.cancel")} onclick={() => (showDelete = false)} />
-              <AppButton testid="work-delete-confirm" variant="danger" loading={deleteLoading} label={tt("common.delete")} onclick={deleteWork} />
-            </div>
           </div>
-        </Modal>
+        </TypedDeleteDialog>
 
         <!-- WAITING -->
         <section class="card">
@@ -557,7 +567,8 @@
           {#if detail.waiting.filter((x) => x.status === "open").length === 0}
             <div class="muted">{tt("work.noWaiting")}</div>
           {/if}
-          {#each detail.waiting as wq (wq.id)}
+          <ListPager view={projectWaiting} onchange={(page)=>waitingListPage=page} testid="project-waiting-pagination"/>
+          {#each projectWaiting.items as wq (wq.id)}
             {#if wq.status === "open"}
               <div class="row-item">
                 <button class="entity-link" onclick={()=>navigateTo('waiting',wq.id)}>{wq.title}</button>
@@ -585,7 +596,8 @@
           {#if detail.files.length === 0}
             <div class="muted ai-file-empty">{tt("work.noAiFiles")}</div>
           {/if}
-          {#each detail.files as f (f.id)}
+          <ListPager view={projectFiles} onchange={(page)=>fileListPage=page} testid="project-files-pagination"/>
+          {#each projectFiles.items as f (f.id)}
             <div class="row-item" class:file-pinned={f.pinned}>
               <button class="fname" onclick={() => openFile(f.path)} title={f.path}>
                 {f.pinned ? "📌" : "📄"} {f.label || f.path.split(/[\\/]/).pop()}
@@ -602,7 +614,8 @@
           {#if detail.calendar.length === 0}
             <div class="muted">{tt("work.noCalendar")}</div>
           {/if}
-          {#each detail.calendar as ev (ev.id)}
+          <ListPager view={projectCalendar} onchange={(page)=>calendarListPage=page} testid="project-calendar-pagination"/>
+          {#each projectCalendar.items as ev (ev.id)}
             <div class="row-item">
               <span>{fmtTime(ev.start_at)}</span>
               <button class="entity-link" onclick={()=>navigateTo('calendar',ev.id)}>{ev.title}</button>
@@ -617,7 +630,8 @@
           {#if detail.tasks.length === 0}
             <div class="muted">{tt("work.noTasks")}</div>
           {/if}
-          {#each detail.tasks as t (t.id)}
+          <ListPager view={projectTasks} onchange={(page)=>taskListPage=page} testid="project-tasks-pagination"/>
+          {#each projectTasks.items as t (t.id)}
             <div class="row-item" class:task-done={t.status === "done"}>
               <button class="entity-link" class:strike={t.status === "done"} onclick={()=>navigateTo('task',t.id)}>{t.title}</button>
               <span class="muted">{translateStatus(t.status, currentLocale)}{t.due_at ? ` · ${fmtTime(t.due_at)}` : ""}</span>
@@ -642,7 +656,7 @@
           {/each}
         </details>
       {:else}
-        <div class="muted empty">{tt("work.selectHint")}</div>
+        <EmptyState compact title={currentLocale==='en-US'?'Start with a project':'从一个项目开始'} description={currentLocale==='en-US'?'Create a project with a name. Add progress and related matters as work unfolds.':'先给项目起个名字，进展与关联事项可以在工作中逐步补充。'}/>
       {/if}
     </div>
 
@@ -720,9 +734,6 @@
   .muted {
     color: #6b7280;
     font-size: 12px;
-  }
-  .empty {
-    padding: 12px 0;
   }
   .detail-head h2 {
     margin: 0 0 8px;
@@ -873,6 +884,7 @@
   .row-item { flex-wrap: wrap; gap: 8px 12px; align-items: start; line-height: 1.6; }
   .row-item>span { min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; }
   .row-item button { flex-shrink: 0; }
+  .row-item .entity-link { flex: 1 1 200px; min-width: 0; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
   .row-item .fname { min-width: 0; flex: 1 1 200px; overflow-wrap: anywhere; }
   .page-head,.status-actions{ flex-wrap: wrap; }
   .rp-current,.rp-next,.rp-remember{ font-size: 13px; line-height: 1.65; }

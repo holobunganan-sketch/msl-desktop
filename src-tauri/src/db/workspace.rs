@@ -570,11 +570,11 @@ mod tests {
         }
         let orphan = WorkspaceRepo::new(&conn).insert("old", "C:/old").unwrap();
         let linked = WorkspaceRepo::new(&conn).insert("kept", "C:/kept").unwrap();
-        let work = crate::db::work::WorkRepo::new(&conn)
-            .insert("Archived project", "archived")
-            .unwrap();
+        // Seed using the historical schema; today's repository requires new columns.
+        conn.execute("INSERT INTO works(title,status,created_at,updated_at) VALUES('Archived project','archived',0,0)",[]).unwrap();
+        let work_id = conn.last_insert_rowid();
         crate::db::documents::WorkWorkspaceLinkRepo::new(&conn)
-            .link(work.id, linked.id, false)
+            .link(work_id, linked.id, false)
             .unwrap();
         crate::db::provider::AppSettingsRepo::new(&conn)
             .set("main_workspace", &orphan.root_path)

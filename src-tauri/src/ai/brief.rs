@@ -410,6 +410,8 @@ pub fn build_ai_request(model_id: &str, snapshot: &BriefSnapshot) -> AiTextReque
         // Reasoning models can spend a meaningful part of the budget before they
         // emit the visible brief. Leave enough room for the required bullet text.
         max_output_tokens: Some(2_000),
+        output_format: crate::ai::output::OutputFormat::PromptJson,
+        budget: Default::default(),
     }
 }
 
@@ -470,7 +472,6 @@ pub fn normalize_bullet_output(content: &str, locale: &str) -> String {
             )
         })
         .filter(|line| !line.is_empty())
-        .take(7)
         .map(|line| format!("• {line}"))
         .collect::<Vec<_>>();
     if bullets.is_empty() {
@@ -965,7 +966,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_summary_removes_internal_source_markers_and_limits_home_bullets() {
+    fn provider_summary_removes_internal_markers_without_discarding_eighth_item() {
         let output = [
             "• 完成资料整理（source_type=activity，entity_id=629）。",
             "• 新增结构化文档 ([source_type=file_change], workspace_id=2)。",
@@ -974,11 +975,11 @@ mod tests {
             "• 推进项目 C",
             "• 推进项目 D",
             "• 推进项目 E",
-            "• 第八项不会出现在首页",
+            "• 第八项仍需完整保留",
         ]
         .join("\n");
         let normalized = normalize_bullet_output(&output, "zh-CN");
-        assert_eq!(normalized.lines().count(), 7);
+        assert_eq!(normalized.lines().count(), 8);
         for marker in ["source_type", "entity_id", "workspace_id", "[source_"] {
             assert!(!normalized.contains(marker), "leaked marker: {marker}");
         }

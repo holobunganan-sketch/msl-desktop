@@ -19,6 +19,7 @@ pub struct Migration {
 /// 迁移列表（按 version 升序）。
 /// 新增 schema 变化时：新建 `migrations/NNNN_name.sql` 并在此登记。
 pub const MIGRATIONS: &[Migration] = &[
+    // Entries are executed in their declared order; append new versions below.
     Migration {
         version: 1,
         name: "init",
@@ -94,6 +95,36 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "expert_department",
         sql: include_str!("../../migrations/0015_expert_department.sql"),
     },
+    Migration {
+        version: 16,
+        name: "safe_deletion",
+        sql: include_str!("../../migrations/0016_safe_deletion.sql"),
+    },
+    Migration {
+        version: 17,
+        name: "expert_materials",
+        sql: include_str!("../../migrations/0017_expert_materials.sql"),
+    },
+    Migration {
+        version: 18,
+        name: "sync_foundation",
+        sql: include_str!("../../migrations/0018_sync_foundation.sql"),
+    },
+    Migration {
+        version: 19,
+        name: "sync_lifecycle",
+        sql: include_str!("../../migrations/0019_sync_lifecycle.sql"),
+    },
+    Migration {
+        version: 20,
+        name: "ai_readable_documents",
+        sql: include_str!("../../migrations/0020_ai_readable_documents.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "sync_edit_capture",
+        sql: include_str!("../../migrations/0021_sync_edit_capture.sql"),
+    },
 ];
 
 /// 执行所有未应用的迁移（幂等、事务化）。
@@ -131,6 +162,7 @@ pub fn run(conn: &mut Connection) -> DbResult<()> {
         tx.commit().map_err(DbError::from)?;
     }
 
+    crate::sync::rows::install_capture(conn)?;
     Ok(())
 }
 

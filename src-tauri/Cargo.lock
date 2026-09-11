@@ -2510,8 +2510,9 @@ dependencies = [
 
 [[package]]
 name = "msl-desktop"
-version = "0.3.2"
+version = "0.3.8"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "encoding_rs",
  "keyring",

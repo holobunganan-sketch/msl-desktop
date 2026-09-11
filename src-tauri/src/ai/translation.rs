@@ -68,6 +68,26 @@ pub fn validate_output(
     Ok(output.to_string())
 }
 
+pub fn parse_output(
+    input: &str,
+    direction: TranslationDirection,
+    raw: &str,
+) -> Result<String, String> {
+    let envelope = crate::ai::output::parse_translation(raw).map_err(|error| error.to_string())?;
+    let languages_match = match direction {
+        TranslationDirection::ZhToEn => {
+            envelope.source_language.starts_with("zh") && envelope.target_language.starts_with("en")
+        }
+        TranslationDirection::EnToZh => {
+            envelope.source_language.starts_with("en") && envelope.target_language.starts_with("zh")
+        }
+    };
+    if !languages_match {
+        return Err("翻译模型返回的语言方向与输入不一致".into());
+    }
+    validate_output(input, direction, &envelope.translated_text)
+}
+
 pub fn build_request(
     model_id: &str,
     input: &str,
@@ -103,6 +123,8 @@ pub fn build_request(
         }],
         temperature: Some(0.2),
         max_output_tokens: Some(4000),
+        output_format: crate::ai::output::OutputFormat::PromptJson,
+        budget: Default::default(),
     })
 }
 
@@ -151,5 +173,15 @@ mod tests {
             "Hello! How can I help you?"
         )
         .is_err());
+    }
+
+    #[test]
+    fn translation_envelope_is_parsed_before_behavior_validation() {
+        let raw = r#"{"schema_version":"msl.translation.v1","translated_text":"Hello","source_language":"zh","target_language":"en"}"#;
+        assert_eq!(
+            parse_output("你好", TranslationDirection::ZhToEn, raw).unwrap(),
+            "Hello"
+        );
+        assert!(parse_output("你好", TranslationDirection::ZhToEn, "Hello").is_err());
     }
 }

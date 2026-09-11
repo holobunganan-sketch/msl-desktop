@@ -136,8 +136,16 @@ body .view-body :is(label, small) { font-size: max(11px, 1em); }
 }
 /* Flex/grid children must be allowed to shrink before text can wrap. */
 button, input, textarea, select { min-width: 0; }
+input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),select{box-sizing:border-box;height:40px;max-width:100%;line-height:1.5}
+select{width:100%;text-overflow:ellipsis}
+body .view-body input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),body .view-body select{padding-block:6px;line-height:1.5}
+:is(.content-scroll,.modal-body,.qa-sessions,.task-list,.waiting-list,.inbox-list,.file-table-wrap){scrollbar-gutter:stable}
+:is(.toolbar,.filters,.form-grid,.form-row)>*{min-width:0}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 button { overflow-wrap: anywhere; }
 textarea { resize: vertical; }
+/* Legacy pages keep their semantic classes while sharing one reserved status rail. */
+body .view-body .stable-feedback{height:28px;min-height:28px;display:block;grid-column:1/-1;position:static;padding:0!important;margin:0!important;border:0!important;background:transparent!important;box-shadow:none!important;min-width:0}
 body .view-body :is(.plan, .waiting, .calendar, .inbox, .workspace-view) :is(.toolbar, .filters) {
   border-color: var(--color-border);
   border-radius: 12px;

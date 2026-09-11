@@ -555,12 +555,29 @@ pub async fn translate_text(
         .ok_or_else(|| "翻译模型未配置 API Key".to_string())?;
     let request = crate::ai::translation::build_request(&resolved.model.model_id, &input, &style)?;
     let direction = crate::ai::translation::detect_direction(&input);
-    crate::ai::provider::complete_model(&resolved.connection, &resolved.model, &key, &request)
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|response| {
-            crate::ai::translation::validate_output(&input, direction, &response.content)
-        })
+    let response =
+        crate::ai::provider::complete_model(&resolved.connection, &resolved.model, &key, &request)
+            .await
+            .map_err(|error| error.to_string())?;
+    match crate::ai::translation::parse_output(&input, direction, &response.content) {
+        Ok(value) => Ok(value),
+        Err(first_error) => {
+            let mut repair = request;
+            repair.system.get_or_insert_default().push_str(
+                "<format_repair>The previous response failed validation. Return one msl.translation.v1 JSON object with the complete translation and correct language direction. Do not add conversation or explanation.</format_repair>",
+            );
+            let repaired = crate::ai::provider::complete_model(
+                &resolved.connection,
+                &resolved.model,
+                &key,
+                &repair,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            crate::ai::translation::parse_output(&input, direction, &repaired.content)
+                .map_err(|_| format!("翻译输出格式无法验证：{first_error}"))
+        }
+    }
 }
 
 #[tauri::command]

@@ -9,6 +9,7 @@ export type Workspace = {
 
 export type Work = {
   id: number;
+  revision: number;
   title: string;
   status: string;
   summary: string | null;

@@ -9,6 +9,43 @@ use serde_json::{json, Value};
 pub fn experts(db: &Database) -> DbResult<Vec<Value>> {
     knowledge::rows(db.conn(),"SELECT e.*,(SELECT COUNT(*) FROM kol_notes n WHERE n.expert_id=e.id) AS note_count,(SELECT MAX(occurred_at) FROM kol_notes n WHERE n.expert_id=e.id) AS last_contact,(SELECT json_group_array(work_id) FROM kol_projects p WHERE p.expert_id=e.id) AS project_ids_json FROM kol_experts e ORDER BY archived,name,id",&[])
 }
+pub fn delete_expert(
+    db: &Database,
+    id: i64,
+    confirmation_name: &str,
+    revision: i64,
+) -> DbResult<()> {
+    let tx = super::write_transaction(db.conn())?;
+    let valid = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM kol_experts WHERE id=?1 AND name=?2 AND revision=?3)",
+        params![id, confirmation_name.trim(), revision],
+        |r| r.get::<_, bool>(0),
+    )?;
+    if !valid {
+        return Err(DbError::Migration(
+            "专家名称不一致、资料已更新或已删除，请刷新后重新确认".into(),
+        ));
+    }
+    let mut sources = vec![format!("expert:{id}")];
+    for (table, kind) in [("kol_notes", "kol_note"), ("kol_insights", "kol_insight")] {
+        for row in knowledge::rows(
+            &tx,
+            &format!("SELECT id FROM {table} WHERE expert_id=?1"),
+            &[&id],
+        )? {
+            sources.push(format!("{kind}:{}", row["id"]));
+        }
+    }
+    super::source_lifecycle::retire(&tx, &sources)?;
+    crate::materials::detach_expert(&tx, id)?;
+    tx.execute("DELETE FROM kol_actions WHERE expert_id=?1 OR draft_id IN(SELECT id FROM kol_drafts WHERE expert_id=?1)",[id])?;
+    tx.execute("DELETE FROM kol_insights WHERE expert_id=?1 OR draft_id IN(SELECT id FROM kol_drafts WHERE expert_id=?1)",[id])?;
+    tx.execute("DELETE FROM kol_drafts WHERE expert_id=?1", [id])?;
+    tx.execute("DELETE FROM kol_notes WHERE expert_id=?1", [id])?;
+    tx.execute("DELETE FROM kol_experts WHERE id=?1", [id])?;
+    tx.commit()?;
+    Ok(())
+}
 pub fn save_expert(
     db: &Database,
     id: Option<i64>,
@@ -160,7 +197,10 @@ pub fn evidence_pack(db: &Database, expert_id: Option<i64>) -> DbResult<Evidence
         return Err(DbError::NotFound("请先建立专家档案".into()));
     }
     let actions = followups(db, expert_id)?;
-    let insights = insights(db, expert_id)?;
+    let insights = insights(db, expert_id)?
+        .into_iter()
+        .filter(|r| super::source_lifecycle::usable_insight(db.conn(), r))
+        .collect::<Vec<_>>();
     let mut pack = EvidencePack {
         as_of: super::now_unix(),
         ..Default::default()
@@ -182,9 +222,18 @@ pub fn evidence_pack(db: &Database, expert_id: Option<i64>) -> DbResult<Evidence
         );
         pack.omitted += count.saturating_sub(160);
     }
-    if !pack.sources.iter().any(|s| s.kind == "kol_note") {
+    let materials = crate::materials::evidence(db, expert_id, &[], "")?;
+    let material_count = crate::materials::evidence_count(db, expert_id, &[])?;
+    pack.omitted += material_count.saturating_sub(materials.len());
+    pack.counts.insert("kol_material".into(), material_count);
+    pack.sources.extend(materials);
+    if !pack
+        .sources
+        .iter()
+        .any(|s| s.kind == "kol_note" || s.kind == "kol_material")
+    {
         return Err(DbError::Migration(
-            "请先记下一次交流，AI 将根据原话整理".into(),
+            "请先记录交流或上传可读取的专家资料，AI 将根据已有证据整理".into(),
         ));
     }
     // Every action references a real project catalog entry, not a guessed ID.
@@ -222,8 +271,12 @@ pub fn insert_draft(
     if !["organize", "prepare", "synthesize"].contains(&purpose) {
         return Err(DbError::Migration("整理方式无效".into()));
     }
-    db.conn().execute("INSERT INTO kol_drafts(expert_id,purpose,payload_json,evidence_json,created_at) VALUES(?1,?2,?3,?4,?5)",params![expert_id,purpose,serde_json::to_string(output).unwrap(),serde_json::to_string(pack).unwrap(),super::now_unix()])?;
-    Ok(db.conn().last_insert_rowid())
+    let tx = super::write_transaction(db.conn())?;
+    super::source_lifecycle::ensure_live(&tx, pack)?;
+    tx.execute("INSERT INTO kol_drafts(expert_id,purpose,payload_json,evidence_json,created_at) VALUES(?1,?2,?3,?4,?5)",params![expert_id,purpose,serde_json::to_string(output).unwrap(),serde_json::to_string(pack).unwrap(),super::now_unix()])?;
+    let id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok(id)
 }
 pub fn review(db: &Database, id: i64, revision: i64, decision: &str, raw: &str) -> DbResult<Value> {
     let tx = super::write_transaction(db.conn())?;
@@ -252,6 +305,7 @@ pub fn review(db: &Database, id: i64, revision: i64, decision: &str, raw: &str) 
                 .map_err(|_| DbError::Migration("草稿来源无法读取".into()))?;
         let output =
             crate::ai::knowledge_contract::parse_kol(raw, &pack).map_err(DbError::Migration)?;
+        super::source_lifecycle::ensure_live(&tx, &pack)?;
         if draft["purpose"] == "prepare" && !output.actions.is_empty() {
             return Err(DbError::Migration(
                 "会前准备不创建承诺；请先移除动作或通过交流整理发起跟进".into(),
@@ -369,6 +423,57 @@ pub fn review(db: &Database, id: i64, revision: i64, decision: &str, raw: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_delete_keeps_business_records_and_invalidates_deleted_evidence() {
+        let db = db();
+        let (id, raw) = draft(&db);
+        review(&db, id, 1, "confirm", &raw).unwrap();
+        db.conn().execute_batch("INSERT INTO calendar_events(id,title,start_at,created_at,updated_at) VALUES(701,'已确认会谈',1888888888,1,1); INSERT INTO waiting_items(id,title,started_at,created_at,updated_at) VALUES(702,'等待资料',1,1,1);").unwrap();
+        for (kind, entity) in [("calendar", 701), ("waiting", 702)] {
+            db.conn().execute("INSERT INTO kol_actions(draft_id,expert_id,entity_kind,entity_id,created_at) VALUES(?1,1,?2,?3,1)",params![id,kind,entity]).unwrap();
+        }
+        let pack = evidence_pack(&db, Some(1)).unwrap();
+        assert!(delete_expert(&db, 1, "错误名字", 2).is_err());
+        assert!(delete_expert(&db, 1, "合成专家", 99).is_err());
+        assert!(
+            delete_expert(&db, 1, "合成专家", 1).is_err(),
+            "Confirmed summary increments revision"
+        );
+        delete_expert(&db, 1, " 合成专家 ", 2).unwrap();
+        assert!(experts(&db).unwrap().is_empty());
+        assert!(notes(&db, None).unwrap().is_empty());
+        assert!(drafts(&db, None).unwrap().is_empty());
+        assert!(insights(&db, None).unwrap().is_empty());
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM calendar_events", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM waiting_items", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let output: KolOutput = serde_json::from_str(&raw).unwrap();
+        assert!(
+            insert_draft(&db, None, "synthesize", &output, &pack).is_err(),
+            "Late global analysis must not resurrect deleted evidence"
+        );
+        assert!(delete_expert(&db, 1, "合成专家", 1).is_err());
+        assert!(knowledge::rows(db.conn(), "PRAGMA foreign_key_check", &[])
+            .unwrap()
+            .is_empty());
+    }
     #[test]
     fn kol_department_migration_preserves_legacy_profile_and_notes() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();

@@ -10,6 +10,7 @@ use super::{now_unix, DbError, DbResult};
 pub struct Work {
     pub id: i64,
     pub title: String,
+    pub revision: i64,
     pub status: String, // active|paused|waiting|done|archived
     pub summary: Option<String>,
     pub created_at: i64,
@@ -21,6 +22,7 @@ fn row_to_work(row: &Row) -> rusqlite::Result<Work> {
     Ok(Work {
         id: row.get(0)?,
         title: row.get(1)?,
+        revision: row.get(7)?,
         status: row.get(2)?,
         summary: row.get(3)?,
         created_at: row.get(4)?,
@@ -75,7 +77,7 @@ impl<'a> WorkRepo<'a> {
     pub fn get(&self, id: i64) -> DbResult<Option<Work>> {
         self.conn
             .query_row(
-                "SELECT id, title, status, summary, created_at, updated_at, archived_at
+                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
                  FROM works WHERE id = ?1",
                 [id],
                 row_to_work,
@@ -88,12 +90,12 @@ impl<'a> WorkRepo<'a> {
     pub fn list(&self, status: Option<&str>) -> DbResult<Vec<Work>> {
         let (sql, params): (&str, Vec<Box<dyn rusqlite::ToSql>>) = match status {
             Some(s) => (
-                "SELECT id, title, status, summary, created_at, updated_at, archived_at
+                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
                  FROM works WHERE status = ?1 ORDER BY updated_at DESC",
                 vec![Box::new(s.to_string())],
             ),
             None => (
-                "SELECT id, title, status, summary, created_at, updated_at, archived_at
+                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
                  FROM works ORDER BY updated_at DESC",
                 vec![],
             ),
@@ -134,7 +136,19 @@ impl<'a> WorkRepo<'a> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn delete(&self, id: i64) -> DbResult<()> {
+        let work = self
+            .get(id)?
+            .ok_or_else(|| DbError::NotFound("work".into()))?;
+        self.delete_confirmed(id, &work.title, work.revision)
+    }
+    pub fn delete_confirmed(
+        &self,
+        id: i64,
+        confirmation_name: &str,
+        revision: i64,
+    ) -> DbResult<()> {
         let tx = super::write_transaction(self.conn)?;
         let exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM works WHERE id = ?1)",
@@ -145,6 +159,22 @@ impl<'a> WorkRepo<'a> {
             return Err(DbError::NotFound("work".into()));
         }
 
+        if !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM works WHERE id=?1 AND title=?2 AND revision=?3)",
+            params![id, confirmation_name.trim(), revision],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Err(DbError::Migration(
+                "项目名称不一致或已更新，请刷新后重新确认".into(),
+            ));
+        }
+        let mut retired = vec![format!("work:{id}")];
+        for row in
+            super::knowledge::rows(&tx, "SELECT id FROM resume_points WHERE work_id=?1", &[&id])?
+        {
+            retired.push(format!("resume:{}", row["id"]));
+        }
+        super::source_lifecycle::retire(&tx, &retired)?;
         // Actionable records remain useful after a long-term project is removed.
         // Detach them so they continue as temporary tasks, waits, and events.
         for table in [
@@ -174,7 +204,7 @@ impl<'a> WorkRepo<'a> {
     /// 按标题/摘要模糊搜索。
     pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<Work>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, status, summary, created_at, updated_at, archived_at
+            "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
              FROM works
              WHERE title LIKE ?1 ESCAPE '\\' OR (summary IS NOT NULL AND summary LIKE ?1 ESCAPE '\\')
              ORDER BY updated_at DESC LIMIT ?2",
@@ -303,6 +333,18 @@ impl<'a> ResumePointRepo<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_project_delete_rejects_wrong_name_and_stale_version() {
+        let db = super::super::Database::open_in_memory().unwrap();
+        let repo = super::WorkRepo::new(db.conn());
+        let work = repo.insert("测试项目", "active").unwrap();
+        assert!(repo.delete_confirmed(work.id, "错误项目", 1).is_err());
+        repo.update(work.id, "测试项目", "active", Some("变更摘要"))
+            .unwrap();
+        assert!(repo.delete_confirmed(work.id, "测试项目", 1).is_err());
+        repo.delete_confirmed(work.id, " 测试项目 ", 2).unwrap();
+        assert!(repo.get(work.id).unwrap().is_none());
+    }
     use super::*;
     use crate::db::Database;
 
