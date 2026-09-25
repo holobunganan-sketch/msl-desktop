@@ -35,7 +35,7 @@ jobs:
           $tauriVersion = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
           $cargo = Get-Content 'src-tauri/Cargo.toml' -Raw
           $cargoVersion = [regex]::Match($cargo, '(?m)^version = "([^"]+)"').Groups[1].Value
-          if ("v$version" -ne $env:GITHUB_REF_NAME -or $tauriVersion -ne $version -or $cargoVersion -ne $version) {
+          if ($version -notmatch '^\d+\.\d+\.\d+$' -or "v$version" -ne $env:GITHUB_REF_NAME -or $tauriVersion -ne $version -or $cargoVersion -ne $version) {
             throw 'The Git tag, package.json, tauri.conf.json and Cargo.toml versions must match.'
           }
       - run: pnpm install --frozen-lockfile
@@ -62,13 +62,32 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           $existing = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft 2>$null
+          $published = $false
           if ($LASTEXITCODE -eq 0) {
-            if (-not ($existing | ConvertFrom-Json).isDraft) { throw "Release $tag is already published; use a new version." }
+            $published = -not ($existing | ConvertFrom-Json).isDraft
           } else {
             gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title "MSL Desktop $tag" --generate-notes --draft
             if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release.' }
           }
-          gh release upload $tag 'release/MSL-Desktop-Windows-x64.exe' 'release/SHA256SUMS.txt' --repo $env:GITHUB_REPOSITORY --clobber
-          if ($LASTEXITCODE -ne 0) { throw 'Could not upload release assets.' }
-          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
-          if ($LASTEXITCODE -ne 0) { throw 'Could not publish release.' }
+          if (-not $published) {
+            gh release upload $tag 'release/MSL-Desktop-Windows-x64.exe' 'release/SHA256SUMS.txt' --repo $env:GITHUB_REPOSITORY --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Could not upload release assets.' }
+            gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+            if ($LASTEXITCODE -ne 0) { throw 'Could not publish release.' }
+          }
+      - name: Refresh website version metadata
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (node -p "require('./package.json').version").Trim()
+          $resource = "repos/$env:GITHUB_REPOSITORY/contents/release/latest.json"
+          $record = gh api $resource | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $record.sha) { throw 'Could not read release metadata.' }
+          $currentText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($record.content -replace '\s', '')))
+          $current = $currentText | ConvertFrom-Json
+          if ([version]$current.version -ge [version]$version) { return }
+          $json = @{ version = $version; asset = 'MSL-Desktop-Windows-x64.exe' } | ConvertTo-Json -Compress
+          $content = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($json + "`n"))
+          gh api --method PUT $resource -f message="Update latest Windows release to v$version" -f content=$content -f branch=master -f sha=$record.sha | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Could not refresh website release metadata.' }

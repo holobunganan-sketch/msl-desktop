@@ -156,9 +156,9 @@ pnpm tauri build
 
 ## 发布 Windows 版本
 
-将 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 的版本号保持一致。完成检查并推送源码后，推送对应的 `vX.Y.Z` 标签。GitHub Actions 会在 Windows 环境重新运行检查、构建安装包，发布固定名称的安装包和 SHA-256 校验文件。构建或检查失败时不会更新最新下载版本。
+将 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 的版本号保持一致。完成检查并推送源码后，推送对应的 `vX.Y.Z` 标签。GitHub Actions 会在 Windows 环境重新运行检查、构建安装包，发布固定名称的安装包和 SHA-256 校验文件，然后更新 `release/latest.json`。构建或检查失败时不会更新最新下载版本。
 
-官网的下载按钮始终使用 GitHub Releases 的 `latest/download/MSL-Desktop-Windows-x64.exe`，页面版本号读取最新发布记录。发布成功后，下载链接自动指向新版本；普通源码提交不会改变公开安装包。
+官网的下载按钮始终使用 GitHub Releases 的 `latest/download/MSL-Desktop-Windows-x64.exe`，页面版本号读取公开的 `release/latest.json`。发布成功后，下载链接自动指向新版本；普通源码提交不会改变公开安装包。
 
 ## 测试与隔离运行
 
