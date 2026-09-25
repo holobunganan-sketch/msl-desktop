@@ -150,9 +150,15 @@ pnpm tauri build
 构建完成后可在以下位置找到主要产物：
 
 - `src-tauri\\target\\release\\msl-desktop.exe`
-- `src-tauri\\target\\release\\bundle\\nsis\\msl-desktop_0.3.8_x64-setup.exe`
+- `src-tauri\\target\\release\\bundle\\nsis\\msl-desktop_<版本号>_x64-setup.exe`
 
 安装程序默认安装到当前用户目录。卸载应用时会保留用户数据库，避免工作记录丢失。
+
+## 发布 Windows 版本
+
+将 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 的版本号保持一致。完成检查并推送源码后，推送对应的 `vX.Y.Z` 标签。GitHub Actions 会在 Windows 环境重新运行检查、构建安装包，发布固定名称的安装包和 SHA-256 校验文件。构建或检查失败时不会更新最新下载版本。
+
+官网的下载按钮始终使用 GitHub Releases 的 `latest/download/MSL-Desktop-Windows-x64.exe`，页面版本号读取最新发布记录。发布成功后，下载链接自动指向新版本；普通源码提交不会改变公开安装包。
 
 ## 测试与隔离运行
 

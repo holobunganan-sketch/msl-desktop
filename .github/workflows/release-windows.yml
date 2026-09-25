@@ -1,0 +1,74 @@
+name: Publish Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Check release version
+        shell: pwsh
+        run: |
+          $version = (node -p "require('./package.json').version").Trim()
+          $tauriVersion = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          $cargo = Get-Content 'src-tauri/Cargo.toml' -Raw
+          $cargoVersion = [regex]::Match($cargo, '(?m)^version = "([^"]+)"').Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME -or $tauriVersion -ne $version -or $cargoVersion -ne $version) {
+            throw 'The Git tag, package.json, tauri.conf.json and Cargo.toml versions must match.'
+          }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:publish
+      - run: pnpm check
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --quiet
+      - run: pnpm tauri build
+      - name: Prepare stable download assets
+        shell: pwsh
+        run: |
+          $version = (node -p "require('./package.json').version").Trim()
+          $source = "src-tauri/target/release/bundle/nsis/msl-desktop_${version}_x64-setup.exe"
+          if (-not (Test-Path -LiteralPath $source)) { throw "Installer missing: $source" }
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item -LiteralPath $source -Destination 'release/MSL-Desktop-Windows-x64.exe'
+          $hash = (Get-FileHash -LiteralPath 'release/MSL-Desktop-Windows-x64.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $line = "$hash  MSL-Desktop-Windows-x64.exe`n"
+          [System.IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), $line, [System.Text.UTF8Encoding]::new($false))
+      - name: Publish verified release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $existing = gh release view $tag --repo $env:GITHUB_REPOSITORY --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($existing | ConvertFrom-Json).isDraft) { throw "Release $tag is already published; use a new version." }
+          } else {
+            gh release create $tag --repo $env:GITHUB_REPOSITORY --verify-tag --title "MSL Desktop $tag" --generate-notes --draft
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release.' }
+          }
+          gh release upload $tag 'release/MSL-Desktop-Windows-x64.exe' 'release/SHA256SUMS.txt' --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Could not upload release assets.' }
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish release.' }
