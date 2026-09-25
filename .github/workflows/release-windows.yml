@@ -40,15 +40,31 @@ jobs:
           }
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:publish
+      - run: pnpm check:installer
       - run: pnpm check
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --lib --quiet
+      - name: Test with isolated application data
+        shell: pwsh
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP ('msl-tests-' + [guid]::NewGuid().ToString('N'))
+          foreach ($name in @('APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')) {
+            $path = Join-Path $testRoot $name
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            [Environment]::SetEnvironmentVariable($name, $path, 'Process')
+          }
+          $env:MSL_ISOLATED_TEST = '1'
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated application tests failed.' }
       - run: pnpm tauri build
+      - name: Verify installed display name and upgrade safety
+        shell: pwsh
+        run: ./scripts/test-installer-name.ps1
       - name: Prepare stable download assets
         shell: pwsh
         run: |
           $version = (node -p "require('./package.json').version").Trim()
-          $source = "src-tauri/target/release/bundle/nsis/msl-desktop_${version}_x64-setup.exe"
+          $productName = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).productName
+          $source = "src-tauri/target/release/bundle/nsis/${productName}_${version}_x64-setup.exe"
           if (-not (Test-Path -LiteralPath $source)) { throw "Installer missing: $source" }
           New-Item -ItemType Directory -Force -Path release | Out-Null
           Copy-Item -LiteralPath $source -Destination 'release/MSL-Desktop-Windows-x64.exe'

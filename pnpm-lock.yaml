@@ -34,7 +34,7 @@ importers:
         specifier: ^5.0.0
         version: 5.1.1(svelte@5.56.9)(vite@6.4.3)
       '@tauri-apps/cli':
-        specifier: ^2
+        specifier: 2.11.4
         version: 2.11.4
       svelte:
         specifier: ^5.0.0

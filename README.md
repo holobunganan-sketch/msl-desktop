@@ -2,7 +2,7 @@
 
 MSL Desktop 是一个本地优先的 Windows 工作台，服务于需要长期跟进项目、处理大量零散信息的人。它把项目、事项、日历、等待、收件箱、关联目录和阶段性回顾放在同一套工作流里，让用户少花时间维护记录，多把注意力留给实际工作。
 
-应用默认使用中文，支持切换英文。当前源码版本为 `0.3.8`。
+应用默认使用中文，支持切换英文。最新安装版本见 [Releases](https://github.com/holobunganan-sketch/msl-desktop/releases/latest)。
 
 ## 数据独立与备份
 
@@ -150,15 +150,17 @@ pnpm tauri build
 构建完成后可在以下位置找到主要产物：
 
 - `src-tauri\\target\\release\\msl-desktop.exe`
-- `src-tauri\\target\\release\\bundle\\nsis\\msl-desktop_<版本号>_x64-setup.exe`
+- `src-tauri\\target\\release\\bundle\\nsis\\MSL Desktop_<版本号>_x64-setup.exe`
 
-安装程序默认安装到当前用户目录。卸载应用时会保留用户数据库，避免工作记录丢失。
+安装后的应用名称为 **MSL Desktop**，开始菜单、桌面快捷方式和 Windows 应用列表使用相同大小写。升级保留原有安装登记标识与数据目录。安装程序默认安装到当前用户目录；卸载应用时会保留用户数据库。
 
 ## 发布 Windows 版本
 
 将 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 与 `src-tauri/Cargo.lock` 的版本号保持一致。完成检查并推送源码后，推送对应的 `vX.Y.Z` 标签。GitHub Actions 会在 Windows 环境重新运行检查、构建安装包，发布固定名称的安装包和 SHA-256 校验文件，然后更新 `release/latest.json`。构建或检查失败时不会更新最新下载版本。
 
-官网的下载按钮始终使用 GitHub Releases 的 `latest/download/MSL-Desktop-Windows-x64.exe`，页面版本号读取公开的 `release/latest.json`。发布成功后，下载链接自动指向新版本；普通源码提交不会改变公开安装包。
+GitHub Releases 使用固定下载文件名 `MSL-Desktop-Windows-x64.exe`。官网 [msl-desktop.pages.dev](https://msl-desktop.pages.dev/) 独立托管同名安装包，版本号读取同站的 `release/latest.json`。发布时需同步安装包、SHA-256 校验文件与版本元数据并重新部署官网，核对两处文件哈希一致；普通源码提交不会改变公开安装包。
+
+Windows 安装模板基于 Tauri CLI 2.11.4，保留旧版安装登记键并按目标路径迁移快捷方式。升级 Tauri CLI 时需复核 `src-tauri/windows/installer.nsi` 与上游模板差异，运行 `pnpm check:installer` 及隔离安装验证。
 
 ## 测试与隔离运行
 
