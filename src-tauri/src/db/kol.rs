@@ -167,7 +167,19 @@ pub fn insights(db: &Database, expert_id: Option<i64>) -> DbResult<Vec<Value>> {
 }
 pub fn secretary_context(db: &Database, workspace_filter: Option<&[i64]>) -> DbResult<Vec<Value>> {
     let folders = workspace_filter.map(|ids| serde_json::to_string(ids).unwrap());
-    knowledge::rows(db.conn(),"SELECT DISTINCT n.id,n.expert_id,e.name,e.institution,e.department,n.work_id,n.content,n.occurred_at FROM kol_notes n JOIN kol_experts e ON e.id=n.expert_id WHERE EXISTS(SELECT 1 FROM kol_insights i,json_each(i.citations_json) c WHERE json_extract(c.value,'$.source_id')='kol_note:'||n.id AND i.status!='dismissed') AND (?1 IS NULL OR n.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY n.occurred_at DESC,n.id DESC LIMIT 81",&[&folders])
+    let mut context=knowledge::rows(db.conn(),"SELECT n.id,n.expert_id,e.name,e.institution,e.department,n.work_id,n.content,n.occurred_at,(SELECT json_group_array(work_id) FROM kol_projects p WHERE p.expert_id=n.expert_id) AS candidate_project_ids FROM kol_notes n JOIN kol_experts e ON e.id=n.expert_id WHERE e.archived=0 AND (?1 IS NULL OR n.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY n.created_at DESC,n.id DESC LIMIT 51",&[&folders])?;
+    let mut insights=knowledge::rows(db.conn(),"SELECT i.id,i.expert_id,e.name,e.institution,e.department,k.work_id,i.title,i.observation,i.implication,i.status,i.review_note,i.citations_json,i.updated_at FROM kol_insights i LEFT JOIN kol_experts e ON e.id=i.expert_id LEFT JOIN kol_projects k ON k.expert_id=i.expert_id WHERE i.status!='dismissed' AND (e.archived=0 OR e.id IS NULL) AND (?1 IS NULL OR k.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY i.updated_at DESC,i.id DESC LIMIT 31",&[&folders])?;
+    insights.retain(|row| super::source_lifecycle::usable_insight(db.conn(), row));
+    for insight in &mut insights {
+        insight["source_type"] = json!("kol_insight");
+        for key in ["observation", "implication", "review_note"] {
+            if let Some(text) = insight[key].as_str() {
+                insight[key] = json!(crate::cognition::bounded(text, 1000));
+            }
+        }
+    }
+    context.extend(insights);
+    Ok(context)
 }
 pub fn set_insight_status(db: &Database, id: i64, status: &str, note: &str) -> DbResult<()> {
     if !["hypothesis", "reviewed", "revised", "dismissed"].contains(&status)
@@ -711,13 +723,13 @@ mod tests {
         assert!(followups(&db, Some(1)).unwrap().is_empty());
     }
     #[test]
-    fn knowledge_kol_secretary_uses_confirmed_sources_and_preparation_cannot_create_actions() {
+    fn knowledge_kol_secretary_reads_original_notes_and_preparation_cannot_create_actions() {
         let db = db();
         db.conn()
             .execute("UPDATE kol_experts SET department='肾内科' WHERE id=1", [])
             .unwrap();
         let (id, raw) = draft(&db);
-        assert!(secretary_context(&db, None).unwrap().is_empty());
+        assert_eq!(secretary_context(&db, None).unwrap().len(), 1);
         db.conn()
             .execute("UPDATE kol_drafts SET purpose='prepare' WHERE id=?1", [id])
             .unwrap();
@@ -726,7 +738,11 @@ mod tests {
             .execute("UPDATE kol_drafts SET purpose='organize' WHERE id=?1", [id])
             .unwrap();
         review(&db, id, 1, "confirm", &raw).unwrap();
-        assert_eq!(secretary_context(&db, None).unwrap().len(), 1);
+        assert_eq!(secretary_context(&db, None).unwrap().len(), 2);
+        assert!(secretary_context(&db, None)
+            .unwrap()
+            .iter()
+            .any(|row| row["source_type"] == "kol_insight"));
         assert_eq!(
             secretary_context(&db, None).unwrap()[0]["department"],
             "肾内科"

@@ -650,7 +650,7 @@ pub fn list_tasks(
 #[tauri::command]
 pub fn delete_task(state: State<AppState>, id: i64) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::db::task::TaskRepo::new(db.conn()).delete(id)
+        crate::ai::lifecycle::remove_item(db, "task", id)
     })
 }
 
@@ -745,7 +745,7 @@ pub fn list_waiting(
 #[tauri::command]
 pub fn delete_waiting(state: State<AppState>, id: i64) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::db::task::WaitingRepo::new(db.conn()).delete(id)
+        crate::ai::lifecycle::remove_item(db, "waiting", id)
     })
 }
 
@@ -924,7 +924,7 @@ pub fn convert_inbox_to_resume_point(
 #[tauri::command]
 pub fn delete_inbox_item(state: State<AppState>, id: i64) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::db::inbox::InboxRepo::new(db.conn()).delete(id)
+        crate::ai::lifecycle::remove_item(db, "inbox", id)
     })
 }
 
@@ -1026,7 +1026,7 @@ pub fn update_calendar_event(
 #[tauri::command]
 pub fn delete_calendar_event(state: State<AppState>, id: i64) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::db::calendar::CalendarRepo::new(db.conn()).delete(id)
+        crate::ai::lifecycle::remove_item(db, "calendar", id)
     })
 }
 
@@ -1257,7 +1257,7 @@ pub fn list_resume_points(
 #[tauri::command]
 pub fn delete_resume_point(state: State<AppState>, id: i64) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::db::work::ResumePointRepo::new(db.conn()).delete(id)
+        crate::ai::lifecycle::remove_item(db, "resume_point", id)
     })
 }
 
@@ -2021,7 +2021,7 @@ mod validation_tests {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 23);
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let _ = std::fs::remove_dir_all(root);

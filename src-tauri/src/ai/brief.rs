@@ -84,6 +84,10 @@ pub struct BriefSnapshot {
     pub calendar: Vec<BriefFact>,
     pub inbox: Vec<BriefFact>,
     pub file_changes: Vec<BriefFact>,
+    #[serde(default)]
+    pub user_directions: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub expert_context: Vec<serde_json::Value>,
     pub source_counts: SourceCounts,
     pub truncated: BTreeMap<String, u32>,
 }
@@ -349,6 +353,29 @@ pub fn build_snapshot(
         "file_changes",
     );
 
+    let directions = super::analysis_snapshot::user_directions(db)?;
+    let mut user_directions = Vec::new();
+    for kind in ["user_capture", "review_correction", "expert_insight_review"] {
+        user_directions.extend(
+            directions
+                .iter()
+                .filter(|row| row["type"] == kind)
+                .take(8)
+                .cloned(),
+        );
+    }
+    let expert_rows = crate::db::kol::secretary_context(db, None)?;
+    let mut expert_context = Vec::new();
+    expert_context.extend(expert_rows.iter().filter(|row| row["source_type"] != "kol_insight").take(6).map(|row|serde_json::json!({
+        "type":"expert_note","id":row["id"],"work_id":row["work_id"],"expert":row["name"],
+        "content":row["content"].as_str().map(|text|crate::cognition::bounded(text,500)),
+        "occurred_at":row["occurred_at"]
+    })));
+    expert_context.extend(expert_rows.iter().filter(|row| row["source_type"] == "kol_insight").take(6).map(|row|serde_json::json!({
+        "type":"expert_insight","id":row["id"],"work_id":row["work_id"],"expert":row["name"],
+        "title":row["title"],"observation":row["observation"],"status":row["status"],
+        "review_note":row["review_note"]
+    })));
     Ok(BriefSnapshot {
         date: date.to_string(),
         period_start,
@@ -376,6 +403,8 @@ pub fn build_snapshot(
         calendar,
         inbox,
         file_changes,
+        user_directions,
+        expert_context,
         truncated,
     })
 }
@@ -501,7 +530,7 @@ pub fn render_local(snapshot: &BriefSnapshot) -> String {
     } else {
         "• 当前范围没有记录。请检查工作目录基线或录入事项。"
     };
-    let has_any = snapshot.source_counts.activity
+    let business_count = snapshot.source_counts.activity
         + snapshot.source_counts.works
         + snapshot.source_counts.resume_points
         + snapshot.source_counts.tasks_open
@@ -509,9 +538,15 @@ pub fn render_local(snapshot: &BriefSnapshot) -> String {
         + snapshot.source_counts.waiting
         + snapshot.source_counts.calendar
         + snapshot.source_counts.inbox
-        + snapshot.source_counts.file_changes
-        > 0;
-    if !has_any {
+        + snapshot.source_counts.file_changes;
+    if business_count == 0 {
+        if !snapshot.user_directions.is_empty() || !snapshot.expert_context.is_empty() {
+            return if english {
+                "• Recent user or expert notes are saved; no formal work item is in this range. Review their original records before making an arrangement.".into()
+            } else {
+                "• 已保存近期用户意见或专家记录；当前范围内没有正式事项。请先核对原始记录，再决定是否安排。".into()
+            };
+        }
         return no_records.into();
     }
 
@@ -963,6 +998,39 @@ mod tests {
             normalize_bullet_output("进展完成\n- 等待反馈\n• 明日推进", "zh-CN"),
             "• 进展完成\n• 等待反馈\n• 明日推进"
         );
+    }
+
+    #[test]
+    fn daily_brief_receives_user_direction_and_expert_note() {
+        let db = Database::open_in_memory().unwrap();
+        let work = WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        let capture = crate::db::flow::capture(
+            db.conn(),
+            "User changed the objective",
+            Some(work.id),
+            Some("work"),
+            Some(work.id),
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE inbox_items SET processed_at=1 WHERE id=?1",
+                [capture.id],
+            )
+            .unwrap();
+        db.conn().execute("INSERT INTO kol_experts(name,institution,created_at,updated_at) VALUES('Expert','Clinic',1,1)",[]).unwrap();
+        db.conn().execute("INSERT INTO kol_notes(expert_id,work_id,content,occurred_at,created_at) VALUES(1,?1,'Expert needs evidence',1,1)",[work.id]).unwrap();
+        let snapshot = build_snapshot(&db, "2026-09-25", 0, 100, 0, 100, "zh-CN").unwrap();
+        let messages = build_messages(&snapshot);
+        let message = &messages[0].content;
+        assert!(message.contains("User changed the objective"));
+        assert!(message.contains("Expert needs evidence"));
+        assert!(build_ai_request("mock", &snapshot)
+            .system
+            .unwrap()
+            .contains("user_directions"));
     }
 
     #[test]

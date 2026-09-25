@@ -171,6 +171,8 @@ export type AiProposal = {
   suggested_kind: string;
   operation: "create" | "update";
   target_id: number | null;
+  applied_kind: string | null;
+  applied_id: number | null;
   work_id: number | null;
   suggested_work_id: number | null;
   workspace_id: number | null;
@@ -181,7 +183,7 @@ export type AiProposal = {
   source_refs_json: string;
   confidence: number | null;
   user_edited: boolean;
-  status: "pending" | "confirmed" | "rejected" | "superseded" | string;
+  status: "pending" | "confirmed" | "resolved" | "rejected" | "superseded" | "completed" | string;
   created_at: number;
   updated_at: number;
   decided_at: number | null;

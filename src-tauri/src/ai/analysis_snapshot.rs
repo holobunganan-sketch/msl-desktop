@@ -39,7 +39,19 @@ pub struct DocumentEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisSnapshot {
     #[serde(default)]
+    pub round_tickets: Vec<super::rounds::Ticket>,
+    #[serde(default)]
+    pub round_history: Vec<serde_json::Value>,
+    #[serde(default)]
     pub expert_context: Vec<serde_json::Value>,
+    /// Explicit user statements and corrections; old processed captures are
+    /// guidance, not a request to recreate completed actions.
+    #[serde(default)]
+    pub user_directions: Vec<serde_json::Value>,
+    /// Lightweight catalog for classifying loose information. Held projects
+    /// remain ineligible for new proposals in the current secretary round.
+    #[serde(default)]
+    pub project_catalog: Vec<serde_json::Value>,
     #[serde(default)]
     pub capture_contexts: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,6 +183,111 @@ fn expand_global_workbench_sources(db: &Database, brief: &mut BriefSnapshot) -> 
     Ok(())
 }
 
+pub(crate) fn user_directions(db: &Database) -> DbResult<Vec<serde_json::Value>> {
+    let mut result = Vec::new();
+    let mut captures = db.conn().prepare(
+        "SELECT i.id,c.work_id,c.entity_kind,c.entity_id,i.content,i.created_at,i.processed_at \
+         FROM capture_context c JOIN inbox_items i ON i.id=c.inbox_id \
+         ORDER BY i.id DESC LIMIT 120",
+    )?;
+    result.extend(
+        captures
+            .query_map([], |row| {
+                let content: String = row.get(4)?;
+                Ok(serde_json::json!({
+                    "type":"user_capture", "inbox_id":row.get::<_,i64>(0)?,
+                    "work_id":row.get::<_,Option<i64>>(1)?,
+                    "entity_kind":row.get::<_,Option<String>>(2)?,
+                    "entity_id":row.get::<_,Option<i64>>(3)?,
+                    "content":crate::cognition::bounded(&content,1200),
+                    "created_at":row.get::<_,i64>(5)?,
+                    "processed":row.get::<_,Option<i64>>(6)?.is_some()
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
+    let mut decisions = db.conn().prepare(
+        "SELECT d.id,p.work_id,p.title,d.reason_code,d.note,d.created_at \
+         FROM review_decisions d JOIN ai_proposals p ON p.id=d.proposal_id \
+         WHERE length(trim(d.note))>0 ORDER BY d.id DESC LIMIT 80",
+    )?;
+    result.extend(
+        decisions
+            .query_map([], |row| {
+                let note: String = row.get(4)?;
+                Ok(serde_json::json!({
+                    "type":"review_correction", "decision_id":row.get::<_,i64>(0)?,
+                    "work_id":row.get::<_,Option<i64>>(1)?,
+                    "proposal_title":row.get::<_,String>(2)?,
+                    "reason_code":row.get::<_,String>(3)?,
+                    "content":crate::cognition::bounded(&note,1200),
+                    "created_at":row.get::<_,i64>(5)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
+    let mut insights = db.conn().prepare(
+        "SELECT i.id,k.work_id,i.expert_id,i.title,i.status,i.review_note,i.updated_at \
+         FROM kol_insights i LEFT JOIN kol_projects k ON k.expert_id=i.expert_id \
+         WHERE i.status IN ('reviewed','revised','dismissed') \
+         ORDER BY i.updated_at DESC,i.id DESC LIMIT 80",
+    )?;
+    result.extend(
+        insights
+            .query_map([], |row| {
+                let note: String = row.get(5)?;
+                Ok(serde_json::json!({
+                    "type":"expert_insight_review", "insight_id":row.get::<_,i64>(0)?,
+                    "work_id":row.get::<_,Option<i64>>(1)?,
+                    "expert_id":row.get::<_,Option<i64>>(2)?,
+                    "insight_title":row.get::<_,String>(3)?,
+                    "status":row.get::<_,String>(4)?,
+                    "content":crate::cognition::bounded(&note,1200),
+                    "created_at":row.get::<_,i64>(6)?
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
+    Ok(result)
+}
+
+fn project_catalog(db: &Database) -> DbResult<Vec<serde_json::Value>> {
+    let mut works = crate::db::work::WorkRepo::new(db.conn())
+        .list(None)?
+        .into_iter()
+        .filter(|work| work.status != "archived")
+        .collect::<Vec<_>>();
+    works.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    let mut catalog = Vec::new();
+    for work in works.into_iter().take(100) {
+        let mut related = Vec::new();
+        for query in [
+            "SELECT title FROM tasks WHERE work_id=?1 AND status!='done' ORDER BY updated_at DESC LIMIT 3",
+            "SELECT title FROM waiting_items WHERE work_id=?1 AND status='open' ORDER BY updated_at DESC LIMIT 2",
+            "SELECT title FROM calendar_events WHERE work_id=?1 ORDER BY start_at DESC LIMIT 2",
+            "SELECT e.name FROM kol_projects p JOIN kol_experts e ON e.id=p.expert_id WHERE p.work_id=?1 AND e.archived=0 ORDER BY e.updated_at DESC LIMIT 2",
+        ] {
+            let mut stmt = db.conn().prepare(query)?;
+            related.extend(
+                stmt.query_map([work.id], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .into_iter()
+                    .map(|title| crate::cognition::bounded(&title, 100)),
+            );
+        }
+        catalog.push(serde_json::json!({
+            "id":work.id, "title":work.title, "status":work.status,
+            "objective":work.summary.as_deref().map(|text|crate::cognition::bounded(text,300)),
+            "related_terms":related
+        }));
+    }
+    Ok(catalog)
+}
+
 /// Build a bounded snapshot. It contains structured workbench facts plus selected,
 /// cached document text; cache absolute paths are never serialized.
 pub fn build(
@@ -216,6 +333,10 @@ pub fn build_scoped(
         today_end,
         locale,
     )?;
+    // Global rounds carry these in separately scoped fields below. Leaving
+    // unscoped copies inside brief would expose held projects to the model.
+    brief.user_directions.clear();
+    brief.expert_context.clear();
     if matches!(
         task_kind,
         "global_analysis" | "weekly_report" | "monthly_report" | "work_draft"
@@ -374,6 +495,9 @@ pub fn build_scoped(
             }
             record["content"] = serde_json::json!(crate::cognition::bounded(content, 2000));
         }
+        if record["source_type"] == "kol_insight" {
+            continue;
+        }
         source_refs.push(AnalysisSourceRef {
             source_type: "kol_note".into(),
             entity_id: record["id"].as_i64(),
@@ -383,10 +507,23 @@ pub fn build_scoped(
             timestamp: record["occurred_at"].as_i64(),
         });
     }
+    let mut source_counts = source_counts;
+    source_counts["expert_notes"] = serde_json::json!(expert_context
+        .iter()
+        .filter(|row| row["source_type"] != "kol_insight")
+        .count());
+    source_counts["expert_insights"] = serde_json::json!(expert_context
+        .iter()
+        .filter(|row| row["source_type"] == "kol_insight")
+        .count());
     let mut snapshot = AnalysisSnapshot {
+        round_tickets: Vec::new(),
+        round_history: Vec::new(),
         expert_context,
+        user_directions: user_directions(db)?,
+        project_catalog: project_catalog(db)?,
         capture_contexts: {
-            let mut stmt=db.conn().prepare("SELECT c.inbox_id,c.work_id,c.entity_kind,c.entity_id FROM capture_context c JOIN inbox_items i ON i.id=c.inbox_id WHERE i.processed_at IS NULL ORDER BY i.created_at DESC,i.id DESC LIMIT 200")?;
+            let mut stmt=db.conn().prepare("SELECT c.inbox_id,c.work_id,c.entity_kind,c.entity_id FROM capture_context c JOIN inbox_items i ON i.id=c.inbox_id ORDER BY i.created_at DESC,i.id DESC LIMIT 200")?;
             let rows=stmt.query_map([],|r|Ok(serde_json::json!({"inbox_id":r.get::<_,i64>(0)?,"work_id":r.get::<_,Option<i64>>(1)?,"entity_kind":r.get::<_,Option<String>>(2)?,"entity_id":r.get::<_,Option<i64>>(3)?})))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         },
@@ -767,6 +904,7 @@ mod tests {
             )
             .unwrap();
         crate::ai::apply::confirm_proposal(&db, corrected.id, corrected.updated_at, None).unwrap();
+        db.conn().execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES (?1,'misunderstood','The user clarified this is a waiting item',1)", [corrected.id]).unwrap();
 
         let snapshot = build(
             &db,
@@ -786,6 +924,90 @@ mod tests {
                 .as_deref(),
             Some("waiting")
         );
+        assert!(snapshot
+            .user_directions
+            .iter()
+            .any(|row| row["type"] == "review_correction"
+                && row["content"] == "The user clarified this is a waiting item"));
+    }
+
+    #[test]
+    fn secretary_keeps_user_corrections_after_capture_is_processed() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        crate::db::task::TaskRepo::new(db.conn())
+            .insert(
+                Some(work.id),
+                "Connected planning item",
+                "normal",
+                None,
+                None,
+            )
+            .unwrap();
+        let note = crate::db::flow::capture(
+            db.conn(),
+            "User changed the project direction",
+            Some(work.id),
+            Some("work"),
+            Some(work.id),
+        )
+        .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE inbox_items SET processed_at=1 WHERE id=?1",
+                [note.id],
+            )
+            .unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-25",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(snapshot.user_directions.iter().any(|row| {
+            row["inbox_id"] == note.id
+                && row["work_id"] == work.id
+                && row["content"] == "User changed the project direction"
+        }));
+        assert!(snapshot
+            .project_catalog
+            .iter()
+            .any(|row| row["id"] == work.id
+                && row["related_terms"].as_array().is_some_and(|terms| terms
+                    .iter()
+                    .any(|term| term == "Connected planning item"))));
+    }
+
+    #[test]
+    fn secretary_receives_expert_original_notes_without_prior_ai_insight() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        db.conn().execute("INSERT INTO kol_experts(name,institution,created_at,updated_at) VALUES('Expert','Clinic',1,1)", []).unwrap();
+        db.conn().execute("INSERT INTO kol_notes(expert_id,work_id,content,occurred_at,created_at) VALUES(1,?1,'Expert raised an evidence gap',1,1)", [work.id]).unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-25",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(snapshot
+            .expert_context
+            .iter()
+            .any(|row| row["content"] == "Expert raised an evidence gap"));
     }
 
     #[test]

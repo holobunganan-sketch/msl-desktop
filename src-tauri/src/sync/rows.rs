@@ -116,6 +116,12 @@ const TABLES: &[TableSpec] = &[
         excluded: NO_EXCLUSIONS,
     },
     TableSpec {
+        name: "ai_proposal_outcomes",
+        key: "proposal_id",
+        refs: REVIEW_REFS,
+        excluded: NO_EXCLUSIONS,
+    },
+    TableSpec {
         name: "classification_memories",
         key: "id",
         refs: MEMORY_REFS,
@@ -1184,13 +1190,18 @@ fn map_remote_key(conn: &Connection, remote: &RecordState) -> SyncResult<String>
             "同步包包含当前版本不支持的数据类型",
         )
     })?;
-    let key = if spec.name == "capture_context" {
+    let key = if let Some(parent_table) = spec
+        .refs
+        .iter()
+        .find(|(column, _)| *column == spec.key)
+        .map(|(_, table)| *table)
+    {
         let uid = remote
             .refs
-            .get("inbox_id")
-            .ok_or_else(|| SyncError::new("SYNC_REFERENCE_PENDING", "收件箱关联尚未到达"))?;
-        let key = local_key_for_uid(conn, "inbox_items", uid)?
-            .ok_or_else(|| SyncError::new("SYNC_REFERENCE_PENDING", "收件箱关联尚未到达"))?;
+            .get(spec.key)
+            .ok_or_else(|| SyncError::new("SYNC_REFERENCE_PENDING", "记录的所属对象尚未到达"))?;
+        let key = local_key_for_uid(conn, parent_table, uid)?
+            .ok_or_else(|| SyncError::new("SYNC_REFERENCE_PENDING", "记录的所属对象尚未到达"))?;
         conn.execute("INSERT OR IGNORE INTO sync_entities(table_name,local_key,entity_uid,deleted) VALUES(?1,?2,?3,?4)",params![spec.name,key,remote.uid,remote.deleted]).map_err(|e|SyncError::new("SYNC_DB_WRITE",e.to_string()))?;
         key
     } else if let Some(existing) = local_key_for_uid(conn, spec.name, &remote.uid)? {

@@ -112,6 +112,8 @@ pub struct AiProposal {
     pub updated_at: i64,
     pub decided_at: Option<i64>,
     pub deferred_at: Option<i64>,
+    pub applied_kind: Option<String>,
+    pub applied_id: Option<i64>,
 }
 fn row_proposal(row: &Row) -> rusqlite::Result<AiProposal> {
     Ok(AiProposal {
@@ -136,9 +138,11 @@ fn row_proposal(row: &Row) -> rusqlite::Result<AiProposal> {
         updated_at: row.get(18)?,
         decided_at: row.get(19)?,
         deferred_at: row.get(20)?,
+        applied_kind: row.get(21)?,
+        applied_id: row.get(22)?,
     })
 }
-const PROPOSAL_SELECT:&str="SELECT id,analysis_run_id,kind,suggested_kind,operation,target_id,work_id,suggested_work_id,workspace_id,dedupe_key,title,payload_json,reason,source_refs_json,confidence,user_edited,status,created_at,updated_at,decided_at,deferred_at FROM ai_proposals";
+const PROPOSAL_SELECT:&str="SELECT id,analysis_run_id,kind,suggested_kind,operation,target_id,work_id,suggested_work_id,workspace_id,dedupe_key,title,payload_json,reason,source_refs_json,confidence,user_edited,status,created_at,updated_at,decided_at,deferred_at,(SELECT kind FROM ai_proposal_outcomes WHERE proposal_id=ai_proposals.id),(SELECT target_id FROM ai_proposal_outcomes WHERE proposal_id=ai_proposals.id) FROM ai_proposals";
 pub struct ProposalRepo<'a> {
     conn: &'a Connection,
 }
@@ -160,7 +164,7 @@ impl<'a> ProposalRepo<'a> {
         let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(status) = status {
             (
                 format!(
-                    "{} WHERE status=?1 ORDER BY updated_at DESC,id DESC LIMIT ?2",
+                    "{} WHERE status=?1 AND status<>'deleted' ORDER BY updated_at DESC,id DESC LIMIT ?2",
                     PROPOSAL_SELECT
                 ),
                 vec![
@@ -171,7 +175,7 @@ impl<'a> ProposalRepo<'a> {
         } else {
             (
                 format!(
-                    "{} ORDER BY updated_at DESC,id DESC LIMIT ?1",
+                    "{} WHERE status<>'deleted' ORDER BY updated_at DESC,id DESC LIMIT ?1",
                     PROPOSAL_SELECT
                 ),
                 vec![Box::new(limit.clamp(1, 200) as i64)],
@@ -187,6 +191,7 @@ impl<'a> ProposalRepo<'a> {
             "{} WHERE status='pending' AND deferred_at IS NULL AND analysis_run_id=(
              SELECT ar.id FROM analysis_runs ar
              WHERE ar.status='completed'
+             AND EXISTS(SELECT 1 FROM ai_proposals p WHERE p.analysis_run_id=ar.id AND p.status='pending' AND p.deferred_at IS NULL)
              ORDER BY COALESCE(ar.finished_at,ar.started_at) DESC,ar.id DESC LIMIT 1
              ) ORDER BY confidence DESC,updated_at DESC,id DESC LIMIT ?1",
             PROPOSAL_SELECT
@@ -206,7 +211,7 @@ impl<'a> ProposalRepo<'a> {
         let mut rows = Vec::new();
         if let Some(status) = status {
             let sql = format!(
-                "{} WHERE created_at>=?1 AND status=?2 ORDER BY created_at DESC,id DESC LIMIT ?3",
+                "{} WHERE created_at>=?1 AND status=?2 AND status<>'deleted' ORDER BY created_at DESC,id DESC LIMIT ?3",
                 PROPOSAL_SELECT
             );
             let mut stmt = self.conn.prepare(&sql)?;
@@ -216,7 +221,7 @@ impl<'a> ProposalRepo<'a> {
             }
         } else {
             let sql = format!(
-                "{} WHERE created_at>=?1 ORDER BY created_at DESC,id DESC LIMIT ?2",
+                "{} WHERE created_at>=?1 AND status<>'deleted' ORDER BY created_at DESC,id DESC LIMIT ?2",
                 PROPOSAL_SELECT
             );
             let mut stmt = self.conn.prepare(&sql)?;
@@ -267,15 +272,9 @@ impl<'a> ProposalRepo<'a> {
             )
             .optional()?;
         if let Some(existing) = existing {
-            if existing.user_edited || existing.deferred_at.is_some() {
-                return Ok(Some(existing));
-            }
-            self.conn.execute("UPDATE ai_proposals SET analysis_run_id=?1,payload_json=?2,reason=?3,source_refs_json=?4,confidence=?5,updated_at=?6 WHERE id=?7",params![run_id,payload_json,reason,source_refs_json,confidence,now,existing.id])?;
-            self.conn.execute(
-                "UPDATE ai_proposals SET input_signature=?1 WHERE id=?2",
-                params![signature, existing.id],
-            )?;
-            return self.get(existing.id);
+            // A pending opinion belongs to the user's current round. Never
+            // replace it with a later model response, even before user editing.
+            return Ok(Some(existing));
         }
         self.conn.execute("INSERT INTO ai_proposals (analysis_run_id,kind,suggested_kind,operation,target_id,work_id,suggested_work_id,workspace_id,dedupe_key,title,payload_json,reason,source_refs_json,confidence,status,created_at,updated_at) VALUES (?1,?2,?2,?3,?4,?5,?5,?6,?7,?8,?9,?10,?11,?12,'pending',?13,?13)",params![run_id,kind,operation,target_id,work_id,workspace_id,dedupe_key,title,payload_json,reason,source_refs_json,confidence,now])?;
         let id = self.conn.last_insert_rowid();
@@ -345,6 +344,10 @@ impl<'a> ProposalRepo<'a> {
                 "proposal is stale or no longer pending".into(),
             ));
         }
+        self.conn.execute(
+            "DELETE FROM secretary_proposal_scopes WHERE proposal_id=?1",
+            [id],
+        )?;
         self.get(id)?
             .ok_or_else(|| DbError::NotFound("proposal".into()))
     }
@@ -562,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_completed_run_without_proposals_does_not_resurface_older_suggestions() {
+    fn no_output_run_keeps_unfinished_round_visible() {
         let db = Database::open_in_memory().unwrap();
         let runs = AnalysisRunRepo::new(db.conn());
         let old = runs.create("manual", Some(0), Some(1)).unwrap();
@@ -574,7 +577,7 @@ mod tests {
         runs.finish(latest.id, "completed", Some("no suggestions"), None)
             .unwrap();
 
-        assert!(repo.list_latest_run_pending(20).unwrap().is_empty());
+        assert_eq!(repo.list_latest_run_pending(20).unwrap().len(), 1);
     }
 
     #[test]

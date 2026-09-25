@@ -189,13 +189,17 @@
   }
 
   async function remove(ev: CalendarEvent) {
+    if (saving) return;
+    saving = true;
     try {
       await invoke("delete_calendar_event", { id: ev.id });
+      editing = null;
+      showForm = false;
       invalidate("calendar", "works", "brief");
       await load();
     } catch (e) {
       error = String(e);
-    }
+    } finally { saving = false; }
   }
 
   function shift(days: number) {
@@ -292,7 +296,7 @@
       <textarea id="calendar-notes" rows="3" bind:value={formNotes}></textarea>
       <StatusLine message={error}/>
       <div class="modal-actions">
-        {#if editing}<button type="button" class="danger" data-testid="calendar-delete" onclick={() => remove(editing as CalendarEvent)}>{tt("common.delete")}</button>{/if}
+        {#if editing}<button type="button" class="danger" data-testid="calendar-delete" disabled={saving} onclick={() => remove(editing as CalendarEvent)}>{tt("common.delete")}</button>{/if}
         <button type="button" onclick={() => { showForm = false; editing = null; }}>{tt("common.cancel")}</button>
         <AppButton testid="calendar-save" type="submit" loading={saving} label={editing ? tt("common.save") : tt("common.add")} />
       </div>

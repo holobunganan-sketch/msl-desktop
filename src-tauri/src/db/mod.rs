@@ -224,7 +224,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 23);
 
         // 业务表包含 Provider catalog、文档智能、AI secretary 与周期报告。
         let table_count: i64 = db
@@ -235,7 +235,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(table_count, 64); // Includes durable edit capture and FTS tables.
+        assert_eq!(table_count, 67); // Includes secretary round checkpoints and accepted-advice outcomes.
 
         // WAL 已启用
         let journal: String = db
@@ -302,13 +302,13 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 23);
         // Each registered migration is recorded exactly once.
         let count: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 21);
+        assert_eq!(count, 23);
     }
 
     #[test]
@@ -325,7 +325,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 23);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM provider_settings", [], |r| r
                 .get::<_, i64>(0))
@@ -382,7 +382,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 23);
         assert_eq!(
             conn.query_row(
                 "SELECT template_kind FROM provider_settings WHERE id = 1",
@@ -464,7 +464,7 @@ mod tests {
              INSERT INTO works (title, status, created_at, updated_at) VALUES ('work', 'active', 0, 0);",
         ).unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 23);
         for table in ["work_workspace_links", "document_index", "cache_entries"] {
             assert_eq!(
                 conn.query_row(
@@ -511,7 +511,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0); INSERT INTO daily_briefs (brief_date,generated_at,content) VALUES ('2026-08-14',0,'kept brief');").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 23);
         let schedule: (i64, i64, i64, i64) = conn.query_row("SELECT enabled, interval_minutes, daily_hour, daily_minute FROM analysis_schedule_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(schedule, (1, 180, 6, 0));
         assert_eq!(
@@ -541,7 +541,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            21
+            23
         );
     }
 
@@ -566,7 +566,7 @@ mod tests {
             .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0),(5,'ai_secretary',0); INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES ('cache_limit_bytes','123',1);").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 23);
         assert_eq!(
             conn.query_row(
                 "SELECT value FROM app_settings WHERE key='cache_limit_bytes'",
@@ -607,7 +607,7 @@ mod tests {
 
         migrations::run(&mut conn).unwrap();
 
-        assert_eq!(migrations::current_version(&conn).unwrap(), 21);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 23);
         assert_eq!(
             conn.query_row(
                 "SELECT kind || '|' || suggested_kind FROM ai_proposals WHERE dedupe_key='kept-proposal'",
@@ -633,6 +633,137 @@ mod tests {
         let p = default_db_path();
         assert!(p.to_string_lossy().contains("MSLDesktop"));
         assert_eq!(p.file_name().unwrap().to_str().unwrap(), DB_FILE_NAME);
+    }
+
+    #[test]
+    fn migration_v22_backfills_explicit_advice_targets_without_losing_existing_work() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at INTEGER NOT NULL);").unwrap();
+        for migration in migrations::MIGRATIONS.iter().filter(|m| m.version <= 22) {
+            conn.execute_batch(migration.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES(?1,?2,0)",
+                rusqlite::params![migration.version, migration.name],
+            )
+            .unwrap();
+        }
+        assert_eq!(migrations::current_version(&conn).unwrap(), 22);
+        conn.execute_batch(r#"
+            INSERT INTO works(id,title,status,summary,created_at,updated_at) VALUES(10,'Synthetic preserved project','active','Original summary',1,2);
+            INSERT INTO tasks(id,work_id,title,status,priority,notes,created_at,updated_at,completed_at) VALUES
+              (70,10,'Matching title does not identify a target','next','high','Preserve this task',3,4,NULL),
+              (71,10,'Completed synthetic task','done','normal','Preserve completed task',5,6,6);
+            INSERT INTO ai_proposals(id,kind,operation,work_id,dedupe_key,title,payload_json,status,created_at,updated_at) VALUES
+              (90,'task','create',10,'explicit-done','Matching title does not identify a target','{}','confirmed',7,8),
+              (91,'task','create',10,'unidentified','Matching title does not identify a target','{}','confirmed',7,8),
+              (92,'task','create',10,'pending','Pending suggestion','{}','pending',7,8),
+              (93,'task','create',10,'malformed','Malformed old metadata','{}','confirmed',7,8),
+              (94,'task','create',10,'explicit-open','Still in progress','{}','confirmed',7,8);
+            INSERT INTO activity_events(timestamp,event_type,work_id,entity_type,entity_id,metadata_json) VALUES
+              (9,'ai.proposal.confirmed',10,'proposal',90,'{"kind":"task","target_id":71}'),
+              (9,'ai.proposal.confirmed',10,'proposal',92,'{"kind":"task","target_id":70}'),
+              (9,'ai.proposal.confirmed',10,'proposal',93,'not-json'),
+              (9,'ai.proposal.confirmed',10,'proposal',94,'{"kind":"task","target_id":71}'),
+              (10,'ai.proposal.confirmed',10,'proposal',94,'{"kind":"task","target_id":70}');
+        "#).unwrap();
+        let read_rows = |sql: &str| -> Vec<String> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let work_sql = "SELECT json_array(id,title,status,summary,created_at,updated_at,archived_at,revision) FROM works ORDER BY id";
+        let task_sql = "SELECT json_array(id,work_id,title,status,priority,due_at,scheduled_start,scheduled_end,notes,created_at,updated_at,completed_at) FROM tasks ORDER BY id";
+        let works_before = read_rows(work_sql);
+        let tasks_before = read_rows(task_sql);
+        let events_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM activity_events", [], |r| r.get(0))
+            .unwrap();
+        migrations::run(&mut conn).unwrap();
+        let outcomes: Vec<(i64, String, i64)> = conn
+            .prepare(
+                "SELECT proposal_id,kind,target_id FROM ai_proposal_outcomes ORDER BY proposal_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            outcomes,
+            vec![(90, "task".into(), 71), (94, "task".into(), 70)]
+        );
+        assert_eq!(
+            ai::ProposalRepo::new(&conn)
+                .get(90)
+                .unwrap()
+                .unwrap()
+                .status,
+            "resolved"
+        );
+        assert_eq!(
+            ai::ProposalRepo::new(&conn)
+                .get(94)
+                .unwrap()
+                .unwrap()
+                .status,
+            "confirmed"
+        );
+        assert!(
+            ai::ProposalRepo::new(&conn)
+                .get(91)
+                .unwrap()
+                .unwrap()
+                .applied_id
+                .is_none(),
+            "a matching title must never invent a legacy relationship"
+        );
+        for _ in 0..2 {
+            migrations::run(&mut conn).unwrap();
+        }
+        let read_rows = |sql: &str| -> Vec<String> {
+            conn.prepare(sql)
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(read_rows(work_sql), works_before);
+        assert_eq!(read_rows(task_sql), tasks_before);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM activity_events", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            events_before
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM ai_proposals", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM ai_proposal_outcomes", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            23
+        );
+        let violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
     }
 
     #[test]
@@ -678,7 +809,7 @@ mod tests {
         });
         drop(before);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 21);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 23);
         let counts_after = [
             "works",
             "tasks",
@@ -705,7 +836,7 @@ mod tests {
             .is_empty());
         drop(db);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 21);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 23);
         for table in ["reports", "report_schedule_state"] {
             assert_eq!(
                 db.conn()

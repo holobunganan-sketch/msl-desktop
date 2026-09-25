@@ -44,6 +44,9 @@
   let formEnd = $state("");
   let formKind = $state("other");
   let saving = $state(false);
+  let removeTarget = $state<InboxItem|null>(null);
+  let removeBusy = $state(false);
+  let removeError = $state("");
   let captureText=$state("");
   let captureBusy=$state(false);
   let queued=$state(false);
@@ -144,14 +147,29 @@
     }
   }
 
-  async function remove(item: InboxItem) {
+  function requestRemove(item:InboxItem) {
+    if (removeBusy) return;
+    removeTarget = {...item};
+    removeError = "";
+  }
+
+  function closeRemove() {
+    if (!removeBusy) { removeTarget = null; removeError = ""; }
+  }
+
+  async function confirmRemove() {
+    const item = removeTarget;
+    if (!item || removeBusy) return;
+    removeBusy = true;
+    removeError = "";
     try {
       await invoke("delete_inbox_item", { id: item.id });
-      invalidate("inbox", "brief");
+      removeTarget = null;
+      invalidate("inbox", "works", "proposals", "analysis", "brief");
       await load();
     } catch (e) {
-      error = String(e);
-    }
+      removeError = String(e);
+    } finally { removeBusy = false; }
   }
 
   $effect(() => {
@@ -171,6 +189,13 @@
     <span class="count">{items.filter((item) => !item.processed_at).length}</span>
   </div>
   <div class="status error stable-feedback"><StatusLine message={error}/></div>
+
+  <Modal open={removeTarget!==null} title={currentLocale==='en-US'?'Delete this inbox record?':'删除这条收件箱记录？'} onclose={closeRemove} dismissible={!removeBusy}>
+    {#if removeTarget}<p class="remove-preview">{removeTarget.content}</p>{/if}
+    <p>{currentLocale==='en-US'?'This removes only the original inbox record. Any tasks, waiting items, calendar events or project progress already created from it will be kept. Source files remain unchanged.':'仅删除收件箱中的原始记录。由它生成的任务、等待事项、日历和项目进展均会保留，源文件保持原样。'}</p>
+    <StatusLine message={removeError}/>
+    {#snippet footer()}<AppButton variant="secondary" testid="inbox-delete-cancel" onclick={closeRemove} disabled={removeBusy}>{tt("common.cancel")}</AppButton><AppButton variant="danger" testid="inbox-delete-confirm" onclick={confirmRemove} loading={removeBusy}>{tt("common.delete")}</AppButton>{/snippet}
+  </Modal>
 
   <Modal open={conversion !== null} title={projectMode?tt("inbox.toProject"):tt("inbox.convertTitle", { type: conversion === "task" ? tt("inbox.toTask") : conversion === "waiting" ? tt("inbox.toWaiting") : tt("inbox.toCalendar") })} onclose={closeConversion}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); convert(); }}>
@@ -222,9 +247,10 @@
             <button data-testid={`inbox-task-${item.id}`} onclick={() => openConversion("task", item)}>{tt("inbox.toTask")}</button>
             <button onclick={() => openConversion("waiting", item)}>{tt("inbox.toWaiting")}</button>
             <button onclick={() => openConversion("calendar", item)}>{tt("inbox.toCalendar")}</button>
-            <button onclick={() => remove(item)}>{tt("common.delete")}</button></div></details>
+            </div></details>
           </span>
         {/if}
+        <button class="delete-record" data-testid={`inbox-delete-${item.id}`} disabled={removeBusy} onclick={()=>requestRemove(item)}>{tt("common.delete")}</button>
       </li>
     {/each}
   </ul>
@@ -232,6 +258,8 @@
 </div>
 
 <style>
+  .remove-preview{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;font-weight:600}
+  .delete-record{color:var(--color-danger)}
   .history-switch{display:flex;gap:9px;align-items:center;margin:16px 0;color:var(--color-muted);font-size:14px}.manual-routing summary{padding:8px;cursor:pointer;font-size:14px}.manual-routing>div{display:flex;flex-wrap:wrap;gap:8px;padding:10px 0}.focused{outline:2px solid var(--color-primary);outline-offset:-2px}
   .organize-note{font-size:14px;color:var(--color-muted);line-height:1.6}
   .organize-note button{font:inherit;font-size:14px;padding:10px 14px;min-height:40px;border:0;border-radius:10px;background:var(--color-primary);color:white;cursor:pointer}.organize-note{display:flex;gap:12px;align-items:center;flex-wrap:wrap}

@@ -81,7 +81,7 @@ fn sync_schema_has_durable_identity_journal_and_conflicts() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 23);
     for table in [
         "sync_local_state",
         "sync_entities",
@@ -95,6 +95,7 @@ fn sync_schema_has_durable_identity_journal_and_conflicts() {
         "sync_workspace_bindings",
         "sync_feedback_events",
         "ai_readable_documents",
+        "ai_proposal_outcomes",
     ] {
         let found: i64 = db
             .conn()
@@ -327,4 +328,191 @@ fn a_visible_conflict_can_be_resolved_and_is_not_listed_again() {
         .unwrap()
         .is_empty());
     assert!(crate::sync::rows::resolve_conflict(db.conn(), "conflict-1", "local").is_err());
+}
+
+#[test]
+fn accepted_advice_targets_resolution_and_deletion_survive_different_device_ids() {
+    use crate::db::{ai::ProposalRepo, task::TaskRepo, work::WorkRepo, Database};
+    let root = std::env::temp_dir().join(format!("msl-sync-advice-{}", uuid::Uuid::new_v4()));
+    let shared = root.join("shared").join("MSLDesktop.sync");
+    std::fs::create_dir_all(&shared).unwrap();
+    let a = Database::open(&root.join("a.db")).unwrap();
+    let b = Database::open(&root.join("b.db")).unwrap();
+    // Occupy the incoming ID as well as different maxima; otherwise the mapper
+    // correctly reuses a free remote ID instead of allocating beyond the maximum.
+    b.conn().execute_batch(r#"
+        WITH RECURSIVE occupied(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM occupied WHERE id<10)
+        INSERT INTO works(id,title,status,summary,created_at,updated_at)
+          SELECT id,'B unrelated project '||id,'active','Keep',1,1 FROM occupied;
+        WITH RECURSIVE occupied(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM occupied WHERE id<80)
+        INSERT INTO tasks(id,work_id,title,status,priority,created_at,updated_at)
+          SELECT id,10,'B unrelated task '||id,'next','normal',1,1 FROM occupied;
+        WITH RECURSIVE occupied(id) AS (VALUES(1) UNION ALL SELECT id+1 FROM occupied WHERE id<50)
+        INSERT INTO ai_proposals(id,kind,operation,work_id,dedupe_key,title,payload_json,status,created_at,updated_at)
+          SELECT id,'task','create',10,'unrelated-advice-'||id,'B unrelated advice '||id,'{}','confirmed',1,1 FROM occupied;
+    "#).unwrap();
+    let work = WorkRepo::new(a.conn())
+        .insert("Synced synthetic project", "active")
+        .unwrap();
+    let run = crate::ai::analysis::create_run(&a, "manual", 0, 1).unwrap();
+    let proposal = ProposalRepo::new(a.conn())
+        .upsert_pending(
+            run,
+            "task",
+            "create",
+            None,
+            Some(work.id),
+            None,
+            "shared-advice",
+            "Synced synthetic follow-up",
+            "{}",
+            "Synthetic evidence",
+            "[]",
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    let accepted =
+        crate::ai::apply::confirm_proposal(&a, proposal.id, proposal.updated_at, None).unwrap();
+    publish_state(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    publish_state(a.conn(), &shared, "A", "dataset", "generation").unwrap();
+    receive_states(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    let remote_proposal_id: i64 = b
+        .conn()
+        .query_row(
+            "SELECT id FROM ai_proposals WHERE dedupe_key='shared-advice'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let remote_task_id: i64 = b
+        .conn()
+        .query_row(
+            "SELECT id FROM tasks WHERE title='Synced synthetic follow-up'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let remote_work_id: i64 = b
+        .conn()
+        .query_row(
+            "SELECT id FROM works WHERE title='Synced synthetic project'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(remote_proposal_id, proposal.id);
+    assert_ne!(remote_task_id, accepted.target_id);
+    assert_ne!(remote_work_id, work.id);
+    assert_ne!(remote_proposal_id, remote_task_id);
+    let remote = ProposalRepo::new(b.conn())
+        .get(remote_proposal_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(remote.status, "confirmed");
+    assert_eq!(remote.work_id, Some(remote_work_id));
+    assert_eq!(remote.applied_kind.as_deref(), Some("task"));
+    assert_eq!(remote.applied_id, Some(remote_task_id));
+    assert_eq!(
+        TaskRepo::new(b.conn())
+            .get(remote_task_id)
+            .unwrap()
+            .unwrap()
+            .work_id,
+        Some(remote_work_id)
+    );
+    // The PK is also an FK. Its sync identity must track the localized proposal,
+    // not an independently allocated integer that only happens to be unused.
+    let outcome_key: String = b
+        .conn()
+        .query_row(
+            "SELECT local_key FROM sync_entities WHERE table_name='ai_proposal_outcomes'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(outcome_key, remote_proposal_id.to_string());
+    publish_state(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    receive_states(a.conn(), &shared, "A", "dataset", "generation").unwrap();
+    assert_eq!(
+        a.conn()
+            .query_row("SELECT COUNT(*) FROM ai_proposal_outcomes", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+
+    crate::ai::lifecycle::resolve(&b, remote.id, remote.updated_at).unwrap();
+    publish_state(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    receive_states(a.conn(), &shared, "A", "dataset", "generation").unwrap();
+    for (db, proposal_id, task_id) in [
+        (&a, proposal.id, accepted.target_id),
+        (&b, remote_proposal_id, remote_task_id),
+    ] {
+        let current = ProposalRepo::new(db.conn())
+            .get(proposal_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.status, "resolved");
+        assert_eq!(current.applied_id, Some(task_id));
+        assert_eq!(
+            TaskRepo::new(db.conn())
+                .get(task_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "done"
+        );
+    }
+    let current = ProposalRepo::new(a.conn())
+        .get(proposal.id)
+        .unwrap()
+        .unwrap();
+    crate::ai::lifecycle::delete(&a, current.id, current.updated_at).unwrap();
+    publish_state(a.conn(), &shared, "A", "dataset", "generation").unwrap();
+    receive_states(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    for (db, proposal_id, task_id) in [
+        (&a, proposal.id, accepted.target_id),
+        (&b, remote_proposal_id, remote_task_id),
+    ] {
+        let repo = ProposalRepo::new(db.conn());
+        assert_eq!(repo.get(proposal_id).unwrap().unwrap().status, "deleted");
+        assert!(repo
+            .list(None, 200)
+            .unwrap()
+            .iter()
+            .all(|p| p.id != proposal_id));
+        assert!(repo.list(Some("deleted"), 200).unwrap().is_empty());
+        assert!(repo
+            .list_since(0, None, 200)
+            .unwrap()
+            .iter()
+            .all(|p| p.id != proposal_id));
+        assert_eq!(
+            TaskRepo::new(db.conn())
+                .get(task_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "done"
+        );
+        let violations: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+    assert_eq!(
+        TaskRepo::new(b.conn()).get(80).unwrap().unwrap().status,
+        "next"
+    );
+    assert_eq!(
+        ProposalRepo::new(b.conn()).get(50).unwrap().unwrap().status,
+        "confirmed"
+    );
+    a.close().unwrap();
+    b.close().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

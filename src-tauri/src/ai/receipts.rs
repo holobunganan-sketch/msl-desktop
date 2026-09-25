@@ -16,6 +16,7 @@ const TABLES: &[&str] = &[
     "work_file_refs",
     "classification_memories",
     "ai_proposals",
+    "ai_proposal_outcomes",
 ];
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Change {
@@ -146,6 +147,14 @@ fn execute(db: &Database, items: &[(i64, i64, Option<Value>)]) -> DbResult<Confi
         results.push(result);
     }
     let changes = finish_capture(&tx)?;
+    for result in &results {
+        super::rounds::acknowledge_result(&tx, result)?;
+    }
+    // Release new project material only after every acknowledgement, so batch
+    // order cannot overwrite the destination project's analysis opportunity.
+    for result in &results {
+        super::rounds::release_new_association(&tx, result)?;
+    }
     tx.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES (?1,?2,?3,?4)",params![id,serde_json::json!(items.iter().map(|i|i.0).collect::<Vec<_>>()).to_string(),serde_json::to_string(&changes).map_err(|_|DbError::Migration("撤销凭据写入失败".into()))?,now_unix()])?;
     tx.commit()?;
     Ok(ConfirmationGroup {
@@ -284,6 +293,9 @@ pub fn undo(db: &Database, receipt: &str) -> DbResult<()> {
             )?;
         }
     }
+    // Pre-v23 receipts have no outcome-table change. Remove their migrated
+    // link only after the complete receipt has passed conflict checks.
+    tx.execute("DELETE FROM ai_proposal_outcomes WHERE proposal_id IN (SELECT value FROM json_each((SELECT proposal_ids_json FROM proposal_receipts WHERE id=?1))) AND proposal_id IN (SELECT id FROM ai_proposals WHERE status='pending')",[receipt])?;
     tx.execute(
         "UPDATE proposal_receipts SET undone_at=?1 WHERE id=?2",
         params![now_unix(), receipt],

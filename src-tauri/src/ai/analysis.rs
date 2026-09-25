@@ -101,6 +101,60 @@ pub fn parse_output(
             }
         }
     }
+    for proposal in &parsed.proposals {
+        for source in &proposal.source_refs {
+            let Some(source_id) = source["entity_id"].as_i64() else {
+                continue;
+            };
+            let source_type = source["source_type"].as_str().unwrap_or("");
+            let selected_work = match source_type {
+                "work" => Some(source_id),
+                "inbox" => snapshot
+                    .capture_contexts
+                    .iter()
+                    .find(|context| context["inbox_id"] == source_id)
+                    .and_then(|context| context["work_id"].as_i64())
+                    .or_else(|| {
+                        snapshot.focused_inbox.as_ref().and_then(|inbox| {
+                            (inbox["id"] == source_id)
+                                .then(|| inbox["capture_context"]["work_id"].as_i64())
+                                .flatten()
+                        })
+                    }),
+                "kol_note" => snapshot
+                    .expert_context
+                    .iter()
+                    .find(|row| row["source_type"] != "kol_insight" && row["id"] == source_id)
+                    .and_then(|row| row["work_id"].as_i64()),
+                _ => snapshot
+                    .brief
+                    .activity
+                    .iter()
+                    .chain(snapshot.brief.tasks_open.iter())
+                    .chain(snapshot.brief.tasks_completed.iter())
+                    .chain(snapshot.brief.waiting.iter())
+                    .chain(snapshot.brief.calendar.iter())
+                    .chain(snapshot.brief.resume_points.iter())
+                    .chain(snapshot.brief.file_changes.iter())
+                    .find(|fact| {
+                        fact.source_type == source_type && fact.entity_id == Some(source_id)
+                    })
+                    .and_then(|fact| fact.work_id),
+            };
+            if let Some(work_id) = selected_work {
+                let valid = match proposal.kind.as_str() {
+                    "work" => proposal.operation == "update" && proposal.target_id == Some(work_id),
+                    "inbox" => true,
+                    _ => proposal.work_id == Some(work_id),
+                };
+                if !valid {
+                    return Err(format!(
+                        "来源 {source_type} #{source_id} 已归入项目 #{work_id}；请沿用该项目，勿创建独立事项"
+                    ));
+                }
+            }
+        }
+    }
     if let Some(work) = snapshot.focused_work.as_ref() {
         let id = work["work"]["id"].as_i64();
         for p in &parsed.proposals {
@@ -190,6 +244,9 @@ pub fn insert_proposal(
     proposal: &ProposalContract,
     dedupe_key: &str,
 ) -> DbResult<Option<i64>> {
+    if super::lifecycle::suppress(db.conn(), proposal)? {
+        return Ok(None);
+    }
     // Exact existing entity matches never create another copy. The model can
     // propose an explicit update with a genuine target_id when facts have changed.
     if proposal.operation == "create" {
@@ -303,10 +360,55 @@ pub fn apply_output(
         }
     };
     let tx = crate::db::write_transaction(db.conn()).map_err(|e| e.to_string())?;
+    if !super::rounds::valid(&tx, run_id, &snapshot.round_tickets).map_err(|e| e.to_string())? {
+        finish_run(
+            db,
+            run_id,
+            "reused",
+            Some("分析期间事项已变化，已保留当前建议；旧分析结果未写入。"),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE secretary_rounds SET active_run=NULL WHERE active_run=?1",
+            [run_id],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        return Ok(0);
+    }
     let mut queued = 0usize;
     for proposal in &validated.proposals {
+        let mut scopes = super::rounds::proposal_scopes(
+            &tx,
+            &proposal.kind,
+            proposal.target_id,
+            proposal.work_id,
+            &serde_json::json!(proposal.source_refs),
+        )
+        .map_err(|e| e.to_string())?;
+        if !snapshot.round_tickets.is_empty() {
+            if scopes.is_empty() {
+                scopes.extend(snapshot.round_tickets.iter().map(|t| t.scope.clone()));
+            }
+            if scopes
+                .iter()
+                .any(|scope| !snapshot.round_tickets.iter().any(|t| &t.scope == scope))
+            {
+                continue;
+            }
+        }
         match insert_proposal(db, run_id, proposal, &proposal_dedupe_key(proposal)) {
-            Ok(Some(_)) => queued += 1,
+            Ok(Some(id)) => {
+                for scope in scopes {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO secretary_proposal_scopes VALUES (?1,?2)",
+                        rusqlite::params![id, scope],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                queued += 1;
+            }
             Ok(None) => (),
             Err(error) => {
                 let message = error.to_string();
@@ -321,6 +423,7 @@ pub fn apply_output(
         .unwrap_or_else(|| format!("已生成 {queued} 条待确认建议"));
     let summary = crate::ai::brief::normalize_bullet_output(&summary, &snapshot.locale);
     finish_run(db, run_id, "completed", Some(&summary), None).map_err(|error| error.to_string())?;
+    super::rounds::remember(&tx, run_id, &snapshot.round_tickets).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(queued)
 }
@@ -329,6 +432,50 @@ pub fn apply_output(
 mod tests {
     use super::*;
     use crate::ai::analysis_snapshot::build;
+    #[test]
+    fn pending_opinion_is_immutable_until_user_handles_it() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = crate::db::ai::ProposalRepo::new(db.conn());
+        let first = create_run(&db, "manual", 0, 1).unwrap();
+        let second = create_run(&db, "manual", 0, 1).unwrap();
+        let saved = repo
+            .upsert_pending(
+                first,
+                "task",
+                "create",
+                None,
+                None,
+                None,
+                "same",
+                "Review evidence",
+                r#"{"notes":"original"}"#,
+                "original reason",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let repeated = repo
+            .upsert_pending(
+                second,
+                "task",
+                "create",
+                None,
+                None,
+                None,
+                "same",
+                "Review evidence",
+                r#"{"notes":"new interpretation"}"#,
+                "new reason",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(repeated.payload_json, saved.payload_json);
+        assert_eq!(repeated.analysis_run_id, Some(first));
+        assert_eq!(repeated.updated_at, saved.updated_at);
+    }
     #[test]
     fn queue_write_failure_rolls_back_the_whole_batch() {
         let db = Database::open_in_memory().unwrap();
@@ -398,6 +545,77 @@ mod tests {
         }
         let output=serde_json::json!({"proposals":[{"kind":"task","operation":"update","target_id":other.id,"work_id":a.id,"title":"illegal","payload":{}}]}).to_string();
         assert!(parse_output("work_draft", &output, &snapshot).is_err());
+    }
+
+    #[test]
+    fn captured_project_note_cannot_become_an_independent_task() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        let inbox = crate::db::flow::capture(
+            db.conn(),
+            "User direction",
+            Some(work.id),
+            Some("work"),
+            Some(work.id),
+        )
+        .unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-25",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        let source = snapshot
+            .source_refs
+            .iter()
+            .find(|r| r.source_type == "inbox" && r.entity_id == Some(inbox.id))
+            .unwrap();
+        let output = serde_json::json!({"proposals":[{"kind":"task","operation":"create","title":"Unlinked follow-up","work_id":null,"payload":{},"source_refs":[source]}]}).to_string();
+        assert!(parse_output("global_analysis", &output, &snapshot).is_err());
+        let linked = serde_json::json!({"proposals":[{"kind":"task","operation":"create","title":"Linked follow-up","work_id":work.id,"payload":{},"source_refs":[source]}]}).to_string();
+        assert!(parse_output("global_analysis", &linked, &snapshot).is_ok());
+    }
+    #[test]
+    fn linked_task_and_expert_evidence_keep_their_project_identity() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(Some(work.id), "Existing task", "normal", None, None)
+            .unwrap();
+        db.conn().execute("INSERT INTO kol_experts(name,institution,created_at,updated_at) VALUES('Expert','Clinic',1,1)",[]).unwrap();
+        db.conn().execute("INSERT INTO kol_notes(expert_id,work_id,content,occurred_at,created_at) VALUES(1,?1,'Evidence note',1,1)",[work.id]).unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-25",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        for (kind, id) in [("task_open", task.id), ("kol_note", 1)] {
+            let source = snapshot
+                .source_refs
+                .iter()
+                .find(|r| r.source_type == kind && r.entity_id == Some(id))
+                .unwrap();
+            let detached=serde_json::json!({"proposals":[{"kind":"task","operation":"create","title":"Detached action","work_id":null,"payload":{},"source_refs":[source]}]}).to_string();
+            assert!(
+                parse_output("global_analysis", &detached, &snapshot).is_err(),
+                "{kind}"
+            );
+        }
     }
 
     #[test]

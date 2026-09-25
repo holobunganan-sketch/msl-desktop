@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SecretaryRound from './SecretaryRound.svelte';
+  import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import ProposalPreview from './ProposalPreview.svelte';
   import {navigateTo} from '$lib/services/navigation';
@@ -38,6 +40,7 @@
   let statusFilter = $state("pending");
   let runFilter = $state("all");
   let busy = $state(false);
+  let lifecycle = $state<{item:AiProposal;action:'delete'|'resolve'}|null>(null);
   let selectedIds = $state<number[]>([]);
   let rejectionCode = $state("unspecified");
   let analysisBusy = $derived($aiJobs.some(job=>["run_analysis_now","retry_analysis_run","start_workspace_work_draft"].includes(job.command) && job.status==="running"));
@@ -54,7 +57,16 @@
   const runIds = $derived([...new Set(allItems.map((item) => item.analysis_run_id).filter((id): id is number => id !== null))]);
 
   function displayStatus(item: AiProposal): string { return item.status === "pending" && item.deferred_at ? "deferred" : item.status; }
-  function statusText(item: AiProposal): string { const value = displayStatus(item); return tt(`aiReview.status${value.charAt(0).toUpperCase()}${value.slice(1)}` as Parameters<typeof t>[0]); }
+  function statusText(item: AiProposal): string { const value = displayStatus(item); if(value==='resolved')return currentLocale==='en-US'?'Resolved':'已解决'; if(value==='completed')return currentLocale==='en-US'?'Round completed':'本轮已完成'; return tt(`aiReview.status${value.charAt(0).toUpperCase()}${value.slice(1)}` as Parameters<typeof t>[0]); }
+  function requestLifecycle(item:AiProposal,action:'delete'|'resolve'){
+    if(busy)return;
+    lifecycle={item:{...item},action};
+  }
+  async function lifecycleCompleted(_action:'delete'|'resolve',id:number){
+    selectedIds=selectedIds.filter(selected=>selected!==id);
+    receipt=null;adjusting=false;
+    await load();
+  }
   function fmtTime(value: number | null): string { return value ? new Date(value * 1000).toLocaleString(currentLocale === "en-US" ? "en-US" : "zh-CN", { hour12: false }) : "—"; }
   function friendlyError(value: unknown): string {
     return String(value instanceof Error ? value.message : value).replace(/^Error:\s*/i, "").replace(/^migration error:\s*/i, "").replace(/^sqlite error:\s*/i, "");
@@ -207,7 +219,7 @@
   <div class="page-head">
     <div><h1>{currentLocale==='en-US'?'Arrangements for your decision':'秘书准备好了这些安排'}</h1><p>{currentLocale==='en-US'?'Recent 7 days, plus anything still awaiting your decision.':'最近7天的记录，以及仍未处理的建议。采用后才会更新项目与事项。'}</p></div>
     <details class="filter-options"><summary>{currentLocale==='en-US'?'Filter & history':'筛选与历史'}</summary><div class="review-filters">
-      <label>{tt("common.status")}<select bind:value={statusFilter} onchange={resetFilter}><option value="all">{tt("aiReview.filterAll")}</option><option value="pending">{tt("aiReview.statusPending")}</option><option value="deferred">{tt("aiReview.statusDeferred")}</option><option value="confirmed">{tt("aiReview.statusConfirmed")}</option><option value="rejected">{tt("aiReview.statusRejected")}</option><option value="superseded">{tt("aiReview.statusSuperseded")}</option></select></label>
+      <label>{tt("common.status")}<select bind:value={statusFilter} onchange={resetFilter}><option value="all">{tt("aiReview.filterAll")}</option><option value="pending">{tt("aiReview.statusPending")}</option><option value="deferred">{tt("aiReview.statusDeferred")}</option><option value="confirmed">{tt("aiReview.statusConfirmed")}</option><option value="resolved">{currentLocale==='en-US'?'Resolved':'已解决'}</option><option value="completed">{currentLocale==='en-US'?'Round completed':'本轮已完成'}</option><option value="rejected">{tt("aiReview.statusRejected")}</option><option value="superseded">{tt("aiReview.statusSuperseded")}</option></select></label>
       <label>{tt("aiReview.filterRun")}<select bind:value={runFilter} onchange={resetFilter}><option value="all">{tt("aiReview.allRuns")}</option>{#each runIds as runId}<option value={String(runId)}>#{runId}</option>{/each}</select></label>
       <AppButton variant="secondary" onclick={()=>load()} loading={!loaded}>{tt("common.refresh")}</AppButton>
     </div></details>
@@ -245,9 +257,13 @@
       <section class="editor-panel">
         {#if items[index]}
         {@const item = items[index]}
+        {#if item.status!=='resolved'}<SecretaryRound proposalId={item.id}/>{/if}
         <div class="editor-head"><div><div class="eyebrow">{tt("aiReview.counter", { current: index + 1, total: items.length })}</div><h2>{item.title}</h2></div><div class="pager"><button disabled={index === 0 || busy} onclick={() => move(-1)} aria-label={tt("aiReview.previous")}>‹</button><button disabled={index >= items.length - 1 || busy} onclick={() => move(1)} aria-label={tt("aiReview.next")}>›</button></div></div>
         <div class="review-meta"><span>{statusText(item)}</span>{#if item.decided_at}<span>{fmtTime(item.decided_at)}</span>{/if}</div>
-        <ProposalPreview {item} {works}/>
+        {#if item.status==='resolved'}<p class="resolved-notice" data-testid="review-resolved-notice">{currentLocale==='en-US'?'Resolved and kept for your records. The secretary will no longer follow up this insight.':'已解决，留作历史记录。秘书不再跟进这条洞察。'}</p>{/if}
+        {#if item.status==='resolved'}
+          <details class="resolved-snapshot"><summary>{currentLocale==='en-US'?'Original arrangement (history)':'查看当时采用的安排'}</summary><ProposalPreview {item} {works}/></details>
+        {:else}<ProposalPreview {item} {works}/>{/if}
         <div class="safety-note"><Icon name="check" size={15} /><span>{item.status === "pending" ? (currentLocale==='en-US'?'Accept to save these changes. You can undo them afterward.':'采用后保存以上变更，完成后可以撤销。') : tt("aiReview.readOnly")}</span></div>
         {#if adjusting}<div class="editor-scroll">
           <div class="form-grid">
@@ -308,6 +324,14 @@
         </div>
         <details class="decline-options" bind:open={showDecline}><summary>{currentLocale==='en-US'?'Do not use this suggestion':'这条建议不需要采用'}</summary><label class="rejection-choice">{currentLocale==='en-US'?'Reason (optional)':'原因（可选）'}<select data-testid="rejection-reason" bind:value={rejectionCode}><option value="unspecified">{currentLocale==='en-US'?'No reason':'暂不说明'}</option><option value="wrong_category">{currentLocale==='en-US'?'Wrong category':'分类不对'}</option><option value="duplicate">{currentLocale==='en-US'?'Already handled':'已经处理过'}</option></select></label><AppButton variant="danger" loading={busy} onclick={reject}>{currentLocale==='en-US'?'Decline suggestion':'不采用这条建议'}</AppButton></details>
         {:else}<button class="plain-action" onclick={()=>adjusting=!adjusting}>{currentLocale==='en-US'?'View details':'查看详情'}</button>{/if}
+        <div class="record-actions">
+          {#if item.status==='confirmed'}
+            <label class="resolve-control"><input data-testid="review-resolve" type="checkbox" checked={false} disabled={busy} onchange={event=>{event.currentTarget.checked=false;requestLifecycle(item,'resolve');}}/><span>{currentLocale==='en-US'?'This insight is resolved':'这条洞察已解决'}</span></label>
+          {:else if item.status==='completed'}
+            <small>{currentLocale==='en-US'?'The review round is closed. The status of accepted tasks is unchanged.':'本轮审阅已结束，已采用事项仍保留各自的完成状态。'}</small>
+          {/if}
+          <button data-testid="review-delete" class="plain-action delete-record" disabled={busy} onclick={()=>requestLifecycle(item,'delete')}>{currentLocale==='en-US'?'Delete record':'删除记录'}</button>
+        </div>
         {/if}
       </section>
     </div>
@@ -323,7 +347,17 @@
   {/if}
 </div>
 
+<ProposalLifecycleDialog item={lifecycle?.item??null} action={lifecycle?.action??'delete'} onclose={()=>lifecycle=null} oncomplete={lifecycleCompleted} onbusychange={value=>busy=value}/>
+
 <style>
+  .record-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:18px;padding-top:14px;border-top:1px solid var(--color-border);min-width:0}
+  .record-actions small{flex:1 1 260px;color:var(--color-muted);font-size:.9rem;line-height:1.65;overflow-wrap:anywhere}
+  .resolve-control{display:flex;align-items:center;gap:9px;flex:1 1 260px;min-height:42px;font-size:1rem;line-height:1.6;cursor:pointer}
+  .resolve-control input{width:18px;height:18px;flex:0 0 18px;accent-color:var(--color-primary)}
+  .record-actions .delete-record{margin-left:auto;color:var(--color-danger)}
+  .resolved-notice{margin:0 0 12px;padding:12px 14px;background:var(--color-success-soft);border-radius:var(--radius-sm);font-size:1rem;line-height:1.7;color:var(--color-success);overflow-wrap:anywhere}
+  .status-resolved{background:var(--color-success-soft);color:var(--color-success)}
+  .resolved-snapshot{margin:0 0 12px;min-width:0}.resolved-snapshot summary{padding:8px 0;color:var(--color-muted);font-size:1rem;cursor:pointer}
   .filter-options summary,.decline-options summary{cursor:pointer;color:var(--color-muted);font-size:14px;padding:8px 0}.filter-options .review-filters{padding-top:12px}.decline-options{margin-top:14px}.decline-options :global(.app-button){margin-top:12px}.plain-action,.receipt button{padding:9px 14px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface);font-size:14px;cursor:pointer}.receipt{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px;border:1px solid var(--color-border);border-radius:12px;background:var(--color-success-soft);font-size:14px}.receipt span{flex:1 1 240px}.editor-panel :global(.proposal-preview){padding:12px 0 18px}.list-head strong{font-size:14px}.review-actions{margin-top:18px}
 
   .repair-note{margin:0 0 12px;font-size:14px;line-height:1.6;color:var(--color-primary)}

@@ -125,6 +125,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "sync_edit_capture",
         sql: include_str!("../../migrations/0021_sync_edit_capture.sql"),
     },
+    Migration {
+        version: 22,
+        name: "secretary_rounds",
+        sql: include_str!("../../migrations/0022_secretary_rounds.sql"),
+    },
+    Migration {
+        version: 23,
+        name: "proposal_outcomes",
+        sql: include_str!("../../migrations/0023_proposal_outcomes.sql"),
+    },
 ];
 
 /// 执行所有未应用的迁移（幂等、事务化）。

@@ -10,11 +10,18 @@ export const translationDraft:{source:string;result:string;style:"written"|"spok
 export const jobCommands = new Set(["import_kol_materials","read_kol_materials","ask_workbench","analyze_kol","run_analysis_now","start_workspace_work_draft","retry_analysis_run","translate_text","generate_report","retry_report","generate_brief","refresh_project_cognition","organize_inbox_item"]);
 let refreshing = false;
 const notified = new Set<number>();
-function notifyFinished(job:AiJob) {
+async function notifyFinished(job:AiJob) {
   if (job.status === "running" || notified.has(job.id)) return;
   notified.add(job.id);
   if(notified.size>200)notified.delete(notified.values().next().value!);
   const en=get(locale)==="en-US";
+  if(job.status==='completed'&&['run_analysis_now','start_workspace_work_draft','organize_inbox_item','retry_analysis_run'].includes(job.command)) {
+    try {
+      const runs=await invoke<{id:number;status:string;summary:string|null}[]>('list_analysis_runs',{limit:30});
+      const run=runs.find(r=>r.id===job.result);
+      if(run?.status==='reused'){addToast(en?'Waiting for your decisions or progress. No new opinions were added.':(run.summary??'秘书正在等待您的处理或进展，本次没有新增建议。'),'info',6500);return;}
+    }catch{/* The job receipt remains available if status refresh fails. */}
+  }
   addToast(job.status==="completed"?(en?"AI task finished. Results are ready in Background tasks.":"AI 后台任务已完成，可从“后台任务”查看结果。"):(en?"AI task did not finish. Check Background tasks for details.":"AI 任务未完成，请在“后台任务”查看原因。"),job.status==="completed"?"success":"error",6500);
 }
 export async function refreshJobs() {

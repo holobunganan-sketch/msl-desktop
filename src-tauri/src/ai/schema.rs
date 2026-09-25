@@ -112,6 +112,8 @@ pub struct AiOutputContract {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposalContract {
+    #[serde(default)]
+    pub related_proposal_id: Option<i64>,
     pub kind: String,
     pub operation: String,
     #[serde(default)]

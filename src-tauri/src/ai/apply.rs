@@ -402,6 +402,7 @@ pub(crate) fn confirm_in_transaction(
     if tx.changes() == 0 {
         return Err(DbError::Migration("proposal became stale".into()));
     }
+    tx.execute("INSERT INTO ai_proposal_outcomes(proposal_id,kind,target_id,created_at) VALUES (?1,?2,?3,?4)",rusqlite::params![id,proposal.kind,target_id,now])?;
     tx.execute("INSERT INTO activity_events(timestamp,event_type,entity_type,entity_id,display_text,metadata_json) VALUES (?1,'ai.proposal.confirmed','proposal',?2,?3,?4)",rusqlite::params![now,id,format!("confirmed {} proposal",proposal.kind),serde_json::json!({"kind":proposal.kind,"target_id":target_id}).to_string()])?;
     Ok(ApplyResult {
         proposal_id: id,

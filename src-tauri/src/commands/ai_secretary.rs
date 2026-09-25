@@ -7,6 +7,41 @@ fn mark_analysis_failed(state: &State<AppState>, run_id: i64, code: &str, messag
     let _ = state.with_database(|db| crate::ai::analysis::fail_run(db, run_id, code, message));
 }
 
+#[tauri::command]
+pub fn secretary_round_status(
+    state: State<AppState>,
+    work_id: Option<i64>,
+    proposal_id: Option<i64>,
+) -> Result<Vec<crate::ai::rounds::RoundStatus>, String> {
+    with_db(&state, |db| {
+        let scopes = if let Some(w) = work_id {
+            crate::db::work::WorkRepo::new(db.conn())
+                .get(w)?
+                .ok_or_else(|| crate::db::DbError::NotFound("work".into()))?;
+            vec![format!("work:{w}")]
+        } else if let Some(p) = proposal_id {
+            crate::ai::rounds::scopes_for_proposal(db, p)?
+        } else {
+            return Ok(Vec::new());
+        };
+        scopes
+            .iter()
+            .map(|s| crate::ai::rounds::status(db, s))
+            .collect()
+    })
+}
+
+#[tauri::command]
+pub fn complete_secretary_round(
+    state: State<AppState>,
+    scope: String,
+    expected_epoch: i64,
+) -> Result<(), String> {
+    with_db(&state, |db| {
+        crate::ai::rounds::complete(db, &scope, expected_epoch)
+    })
+}
+
 /// Disk scanning uses a separate connection and blocking worker, never the UI's
 /// shared database lock. Refresh linked folders before reading cached evidence.
 pub(crate) async fn refresh_evidence(workspaces: Option<Vec<i64>>) -> Result<(), String> {
@@ -63,6 +98,13 @@ pub(crate) async fn execute_focused_analysis(
             .id)
     })?;
 
+    let tickets = with_db(state, |db| {
+        let scopes = crate::ai::rounds::candidates(db.conn(), inbox_id, None, None)?;
+        crate::ai::rounds::reserve(db, run_id, &scopes)
+    })?;
+    if tickets.is_empty() {
+        return Ok(run_id);
+    }
     if let Err(error) = refresh_evidence(None).await {
         mark_analysis_failed(state, run_id, "scan_failed", &error);
         return Err(format!("分析运行 #{run_id} 失败：{error}"));
@@ -101,7 +143,7 @@ pub(crate) async fn execute_focused_analysis(
             snapshot.snapshot_hash =
                 crate::cognition::digest(&serde_json::to_string(&snapshot).unwrap_or_default());
         }
-        Ok(snapshot)
+        crate::ai::rounds::restrict(db, snapshot, tickets.clone())
     }) {
         Ok(value) => value,
         Err(error) => {
@@ -306,6 +348,28 @@ pub fn defer_ai_proposal(
 }
 
 #[tauri::command]
+pub fn delete_ai_proposal(
+    state: State<AppState>,
+    id: i64,
+    expected_updated_at: i64,
+) -> Result<(), String> {
+    with_db(&state, |db| {
+        crate::ai::lifecycle::delete(db, id, expected_updated_at)
+    })
+}
+
+#[tauri::command]
+pub fn resolve_ai_proposal(
+    state: State<AppState>,
+    id: i64,
+    expected_updated_at: i64,
+) -> Result<crate::db::ai::AiProposal, String> {
+    with_db(&state, |db| {
+        crate::ai::lifecycle::resolve(db, id, expected_updated_at)
+    })
+}
+
+#[tauri::command]
 pub fn confirm_ai_proposal(
     state: State<AppState>,
     id: i64,
@@ -379,6 +443,13 @@ pub async fn start_workspace_work_draft(
         }
         Ok(ids)
     })?;
+    let tickets = with_db(&state, |db| {
+        let scopes = crate::ai::rounds::candidates(db.conn(), None, work_id, workspace_id)?;
+        crate::ai::rounds::reserve(db, run_id, &scopes)
+    })?;
+    if tickets.is_empty() {
+        return Ok(run_id);
+    }
     if let Err(error) = refresh_evidence(Some(workspace_ids.clone())).await {
         mark_analysis_failed(&state, run_id, "scan_failed", &error);
         return Err(format!("项目整理 #{run_id} 失败：{error}"));
@@ -395,11 +466,12 @@ pub async fn start_workspace_work_draft(
             "zh-CN",
             Some(&workspace_ids),
         )?;
-        if let Some(id) = work_id {
-            crate::ai::analysis_snapshot::focus_work(db, snapshot, id)
+        let snapshot = if let Some(id) = work_id {
+            crate::ai::analysis_snapshot::focus_work(db, snapshot, id)?
         } else {
-            Ok(snapshot)
-        }
+            snapshot
+        };
+        crate::ai::rounds::restrict(db, snapshot, tickets.clone())
     }) {
         Ok(value) => value,
         Err(error) => {

@@ -4,6 +4,7 @@
   import {paginate} from '$lib/services/pagination';
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import NaturalCapture from './NaturalCapture.svelte';
+  import SecretaryRound from './SecretaryRound.svelte';
   import {navigateTo} from '$lib/services/navigation';
   let {focusId=null,resumeId=null,onprojectchange=()=>{}}:{focusId?:number|null;resumeId?:number|null;onprojectchange?:(id:number)=>void}=$props();
   let projectCapture=$state(false);
@@ -141,6 +142,10 @@
   let deleteSnapshot=$state<Work|null>(null);
   let deleteLoading = $state(false);
   let deleteError = $state("");
+  type DeletableItem = "task" | "waiting" | "calendar" | "resume_point";
+  let deleteItemTarget = $state<{kind:DeletableItem;id:number;title:string;workId:number}|null>(null);
+  let deleteItemBusy = $state(false);
+  let deleteItemError = $state("");
   let resumeError = $state("");
 
   // 新建 Resume Point 表单
@@ -334,6 +339,31 @@
     }
   }
 
+  function requestItemDelete(kind:DeletableItem,id:number,title:string) {
+    if (!selectedId || deleteItemBusy) return;
+    deleteItemError = "";
+    deleteItemTarget = {kind,id,title,workId:selectedId};
+  }
+
+  function closeItemDelete() {
+    if (!deleteItemBusy) { deleteItemTarget = null; deleteItemError = ""; }
+  }
+
+  async function deleteItem() {
+    const target = deleteItemTarget;
+    if (!target || deleteItemBusy) return;
+    const commands:Record<DeletableItem,string> = {task:"delete_task",waiting:"delete_waiting",calendar:"delete_calendar_event",resume_point:"delete_resume_point"};
+    deleteItemBusy = true;
+    deleteItemError = "";
+    try {
+      await invoke(commands[target.kind], {id:target.id});
+      deleteItemTarget = null;
+      invalidate("works","tasks","waiting","calendar","inbox","proposals","analysis","brief");
+      if (selectedId === target.workId) await openDetail(target.workId);
+    } catch (e) { deleteItemError = String(e); }
+    finally { deleteItemBusy = false; }
+  }
+
   async function saveQuickProgress() {
     if (!selectedId || !quickProgress.trim()) {
       resumeError = tt("common.required");
@@ -360,7 +390,6 @@
     error = "";
     try {
       await startWorkspaceWorkDraft(organizationWorkspaceId, selectedId);
-      addToast(tt("work.organizeComplete"), "success");
     } catch (e) {
       error = String(e);
       addToast(error, "error");
@@ -449,6 +478,13 @@
   </div>
   <div class="status error stable-feedback"><StatusLine message={error}/></div>
 
+  <Modal open={deleteItemTarget!==null} title={currentLocale==='en-US'?'Delete this record?':'删除这条记录？'} onclose={closeItemDelete} dismissible={!deleteItemBusy}>
+    {#if deleteItemTarget}<p class="record-delete-title">{deleteItemTarget.title}</p>{/if}
+    <p>{currentLocale==='en-US'?'Only this record in the workbench will be deleted. Other project records and source files will remain unchanged.':'仅删除工作台中的这一条记录。项目内其他事项和源文件保持原样。'}</p>
+    <StatusLine message={deleteItemError}/>
+    {#snippet footer()}<AppButton variant="secondary" testid="project-item-delete-cancel" onclick={closeItemDelete} disabled={deleteItemBusy}>{tt("common.cancel")}</AppButton><AppButton variant="danger" testid="project-item-delete-confirm" onclick={deleteItem} loading={deleteItemBusy}>{tt("common.delete")}</AppButton>{/snippet}
+  </Modal>
+
   <Modal bind:open={showCreate} title={tt("work.new")} onclose={() => (showCreate = false)}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); createWork(); }}>
       <label for="new-work-title">{tt("work.title")} *</label>
@@ -488,24 +524,25 @@
         {@const w = detail.work}
         <div class="detail-head">
           <h2>{w.title}</h2>
+          <button class="project-delete" data-testid="work-delete" onclick={openDelete} disabled={deleteLoading}>{currentLocale==='en-US'?'Delete project':'删除项目'}</button>
           <details class="project-options"><summary>{currentLocale==='en-US'?'Project settings':'项目设置'}</summary><div class="status-actions">
             {#each ["active", "paused", "waiting", "done"] as s (s)}
               <button class:on={w.status === s} onclick={() => changeStatus(w, s)}>{translateStatus(s, currentLocale)}</button>
             {/each}
             <button onclick={openEdit}>{tt("common.edit")}</button>
             <button onclick={() => archive(w)}>{tt("common.archive")}</button>
-            <button class="delete-action" data-testid="work-delete" onclick={openDelete}>{tt("common.delete")}</button>
           </div>
           </details>
           <div class="project-goal"><span>{currentLocale==='en-US'?'Goal':'希望达成什么'}</span><p>{w.summary||(currentLocale==='en-US'?'Record a few words or let the secretary help clarify the goal.':'可以先说几句话，随后让秘书帮您理清目标。')}</p></div>
           <div class="project-primary-actions"><button data-testid="project-ask" onclick={()=>navigateTo({view:'qa',workId:w.id})}>{currentLocale==='en-US'?'Ask about this project':'问这个项目'}</button><button data-testid="project-record" onclick={()=>projectCapture=!projectCapture}>{currentLocale==='en-US'?'Record progress':'记进展'}</button><button onclick={()=>{projectCapture=true;}}>{currentLocale==='en-US'?'Add a matter':'加一件事'}</button><AppButton testid="organize-work-with-ai" loading={organizeBusy} onclick={organizeWork}>{currentLocale==='en-US'?'Let secretary organize':'让秘书整理'}</AppButton></div>
+          <SecretaryRound workId={w.id}/>
           {#if organizeBusy}<p role="status">{tt('work.backgroundHint')}</p>{/if}
           {#if projectCapture}<NaturalCapture context={{workId:w.id,entityKind:'work',entityId:w.id}} label={currentLocale==='en-US'?'Record for this project':'记在这个项目下'}/>{/if}
         </div>
 
         <!-- Current State / Next Step / Remember（置顶） -->
         <section class="resume card">
-          <div class="card-title">{currentLocale==='en-US'?'Where we are · What comes next':'目前进展 · 下一步'}</div>
+          <div class="resume-heading"><div class="card-title">{currentLocale==='en-US'?'Where we are · What comes next':'目前进展 · 下一步'}</div>{#if detail.latest_resume}<button class="record-delete" data-testid={`project-resume-delete-${detail.latest_resume.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('resume_point',detail!.latest_resume!.id,detail!.latest_resume!.current_state||detail!.latest_resume!.next_step)}>{currentLocale==='en-US'?'Delete progress record':'删除这条进展'}</button>{/if}</div>
           {#if detail.waiting.some(item=>item.status==="open")}<div class="project-blockers"><b>{currentLocale==="en-US"?"Waiting on":"当前等待"}</b><span>{detail.waiting.filter(item=>item.status==="open").slice(0,3).map(item=>item.title).join(" · ")}</span></div>{/if}
           {#if detail.latest_resume}
             <div class="rp-current"><b>{tt("work.resumeCurrent")}</b>{detail.latest_resume.current_state || "—"}</div>
@@ -532,6 +569,7 @@
                 <div class="hist-item">
                   <div class="muted">{fmtTime(rp.created_at)}</div>
                   <div>{rp.current_state} → {rp.next_step}</div>
+                  <button class="record-delete" data-testid={`project-history-delete-${rp.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('resume_point',rp.id,rp.current_state||rp.next_step)}>{tt("common.delete")}</button>
                 </div>
               {/each}
             </details>
@@ -574,6 +612,7 @@
                 <button class="entity-link" onclick={()=>navigateTo('waiting',wq.id)}>{wq.title}</button>
                 <span class="muted">{tt("work.waitingDetail", { person: wq.waiting_for || "—" })}{wq.follow_up_at ? ` · ${tt("work.followUpDetail", { time: fmtTime(wq.follow_up_at) })}` : ""}</span>
                 <button onclick={() => resolveWaiting(wq)}>{tt("common.resolve")}</button>
+                <button class="record-delete" data-testid={`project-waiting-delete-${wq.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('waiting',wq.id,wq.title)}>{tt("common.delete")}</button>
               </div>
             {/if}
           {/each}
@@ -620,6 +659,7 @@
               <span>{fmtTime(ev.start_at)}</span>
               <button class="entity-link" onclick={()=>navigateTo('calendar',ev.id)}>{ev.title}</button>
               <span class="muted">{translateKind(ev.kind, currentLocale)}</span>
+              <button class="record-delete" data-testid={`project-calendar-delete-${ev.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('calendar',ev.id,ev.title)}>{tt("common.delete")}</button>
             </div>
           {/each}
         </details>
@@ -638,6 +678,7 @@
               {#if t.status !== "done"}
                 <button onclick={() => completeTask(t)}>{tt("common.complete")}</button>
               {/if}
+              <button class="record-delete" data-testid={`project-task-delete-${t.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('task',t.id,t.title)}>{tt("common.delete")}</button>
             </div>
           {/each}
         </section>
@@ -664,6 +705,11 @@
 </div>
 
 <style>
+  .record-delete-title{overflow-wrap:anywhere;white-space:pre-wrap;font-weight:600;line-height:1.7}
+  .resume-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px}
+  .project-delete,.record-delete{flex:0 0 auto;min-height:38px;padding:7px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface);color:var(--color-danger);font:inherit;font-size:14px;cursor:pointer}
+  .project-delete:hover:not(:disabled),.record-delete:hover:not(:disabled){background:var(--color-danger-soft)}
+  .project-delete:disabled,.record-delete:disabled{opacity:.6;cursor:not-allowed}
   .project-blockers{display:flex;gap:12px;flex-wrap:wrap;font-size:15px;line-height:1.7;padding:12px;border-radius:10px;background:var(--color-warning-soft);color:var(--color-text);margin-bottom:12px}.project-blockers span{overflow-wrap:anywhere;min-width:0}
   .project-assistant{background:linear-gradient(140deg,var(--color-primary-soft),var(--color-surface));padding:22px!important}
   .folder-note{font-size:14px;line-height:1.65;color:var(--color-muted);margin:8px 0 0}.folder-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:20px}.folder-toolbar button{display:flex;align-items:center;gap:6px;min-height:40px;font-size:14px}.folder-toolbar select{min-width:0;max-width:100%;flex:1;padding:9px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);font-size:14px}.linked-folder{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid var(--color-border)}.linked-folder>span{flex:1;min-width:0;display:grid;gap:4px}.linked-folder small{overflow-wrap:anywhere;color:var(--color-muted);font-size:13px}.linked-folder strong{font-size:15px}.linked-folder button{flex-shrink:0}
@@ -855,8 +901,6 @@
   .status-actions { gap: 5px; }
   .status-actions button, .row-item button, .rp-form button, .modal-actions button { min-height: 29px; padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-raised); color: #667b84; font-size: 9px; }
   .status-actions button.on { background: var(--color-primary-soft); border-color: #d2dfe3; color: #546e79; font-weight: 650; }
-  .status-actions button.delete-action { border-color: #e4cccc; color: var(--color-danger); }
-  .status-actions button.delete-action:hover { background: var(--color-danger-soft); }
   .card { margin-bottom: 10px; padding: 12px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); }
   .resume { background: linear-gradient(115deg, #f8fafa, #eef3f4); border-color: #d5e0e4; }
   .card-title { color: #566d77; font-size: 10px; letter-spacing: .04em; }
@@ -894,4 +938,5 @@
 
   .layout{display:grid;grid-template-columns:230px minmax(0,1fr);align-items:start;gap:22px}.detail-pane{display:flex;flex-direction:column;min-width:0;gap:18px;overflow:visible}.detail-head{display:flex;flex-wrap:wrap;align-items:start;gap:14px}.detail-head h2{flex:1 1 250px;font-size:27px;line-height:1.4}.project-options{margin-left:auto}.project-options summary,.project-details>summary,.project-assistant>summary{cursor:pointer;font-size:15px;font-weight:600;line-height:1.7;padding:5px 0}.status-actions{padding:12px 0;display:flex;flex-wrap:wrap;gap:8px}.project-goal{flex-basis:100%;font-size:15px;line-height:1.65}.project-goal span{color:var(--color-muted);font-size:13px}.project-goal p{margin:6px 0}.project-primary-actions{display:flex;flex-wrap:wrap;gap:9px;width:100%}.project-primary-actions button{padding:10px 15px;font-size:14px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface)}.detail-head :global(.natural-capture){width:100%}.entity-link{text-align:left;border:0!important;background:transparent!important;color:var(--color-primary);font-size:15px;text-decoration:underline;text-underline-offset:4px}.resume{padding:22px;font-size:15px;line-height:1.7}.project-assistant>div{margin-top:12px}.list-pane{max-height:none;overflow:visible}.work-list{max-height:none;overflow:visible}
   @container(max-width:850px){.layout{grid-template-columns:1fr}.work-list{display:flex;flex-wrap:wrap;gap:8px}.work-list li{flex:1 1 180px}.project-options{margin-left:0}}
+  .row-item .record-delete{min-height:38px;padding:7px 12px;color:var(--color-danger);font-size:14px}
 </style>

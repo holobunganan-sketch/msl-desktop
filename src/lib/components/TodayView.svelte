@@ -1,6 +1,7 @@
 <script lang="ts">
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import ProposalPreview from './ProposalPreview.svelte';
+  import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
   import {navigateTo} from '$lib/services/navigation';
   import {proposalPresentation,actionTimeLabel} from '$lib/services/proposalPresentation';
   import {aiJobs} from '$lib/stores/aiJobs';
@@ -45,6 +46,7 @@
   let latestProposals = $state<AiProposal[]>([]);
   let works = $state<Work[]>([]);
   let decisionBusy = $state<number | null>(null);
+  let deleteCandidate = $state<AiProposal|null>(null);
   let decisionMessage = $state("");
   let lastReceipt=$state<string|null>(null);
   let earlierPending=$state(0);
@@ -101,6 +103,7 @@
   async function generateBrief(force: boolean) { generating = true; briefError = ""; try { const [todayStart, todayEnd] = dayRange(); const [periodStart, periodEnd] = briefRange(); briefResult = await command("generate_brief", { date: briefDate, periodStart, periodEnd, todayStart, todayEnd, locale: currentLocale, force }) as BriefResult; brief = briefResult.content; showSources = false; } catch (e) { briefError = String(e); } generating = false; }
   async function completeTask(item: Task) { try { await invoke("complete_task", { id: item.id }); invalidate("works","tasks","waiting","calendar","brief");await loadData(); } catch (e) { dataError = String(e); } }
   async function confirmDecision(item: AiProposal) {
+    if(decisionBusy!==null)return;
     decisionBusy = item.id; decisionMessage = ""; dataError = "";
     try {
       const payload = payloadForKind(item, item.kind);
@@ -117,6 +120,7 @@
     } catch (e) { dataError = String(e); } finally { decisionBusy = null; }
   }
   async function deferDecision(item: AiProposal) {
+    if(decisionBusy!==null)return;
     decisionBusy = item.id; decisionMessage = ""; dataError = "";
     try {
       await deferAiProposal(item.id, item.updated_at);
@@ -126,6 +130,11 @@
     } catch (e) { dataError = String(e); } finally { decisionBusy = null; }
   }
   async function undoLastDecision(){if(!lastReceipt)return;decisionBusy=-1;try{await command("undo_ai_confirmation",{receiptId:lastReceipt});lastReceipt=null;decisionMessage=currentLocale==="en-US"?"Undone; suggestion returned for review.":"已撤销，建议已回到待确认列表。";await Promise.all([loadData(),loadProposals()]);}catch(e){dataError=String(e);}finally{decisionBusy=null;}}
+  async function reviewDeleted(){
+    lastReceipt=null;receiptTarget=null;
+    decisionMessage=currentLocale==='en-US'?'Review record removed. Existing work items remain unchanged.':'审阅记录已删除，已有工作事项保持原样。';
+    await loadProposals();
+  }
   async function saveInterval(value: number) {
     if (!analysisSchedule || !Number.isFinite(value)) return;
     const interval = Math.max(30, Math.min(1440, Math.round(value)));
@@ -138,7 +147,17 @@
 
   const scheduledToday=$derived(activeTasks.filter(item=>item.scheduled_start&&item.scheduled_start>=dayRange()[0]&&item.scheduled_start<dayRange()[1]));
   const appointmentCount=$derived((data?.today_calendar.length??0)+scheduledToday.length);
-  const briefItems = $derived(bulletLines(brief || tt("brief.notGenerated")));
+  const briefItems = $derived(brief ? bulletLines(brief) : []);
+  const briefHighlights = $derived(briefItems.filter(line =>
+    !/^(?:今日日程|等待与阻塞|当前无|today.s calendar|waiting and blockers)[:：]?\s*(?:无|none|no )/i.test(line)
+  ).slice(0, 3));
+  const focusRows = $derived.by(() => {
+    const rows: Array<{kind:string;id:number;workId:number|null;title:string;scope:string;label:string}> = [];
+    for (const event of (data?.today_calendar ?? []).slice(0, 2)) rows.push({kind:'calendar',id:event.id,workId:event.work_id,title:event.title,scope:works.find(w=>w.id===event.work_id)?.title??'',label:fmtDayTime(event.start_at)});
+    for (const task of activeTasks.slice(0, 3)) rows.push({kind:'task',id:task.id,workId:task.work_id,title:task.title,scope:works.find(w=>w.id===task.work_id)?.title??'',label:task.scheduled_start?actionTimeLabel(task.scheduled_start,Math.floor(Date.now()/1000)):(currentLocale==='en-US'?'Action':'待推进')});
+    for (const waiting of (data?.waiting_followups ?? []).slice(0, 1)) rows.push({kind:'waiting',id:waiting.id,workId:waiting.work_id,title:waiting.title,scope:works.find(w=>w.id===waiting.work_id)?.title??'',label:currentLocale==='en-US'?'Follow up':'待跟进'});
+    return rows.slice(0, 3);
+  });
   const lastCompletedAnalysis = $derived(analysisRuns.find((run) => run.status === "completed") ?? analysisRuns[0] ?? null);
 
   $effect(() => { $dataRevision.global; $dataRevision.brief; $dataRevision.workspace; load(); });
@@ -148,11 +167,31 @@
   <div class="module-error stable-feedback"><StatusLine message={dataError} onretry={()=>{dataError='';void load();}}/></div>
   <section class="brief-hero" data-testid="dashboard-brief-hero">
     <div class="brief-eyebrow">{currentLocale==='en-US'?'YOUR WORKDAY':'今天的工作'} · {briefDate}</div>
-    <h1>{currentLocale==='en-US'?'Pick up where work left off.':'接着往前做，秘书帮您理清。'}</h1>
+    <h1>{currentLocale==='en-US'?'Start with what matters today.':'今天，先看这几件事。'}</h1>
     <p class="day-judgment">{currentLocale==='en-US'?`${appointmentCount} events today · ${pendingProposals} new decisions · ${data?.waiting_followups.length??0} follow-ups`:`今天 ${appointmentCount} 项日程 · ${pendingProposals} 条新建议 · ${data?.waiting_followups.length??0} 件等待需跟进`}</p>
+    {#if focusRows.length}
+      <div class="today-focus" aria-label={currentLocale==='en-US'?'Today priorities':'今日重点'}>
+        {#each focusRows as row,i(`${row.kind}-${row.id}`)}
+          <button class="today-focus-row" onclick={()=>nav(row.kind,row.id,row.workId)}>
+            <span class="today-focus-index">{String(i+1).padStart(2,'0')}</span>
+            <span class="today-focus-title">{row.title}</span>
+            <span class="today-focus-meta">{row.scope?`${row.scope} · `:''}{row.label}</span>
+          </button>
+        {/each}
+      </div>
+    {:else if data}
+      <p class="today-focus-empty">{currentLocale==='en-US'?'No fixed next action. Check the decisions below when ready.':'暂时没有明确的下一步。可以先看下方「需要您决定」。'}</p>
+    {/if}
     <details class="brief-details">
-      <summary>{currentLocale==='en-US'?'Read secretary brief':'展开秘书简报'}</summary>
-      <ul class="brief-summary" data-testid="dashboard-brief-summary">{#each briefItems as line,i(i)}<li>{line}</li>{/each}</ul>
+      <summary>{currentLocale==='en-US'?'Secretary brief':'秘书简报'}</summary>
+      {#if briefHighlights.length}
+        <ul class="brief-highlights" data-testid="dashboard-brief-highlights">{#each briefHighlights as line,i(i)}<li title={line}>{line}</li>{/each}</ul>
+        {#if briefItems.length>briefHighlights.length}
+          <details class="brief-full"><summary>{currentLocale==='en-US'?`Read all ${briefItems.length} points`:`查看全部 ${briefItems.length} 条`}</summary>
+            <ul class="brief-summary" data-testid="dashboard-brief-summary">{#each briefItems as line,i(i)}<li>{line}</li>{/each}</ul>
+          </details>
+        {/if}
+      {:else}<p class="brief-empty">{tt('brief.notGenerated')}</p>{/if}
       <div class="brief-toolbar" data-testid="dashboard-brief-actions"><button onclick={()=>generateBrief(Boolean(brief))} disabled={generating}>{generating?tt('dashboard.generating'):tt('dashboard.regenerateBrief')}</button><button onclick={()=>showSources=!showSources} disabled={!briefResult}>{tt('brief.showSources')}</button>
         <details><summary>{tt('brief.range')}</summary><div class="range-fields"><select bind:value={periodPreset}><option value="yesterday">{tt('brief.yesterday')}</option><option value="7d">{tt('brief.last7')}</option><option value="custom">{tt('brief.custom')}</option></select>{#if periodPreset==='custom'}<input type="date" bind:value={customStart} aria-label={tt('brief.start')}/><input type="date" bind:value={customEnd} aria-label={tt('brief.end')}/>{/if}</div></details>
       </div>
@@ -181,7 +220,7 @@
       {#if decisionMessage}<div class="decision-message" role="status">{decisionMessage}{#if lastReceipt&&receiptTarget}<div><button onclick={()=>nav(receiptTarget!.kind,receiptTarget!.id,receiptTarget!.workId)}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button disabled={decisionBusy!==null} onclick={undoLastDecision}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}</div>{/if}
       <div class="decision-list">
         {#each latestProposals.slice(0,3) as item(item.id)}
-          <article class="decision-row" data-testid={`latest-decision-${item.id}`}><h3>{item.title}</h3><ProposalPreview {item} {works}/><div class="decision-actions"><button class="primary" disabled={decisionBusy!==null||proposalPresentation(item,works,currentLocale).needsAttention} onclick={()=>confirmDecision(item)}>{currentLocale==='en-US'?'Accept':'采用安排'}</button><button onclick={()=>nav('review',item.id)}>{currentLocale==='en-US'?'Adjust':'调整'}</button><button disabled={decisionBusy!==null} onclick={()=>deferDecision(item)}>{currentLocale==='en-US'?'Later':'稍后'}</button></div></article>
+          <article class="decision-row" data-testid={`latest-decision-${item.id}`}><h3>{item.title}</h3><ProposalPreview {item} {works}/><div class="decision-actions"><button class="primary" disabled={decisionBusy!==null||proposalPresentation(item,works,currentLocale).needsAttention} onclick={()=>confirmDecision(item)}>{currentLocale==='en-US'?'Accept':'采用安排'}</button><button disabled={decisionBusy!==null} onclick={()=>nav('review',item.id)}>{currentLocale==='en-US'?'Adjust':'调整'}</button><button disabled={decisionBusy!==null} onclick={()=>deferDecision(item)}>{currentLocale==='en-US'?'Later':'稍后'}</button><details class="decision-more"><summary data-testid={`decision-more-${item.id}`} aria-label={currentLocale==='en-US'?'Other actions for this suggestion':'这条建议的其他操作'}>{currentLocale==='en-US'?'More':'更多'}</summary><div><button data-testid={`decision-delete-${item.id}`} disabled={decisionBusy!==null} onclick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');deleteCandidate={...item};}}>{currentLocale==='en-US'?'Delete record':'删除记录'}</button></div></details></div></article>
         {/each}
       </div>
       {#if !latestProposals.length}<div class="empty-state"><strong>{currentLocale==='en-US'?'No new decisions for now':'眼下没有新的安排要决定'}</strong><p>{currentLocale==='en-US'?'Keep working. New suggestions will appear after organizing.':'安心推进工作，整理完成后，新建议会出现在这里。'}</p><button onclick={analyze} disabled={analysisBusy}>{analysisBusy?(currentLocale==='en-US'?'Organizing…':'后台整理中…'):(currentLocale==='en-US'?'Ask secretary to organize':'让秘书整理一次')}</button></div>{/if}
@@ -199,12 +238,19 @@
     {#if syncError}<p class="notice">{syncError}</p>{/if}
   </details>
 </div>
+<ProposalLifecycleDialog item={deleteCandidate} action="delete" onclose={()=>deleteCandidate=null} oncomplete={reviewDeleted} onbusychange={value=>decisionBusy=value?(deleteCandidate?.id??-1):null}/>
 <style>
+  .decision-more{position:relative;margin-left:auto;align-self:center;min-width:0}
+  .decision-more>summary{padding:9px 8px;min-height:40px;display:flex;align-items:center;list-style:none;color:var(--color-muted);border-radius:9px}
+  .decision-more>summary:hover{background:var(--color-primary-soft)}
+  .decision-more>summary:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
+  .decision-more>div{position:absolute;z-index:10;right:0;bottom:calc(100% + 6px);min-width:136px;padding:5px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);box-shadow:var(--shadow-md)}
+  .decision-more>div button{width:100%;color:var(--color-danger);border:0;text-align:left}
   .dashboard-c1{display:grid;gap:20px;padding-bottom:12px;min-width:0}button{cursor:pointer;font:inherit;font-size:14px;padding:9px 13px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface);color:var(--color-primary)}button:disabled{opacity:.5;cursor:default}summary{cursor:pointer;font-size:14px;line-height:1.7}p{line-height:1.65}
-  .brief-hero{padding:24px 28px;border:1px solid var(--color-border);border-radius:20px;background:linear-gradient(115deg,var(--color-surface),var(--color-primary-soft));min-width:0}.brief-eyebrow,.eyebrow{color:var(--color-muted);font-size:12px;letter-spacing:.08em;font-weight:600}.brief-hero h1{font:500 clamp(25px,2.7vw,34px) var(--font-serif);line-height:1.5;margin:10px 0}.day-judgment{margin:0 0 10px;color:var(--color-muted);font-size:15px}.brief-details>summary{color:var(--color-primary)}.brief-summary{display:grid;gap:9px;margin:16px 0;padding-left:22px;font-size:15px;line-height:1.7}.brief-toolbar,.range-fields{display:flex;flex-wrap:wrap;align-items:center;gap:9px}.range-fields{padding:10px 0}.range-fields input,.range-fields select{padding:8px}.notice{font-size:14px;color:var(--color-warning);overflow-wrap:anywhere}.source-drawer{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--color-muted)}
+  .brief-hero{padding:24px 28px;border:1px solid var(--color-border);border-radius:20px;background:linear-gradient(115deg,var(--color-surface),var(--color-primary-soft));min-width:0}.brief-eyebrow,.eyebrow{color:var(--color-muted);font-size:12px;letter-spacing:.08em;font-weight:600}.brief-hero h1{font:500 clamp(25px,2.7vw,34px) var(--font-serif);line-height:1.5;margin:10px 0}.day-judgment{margin:0 0 14px;color:var(--color-muted);font-size:15px}.today-focus{display:grid;gap:0;margin:10px 0 12px;border-top:1px solid var(--color-border)}.today-focus-row{display:grid;grid-template-columns:34px minmax(0,1fr) minmax(100px,27%);align-items:center;gap:12px;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--color-border);background:transparent;text-align:left;color:var(--color-text)}.today-focus-row:hover,.today-focus-row:focus-visible{background:var(--color-surface)}.today-focus-index{font-size:13px;color:var(--color-primary)}.today-focus-title{font-size:16px;font-weight:600;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.today-focus-meta{font-size:13px;color:var(--color-muted);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.today-focus-empty{margin:10px 0 12px;font-size:15px;color:var(--color-muted)}.brief-details>summary{color:var(--color-primary)}.brief-highlights{display:grid;gap:8px;max-width:920px;margin:14px 0 10px;padding-left:20px;font-size:15px;line-height:1.6}.brief-highlights li{display:-webkit-box;-webkit-box-orient:vertical;line-clamp:2;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}.brief-full>summary{font-size:13px;color:var(--color-muted)}.brief-summary{display:grid;gap:9px;max-height:300px;overflow:auto;scrollbar-gutter:stable;margin:12px 0;padding:0 12px 0 22px;font-size:15px;line-height:1.7;overflow-wrap:anywhere}.brief-empty{font-size:14px;color:var(--color-muted)}.brief-toolbar,.range-fields{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:12px}.range-fields{padding:10px 0}.range-fields input,.range-fields select{padding:8px}.notice{font-size:14px;color:var(--color-warning);overflow-wrap:anywhere}.source-drawer{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--color-muted)}
   .focus-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}.desk-card{border:1px solid var(--color-border);border-radius:18px;background:var(--color-surface);padding:24px;min-width:0;box-shadow:var(--shadow-sm)}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:start;margin-bottom:15px}.card-head h2{font-size:22px;margin:7px 0;line-height:1.4}.card-head p{color:var(--color-muted);font-size:14px;margin:0}.text-button{border:0;padding:5px;white-space:nowrap;background:transparent}
   .agenda-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;align-items:start;padding:18px 0;border-bottom:1px solid var(--color-border)}.agenda-row:last-child{border-bottom:0}.agenda-time{white-space:pre-line;font-size:13px;color:var(--color-muted);padding-top:5px}.agenda-body{display:grid;gap:8px;text-align:left;border:0;padding:0;background:transparent;min-width:0}.agenda-body strong{font-size:18px;line-height:1.55;overflow-wrap:anywhere;color:var(--color-text)}.agenda-body small{font-size:14px;line-height:1.6;color:var(--color-muted)}.row-action{min-width:33px;padding:6px}
   .decision-list{display:grid;gap:14px}.decision-row{padding:17px;border:1px solid var(--color-border);border-radius:13px;background:var(--color-surface-muted);min-width:0}.decision-row h3{font-size:18px;line-height:1.6;margin:0 0 8px;overflow-wrap:anywhere}.decision-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.primary{background:var(--color-primary);color:white;border-color:var(--color-primary)}.decision-message{padding:12px;margin-bottom:12px;border-radius:10px;background:var(--color-success-soft);font-size:14px;line-height:1.6}.decision-message>div{display:flex;gap:8px;margin-top:8px}.empty-state{padding:32px 8px;line-height:1.6}.empty-state strong{font-size:17px}.empty-state p{font-size:14px;color:var(--color-muted);margin:10px 0 16px}.more-link{display:block;width:100%;text-align:left;margin-top:15px;border:0;background:var(--color-primary-soft);font-size:14px;line-height:1.6}
   .attention-strip{display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:18px 22px;border:1px solid var(--color-border);border-radius:14px;background:var(--color-surface)}.attention-strip>div{flex:1 1 320px;min-width:0}.attention-strip strong{font-size:15px}.attention-strip p{margin:5px 0 0;font-size:14px;color:var(--color-muted);overflow-wrap:anywhere}.secretary-line{padding:4px 8px;color:var(--color-muted);min-width:0}.secretary-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:end;padding:16px 0}.secretary-controls label{display:grid;gap:8px;font-size:14px}.secretary-controls select{padding:9px}.secretary-line p{font-size:14px;overflow-wrap:anywhere}.module-error{display:flex;flex-wrap:wrap;gap:12px;align-items:center;background:var(--color-danger-soft);border-radius:12px;padding:14px;color:var(--color-danger);font-size:14px}
-  @container(max-width:850px){.focus-grid{grid-template-columns:1fr}.brief-hero{padding:20px}.desk-card{padding:20px}}@container(max-width:500px){.agenda-row{grid-template-columns:38px minmax(0,1fr) auto;gap:8px}.card-head h2{font-size:21px}}
+  @container(max-width:850px){.focus-grid{grid-template-columns:1fr}.brief-hero{padding:20px}.desk-card{padding:20px}}@container(max-width:500px){.agenda-row{grid-template-columns:38px minmax(0,1fr) auto;gap:8px}.card-head h2{font-size:21px}.today-focus-row{grid-template-columns:26px minmax(0,1fr)}.today-focus-meta{grid-column:2;text-align:left}}
 </style>
