@@ -1,6 +1,6 @@
 <script lang="ts">
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
- import {onMount} from 'svelte';
+ import {onMount,tick} from 'svelte';
  import {open as chooseFiles} from '@tauri-apps/plugin-dialog';
  import {getCurrentWebview} from '@tauri-apps/api/webview';
  import {locale} from '$lib/i18n';
@@ -10,14 +10,14 @@
  import AppButton from './ui/AppButton.svelte';
  export type Material={id:number;expert_id:number;filename:string;description:string;blob_hash:string;media_type:string;byte_size:number;status:string;error:string;revision:number;created_at:number};
  type Preview={material:Material;segments:{locator:string;text:string;kind:string}[]};
- let {expertId,onchange=()=>{}}:{expertId:number;onchange?:()=>void}=$props();
+ let {expertId,focusId=null,onchange=()=>{}}:{expertId:number;focusId?:number|null;onchange?:()=>void}=$props();
  let en=$derived($locale==='en-US');
  let items=$state<Material[]>([]),error=$state(''),notice=$state(''),dragging=$state(false),uploading=$state(false),preview=$state<Preview|null>(null),previewOpen=$state(false),removeTarget=$state<Material|null>(null),removeOpen=$state(false),removing=$state(false),saving=$state(false),description=$state('');
- let active=true,signature='';
+ let active=true,signature='',focusConsumed=false;
  let working=$derived(uploading||$aiJobs.some(j=>j.status==='running'&&['import_kol_materials','read_kol_materials'].includes(j.command)&&j.args.expertId===expertId));
  const labels:Record<string,[string,string]>={queued:['已保存，等待读取','Saved · queued'],reading:['正在后台读取','Reading in background'],ready:['可用于分析','Available for analysis'],partial:['部分可用，请核对覆盖范围','Partial · check coverage'],unsupported:['当前模型或接口不支持','Model / protocol unsupported'],failed:['读取失败，可重试','Read failed · retry']};
  const size=(n:number)=>n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
- async function load(){try{const id=expertId;const rows=await command<Material[]>('list_kol_materials',{expertId:id});if(!active||id!==expertId)return;items=rows;const next=rows.map(r=>`${r.id}:${r.status}:${r.revision}`).join('|');if(next!==signature){signature=next;onchange();}}catch(e){if(active)error=normalizeError(e);}}
+ async function load(){try{const id=expertId;const rows=await command<Material[]>('list_kol_materials',{expertId:id});if(!active||id!==expertId)return;items=rows;const next=rows.map(r=>`${r.id}:${r.status}:${r.revision}`).join('|');if(next!==signature){signature=next;onchange();}if(focusId&&!focusConsumed){focusConsumed=true;await tick();if(rows.some(r=>r.id===focusId))document.querySelector(`[data-testid="material-${focusId}"]`)?.scrollIntoView({block:'center'});else error=en?'This material is no longer available.':'这份资料已不可用，请核对当前资料列表。';}}catch(e){if(active)error=normalizeError(e);}}
  async function upload(paths?:string[]){if(working)return;error='';try{if(!paths){const selected=await chooseFiles({multiple:true,directory:false});if(!selected)return;paths=Array.isArray(selected)?selected:[selected];}uploading=true;notice=en?'Files are being saved and read in the background.':'正在后台保存和读取资料，切换页面不影响进度。';const result=await command<{saved:Material[];failed:{filename:string;error:string}[]}>('import_kol_materials',{expertId,paths});if(active){notice=(en?'Saved ':'已保存 ')+result.saved.length+(en?' file(s).':' 份资料。');error=result.failed.map(f=>`${f.filename}：${f.error}`).join('\n');await load();}}catch(e){if(active)error=normalizeError(e);}finally{uploading=false;}}
  async function read(ids:number[],force=false){error='';try{await command('read_kol_materials',{expertId,ids,force});await load();}catch(e){error=normalizeError(e);}}
  async function show(item:Material){try{preview=await command<Preview>('get_kol_material_preview',{id:item.id});description=preview.material.description;previewOpen=true;}catch(e){error=normalizeError(e);}}
@@ -29,7 +29,7 @@
  <div class="material-head"><div><h2>{en?'Expert materials':'专家资料'}</h2><p class="muted">{en?'Drop files here, or upload. Imported copies are saved; original files remain unchanged.':'可拖入资料或点击上传。副本保存在工作台内，原始文件保持原样。'}</p></div><AppButton testid="kol-upload" disabled={working} loading={uploading} onclick={()=>upload()}>{en?'Upload materials':'上传资料'}</AppButton></div>
  <div class="material-status"><StatusLine message={error|| (working?(en?'Reading in the background…':'资料正在后台处理…'):notice)} error={!!error}/></div>
  <p class="muted">{en?'Uses your Expert analysis model. Supported formats depend on its actual capabilities.':'读取与洞察共用“专家分析”模型，格式支持以模型和接口实际能力为准。'}</p>
- <div class="material-list">{#each items as item(item.id)}<article class="material-row" data-testid={'material-'+item.id}>
+ <div class="material-list">{#each items as item(item.id)}<article class="material-row" data-testid={'material-'+item.id} style:background={item.id===focusId?'var(--color-primary-soft)':undefined}>
   <div class="material-info"><button class="material-name" title={item.filename} onclick={()=>show(item)}>{item.filename}</button><small>{size(item.byte_size)} · {new Date(item.created_at*1000).toLocaleDateString($locale)}</small><span class:warning={['partial','failed','unsupported'].includes(item.status)}>{labels[item.status]?.[en?1:0]??item.status}</span>{#if item.error}<button class="material-note" title={item.error} onclick={()=>show(item)}>{item.error}</button>{/if}</div>
   <div class="material-actions"><button onclick={()=>show(item)}>{en?'View':'查看'}</button><button disabled={working||item.status==='reading'} onclick={()=>read([item.id],item.status==='partial'||item.status==='ready')}>{en?'Read again':'重新读取'}</button><button class="danger" onclick={()=>{removeTarget={...item};removeOpen=true;}}>{en?'Remove':'移除'}</button></div>
  </article>{:else}<div class="k-empty">{en?'Upload existing materials without filling in extra forms.':'把已有资料放进来即可，无需额外填写信息。'}</div>{/each}</div>

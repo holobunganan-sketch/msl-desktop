@@ -1,5 +1,10 @@
 <script lang="ts">
+  import {tick} from 'svelte';
+  import DeletionRecordPreview from './DeletionRecordPreview.svelte';
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
+  import ManualCompletionFeedback from './ManualCompletionFeedback.svelte';
+  import {completeManual} from '$lib/stores/manualCompletions';
+  import {deletionRequest,type DeletableRecord} from '$lib/services/manualActions';
   import ListPager from './ui/ListPager.svelte';
   import {paginate} from '$lib/services/pagination';
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -143,7 +148,7 @@
   let deleteLoading = $state(false);
   let deleteError = $state("");
   type DeletableItem = "task" | "waiting" | "calendar" | "resume_point";
-  let deleteItemTarget = $state<{kind:DeletableItem;id:number;title:string;workId:number}|null>(null);
+  let deleteItemTarget = $state<{kind:DeletableItem;id:number;title:string;workId:number;record?:DeletableRecord}|null>(null);
   let deleteItemBusy = $state(false);
   let deleteItemError = $state("");
   let resumeError = $state("");
@@ -173,6 +178,7 @@
         let id=focusId;
         if(resumeId){const location=await invoke<{work_id:number}>('get_entity_location',{kind:'resume_point',id:resumeId});id=location.work_id;}
         if(id)await openDetail(id);else if(works.length)await openDetail(works[0].id);
+        if(resumeId){await tick();const target=document.querySelector(`[data-testid="resume-record-${resumeId}"]`);if(target)target.scrollIntoView({block:'center'});else error=currentLocale==='en-US'?'This progress record is no longer available.':'这条进展记录已不可用。';}
       }
     } catch (e) {
       error = String(e);
@@ -342,7 +348,8 @@
   function requestItemDelete(kind:DeletableItem,id:number,title:string) {
     if (!selectedId || deleteItemBusy) return;
     deleteItemError = "";
-    deleteItemTarget = {kind,id,title,workId:selectedId};
+    const record=kind==='task'?detail?.tasks.find(t=>t.id===id):kind==='waiting'?detail?.waiting.find(w=>w.id===id):undefined;
+    deleteItemTarget = {kind,id,title:record?.title??title,workId:selectedId,...(record?{record:JSON.parse(JSON.stringify(record))}:{})};
   }
 
   function closeItemDelete() {
@@ -356,13 +363,16 @@
     deleteItemBusy = true;
     deleteItemError = "";
     try {
-      await invoke(commands[target.kind], {id:target.id});
+      if((target.kind==='task'||target.kind==='waiting')&&!target.record)throw Error(currentLocale==='en-US'?'Reload this item before deleting.':'请刷新此事项后再删除。');
+      await invoke(commands[target.kind], target.record?deletionRequest(target.record):{id:target.id});
       deleteItemTarget = null;
       invalidate("works","tasks","waiting","calendar","inbox","proposals","analysis","brief");
       if (selectedId === target.workId) await openDetail(target.workId);
     } catch (e) { deleteItemError = String(e); }
     finally { deleteItemBusy = false; }
   }
+
+  async function refreshDeleteItem(){const target=deleteItemTarget;if(!target)return;await openDetail(target.workId);requestItemDelete(target.kind,target.id,target.title);deleteItemError=currentLocale==='en-US'?'Current version loaded. Check the item and confirm again.':'已载入当前版本，请核对后重新确认。';}
 
   async function saveQuickProgress() {
     if (!selectedId || !quickProgress.trim()) {
@@ -438,7 +448,7 @@
 
   async function completeTask(t: Task) {
     try {
-      await invoke("complete_task", { id: t.id });
+      await completeManual('task',t.id);
       if (selectedId) await openDetail(selectedId);
     } catch (e) {
       error = String(e);
@@ -447,7 +457,7 @@
 
   async function resolveWaiting(w: WaitingItem) {
     try {
-      await invoke("resolve_waiting", { id: w.id });
+      await completeManual('waiting',w.id);
       if (selectedId) await openDetail(selectedId);
     } catch (e) {
       error = String(e);
@@ -476,13 +486,14 @@
     </div>
     <AppButton testid="work-create" label={tt("work.new")} onclick={() => openCreate()} />
   </div>
-  <div class="status error stable-feedback"><StatusLine message={error}/></div>
+  <ManualCompletionFeedback {error} onrefresh={()=>selectedId?openDetail(selectedId):loadWorks()}/>
 
   <Modal open={deleteItemTarget!==null} title={currentLocale==='en-US'?'Delete this record?':'删除这条记录？'} onclose={closeItemDelete} dismissible={!deleteItemBusy}>
     {#if deleteItemTarget}<p class="record-delete-title">{deleteItemTarget.title}</p>{/if}
     <p>{currentLocale==='en-US'?'Only this record in the workbench will be deleted. Other project records and source files will remain unchanged.':'仅删除工作台中的这一条记录。项目内其他事项和源文件保持原样。'}</p>
     <StatusLine message={deleteItemError}/>
-    {#snippet footer()}<AppButton variant="secondary" testid="project-item-delete-cancel" onclick={closeItemDelete} disabled={deleteItemBusy}>{tt("common.cancel")}</AppButton><AppButton variant="danger" testid="project-item-delete-confirm" onclick={deleteItem} loading={deleteItemBusy}>{tt("common.delete")}</AppButton>{/snippet}
+    {#if deleteItemTarget?.record}<DeletionRecordPreview record={deleteItemTarget.record} {works}/>{/if}
+    {#snippet footer()}{#if deleteItemError}<AppButton variant="secondary" onclick={refreshDeleteItem} disabled={deleteItemBusy}>{currentLocale==='en-US'?'Reload current version':'刷新当前版本'}</AppButton>{/if}<AppButton variant="secondary" testid="project-item-delete-cancel" onclick={closeItemDelete} disabled={deleteItemBusy}>{tt("common.cancel")}</AppButton><AppButton variant="danger" testid="project-item-delete-confirm" onclick={deleteItem} loading={deleteItemBusy}>{tt("common.delete")}</AppButton>{/snippet}
   </Modal>
 
   <Modal bind:open={showCreate} title={tt("work.new")} onclose={() => (showCreate = false)}>
@@ -541,7 +552,7 @@
         </div>
 
         <!-- Current State / Next Step / Remember（置顶） -->
-        <section class="resume card">
+        <section class="resume card" data-testid={detail.latest_resume?'resume-record-'+detail.latest_resume.id:undefined}>
           <div class="resume-heading"><div class="card-title">{currentLocale==='en-US'?'Where we are · What comes next':'目前进展 · 下一步'}</div>{#if detail.latest_resume}<button class="record-delete" data-testid={`project-resume-delete-${detail.latest_resume.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('resume_point',detail!.latest_resume!.id,detail!.latest_resume!.current_state||detail!.latest_resume!.next_step)}>{currentLocale==='en-US'?'Delete progress record':'删除这条进展'}</button>{/if}</div>
           {#if detail.waiting.some(item=>item.status==="open")}<div class="project-blockers"><b>{currentLocale==="en-US"?"Waiting on":"当前等待"}</b><span>{detail.waiting.filter(item=>item.status==="open").slice(0,3).map(item=>item.title).join(" · ")}</span></div>{/if}
           {#if detail.latest_resume}
@@ -563,10 +574,10 @@
             </div>
           </details>
           {#if detail.resume_history.length > 1}
-            <details class="history">
+            <details class="history" open={!!resumeId&&resumeId!==detail.latest_resume?.id}>
               <summary>{tt("work.resumeHistory", { count: detail.resume_history.length })}</summary>
               {#each detail.resume_history as rp (rp.id)}
-                <div class="hist-item">
+                <div class="hist-item" data-testid={'resume-record-'+rp.id} style:background={rp.id===resumeId?'var(--color-primary-soft)':undefined}>
                   <div class="muted">{fmtTime(rp.created_at)}</div>
                   <div>{rp.current_state} → {rp.next_step}</div>
                   <button class="record-delete" data-testid={`project-history-delete-${rp.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('resume_point',rp.id,rp.current_state||rp.next_step)}>{tt("common.delete")}</button>

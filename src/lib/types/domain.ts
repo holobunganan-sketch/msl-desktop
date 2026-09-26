@@ -218,6 +218,8 @@ export type AnalysisRun = {
 };
 
 export type Report = {
+  structured_json?: string | null;
+  evidence_json?: string | null;
   id: number;
   kind: "weekly" | "monthly";
   period_start: number;

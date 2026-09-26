@@ -4,12 +4,62 @@ import { createServer } from 'vite';
 import { readFileSync } from 'node:fs';
 
 // Render the actual components; never start the native core or access user data.
-const server = await createServer({ server: { middlewareMode: true }, logLevel: 'error' });
+const server = await createServer({ server: { middlewareMode: true, hmr:false }, logLevel: 'error' });
 after(() => server.close());
 const { default: Page } = await server.ssrLoadModule('/src/routes/+page.svelte');
 const { render } = await server.ssrLoadModule('svelte/server');
 const { default: ProposalPreview } = await server.ssrLoadModule('/src/lib/components/ProposalPreview.svelte');
 const { default: Overview } = await server.ssrLoadModule('/src/lib/components/DashboardOverview.svelte');
+const { default: Matters } = await server.ssrLoadModule('/src/lib/components/MattersView.svelte');
+
+test('daily brief can be started from the visible header without opening a disclosure', () => {
+  const { body } = render(Page);
+  const hero = body.slice(body.indexOf('data-testid="dashboard-brief-hero"'), body.indexOf('aria-label="工作概览"'));
+  assert.match(hero, /<button[^>]*data-testid="generate-daily-brief"[^>]*>/);
+  assert.match(hero, /整理每日简报/);
+  assert.doesNotMatch(hero.slice(0,hero.indexOf('data-testid="generate-daily-brief"')),/<details/);
+});
+
+test('matter stages keep navigation and actions without an extra instruction banner', () => {
+  for (const section of ['inbox','review','plan','waiting','done']) {
+    const {body} = render(Matters, {props:{section}});
+    assert.match(body, /data-testid="matters-tabs"/);
+    assert.doesNotMatch(body, /data-testid="stage-guide"/);
+  }
+});
+
+test('sidebar retains navigation without the footer motto', () => {
+  const {body} = render(Page);
+  assert.match(body, /data-testid="nav-settings"/);
+  assert.doesNotMatch(body, /专注医学交流|让每一次跟进都有来路/);
+});
+
+test('greeting selection changes between openings and stays fixed within a session', async () => {
+  const greetings = await server.ssrLoadModule('/src/lib/services/dashboardPresentation.ts').catch(()=>({}));
+  assert.equal(typeof greetings.createSessionGreeting, 'function');
+  const memory=new Map();
+  const storage={getItem:key=>memory.get(key)??null,setItem:(key,value)=>memory.set(key,value)};
+  const first=greetings.createSessionGreeting(storage,()=>0);
+  assert.equal(first('zh-CN'),first('zh-CN'));
+  const next=greetings.createSessionGreeting(storage,()=>0);
+  assert.notEqual(first('zh-CN'),next('zh-CN'));
+  assert.notEqual(first('zh-CN').title,first('en-US').title);
+  assert.ok(first('zh-CN').note.length>0);
+  const variants=new Set();
+  for(let i=0;i<16;i++)variants.add(greetings.createSessionGreeting(undefined,()=>i/16)('zh-CN').title);
+  assert.ok(variants.size>=6);
+  const denied={getItem(){throw new Error('blocked');},setItem(){throw new Error('blocked');}};
+  assert.doesNotThrow(()=>greetings.createSessionGreeting(denied,()=>.5)('zh-CN'));
+});
+
+test('file changes are translated instead of exposing event codes', async () => {
+  const presentation=await server.ssrLoadModule('/src/lib/services/dashboardPresentation.ts').catch(()=>({}));
+  assert.equal(typeof presentation.fileChangeLabel,'function');
+  assert.equal(presentation.fileChangeLabel('file.modified','zh-CN'),'已更新');
+  assert.equal(presentation.fileChangeLabel('file.created','zh-CN'),'新资料');
+  assert.equal(presentation.fileChangeLabel('file.deleted','en-US'),'Removed');
+  assert.equal(presentation.fileChangeLabel('internal.unknown','zh-CN'),'资料变化');
+});
 
 test('dashboard exposes the overview as a named navigation region', () => {
   const { body } = render(Page);

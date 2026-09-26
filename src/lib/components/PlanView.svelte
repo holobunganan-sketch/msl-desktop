@@ -14,10 +14,14 @@
   import {paginate} from '$lib/services/pagination';
   let listPage=$state(1);
 
-  import {onMount} from 'svelte';
+  import {onMount,untrack} from 'svelte';
   import {navigateTo} from '$lib/services/navigation';
   import NaturalCapture from './NaturalCapture.svelte';
-  let {focusId=null,mode='active'}:{focusId?:number|null;mode?:'active'|'done'}=$props();
+  import ManualCompletionFeedback from './ManualCompletionFeedback.svelte';
+  import ItemDeleteDialog from './ItemDeleteDialog.svelte';
+  import {completeManual} from '$lib/stores/manualCompletions';
+  let {focusId=null,mode='active',workId=null}:{focusId?:number|null;mode?:'active'|'done';workId?:number|null}=$props();
+  let deleteTarget=$state<Task|null>(null);
   let focused=$state(false);
   let scheduleId=$state<number|null>(null);
   let scheduleStart=$state('');let scheduleEnd=$state('');let scheduleBusy=$state(false);
@@ -45,7 +49,7 @@
 
   let tasks = $state<Task[]>([]);
   let filter = $state("all"); // all | next | done | ...
-  let projectFilter=$state("all");
+  let projectFilter=$state(untrack(()=>workId?String(workId):"all"));
   let error = $state("");
   let newTitle = $state("");
   let newPriority = $state("normal");
@@ -102,7 +106,7 @@
     newPriority = "normal";
     newDue = "";
     formNotes = "";
-    formWorkId = null;
+    formWorkId = Number(projectFilter)>0?Number(projectFilter):null;
     showForm = true;
   }
 
@@ -144,7 +148,7 @@
 
   async function complete(t: Task) {
     try {
-      await invoke("complete_task", { id: t.id });
+      await completeManual('task',t.id);
       invalidate("tasks", "works", "brief");
       await load();
     } catch (e) {
@@ -153,13 +157,7 @@
   }
 
   async function remove(t: Task) {
-    try {
-      await invoke("delete_task", { id: t.id });
-      invalidate("tasks", "works", "brief");
-      await load();
-    } catch (e) {
-      error = String(e);
-    }
+    deleteTarget=JSON.parse(JSON.stringify(t));
   }
 
   function isOverdue(t: Task): boolean {
@@ -189,15 +187,16 @@
   <div class="row">
     <h1>{currentLocale==='en-US'?(mode==='done'?'Completed tasks':'Your next actions'):(mode==='done'?'做完的事项':'接下来要做的事')}</h1>
     <AppButton testid="task-create" label={tt("common.create")} onclick={() => openNew()} />
-    <select bind:value={filter} onchange={load}>
+    {#if mode!=='done'}<select bind:value={filter} onchange={load} aria-label={tt('common.status')}>
       <option value="all">{tt("common.all")}</option>
       {#each STATUS_ORDER as s (s)}
         <option value={s}>{translateStatus(s, currentLocale)}</option>
       {/each}
-    </select>
+    </select>{/if}
   </div>
 
-  <div class="status error stable-feedback"><StatusLine message={error}/></div>
+  <ManualCompletionFeedback {error} onrefresh={load}/>
+  <ItemDeleteDialog record={deleteTarget} kind="task" {works} onclose={()=>deleteTarget=null} oncomplete={load}/>
   <ProjectFilter {works} bind:value={projectFilter}/>
   <ListPager view={taskPage} onchange={(page)=>listPage=page} testid="task-pagination"/>
 

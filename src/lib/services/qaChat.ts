@@ -10,7 +10,7 @@ export function chatEnter(event: {key: string; shiftKey?: boolean; isComposing?:
   return event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
 }
 // Unsent drafts survive page navigation, stay local, and are never sent to AI.
-export const chatDrafts = new Map<string, {question: string; scope: number[]}>();
+export const chatDrafts = new Map<string, {question: string; scope: number[]; expertId?:number|null}>();
 export const chatSelection: {sessionId: number | null | undefined} = {sessionId: undefined};
 // Page-local loading must never replace a remembered reading position.
 export const chatScrollPositions=new Map<number,{top:number;follow:boolean}>();

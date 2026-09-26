@@ -522,6 +522,7 @@ export const zhCN = {
   "status.done": "已完成",
   "status.archived": "已归档",
   "status.next": "下一步",
+  "status.doing": "进行中",
   "status.scheduled": "已安排",
   "status.resolved": "已解决",
   "kind.meeting": "会议",

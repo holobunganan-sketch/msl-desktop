@@ -1,10 +1,10 @@
 export type Project={id:number;title:string;status:string};
 export type Citation={source_id:string;quote:string};
-export type Evidence={id:string;kind:string;entity_id:number;title:string;text:string;timestamp:number|null;trust:string;hash:string};
+export type Evidence={id:string;kind:string;entity_id:number;title:string;text:string;timestamp:number|null;trust:string;hash:string;location?:import('./workflowContinuity').SourceLocation};
 export type Pack={sources:Evidence[];as_of:number;scope_ids:number[];counts:Record<string,number>;omitted:number;notes:string[]};
 export type Answer={claims:{text:string;basis:string;citations:Citation[]}[];gaps:string[];document?:import('$lib/types/aiDocument').AiDocumentValue};
-export type Session={id:number;title:string;scope_json:string;updated_at:number};
-export type Turn={id:number;session_id:number;question:string;scope_json:string;status:string;answer_json:string|null;evidence_json:string|null;error:string|null;created_at:number;document?:import('$lib/types/aiDocument').AiDocumentValue};
+export type Session={id:number;title:string;scope_json:string;updated_at:number;expert_id?:number|null;expert_scoped?:number;expert_label?:string|null};
+export type Turn={id:number;session_id:number;question:string;scope_json:string;status:string;answer_json:string|null;evidence_json:string|null;error:string|null;created_at:number;expert_id?:number|null;expert_scoped?:number;expert_label?:string|null;document?:import('$lib/types/aiDocument').AiDocumentValue};
 export type Expert={id:number;revision:number;name:string;institution:string;department:string;specialty:string;summary:string;archived:number;project_ids_json:string;note_count:number;last_contact:number|null};
 export type Insight={title:string;categories:string[];observation:string;implication:string;uncertainty:string;next_question:string;citations:Citation[]};
 export type KolAction={enabled:boolean;kind:string;title:string;work_id:number|null;notes:string;waiting_for:string;at:number|null;time_basis:string;time_reason:string;citations:Citation[]};

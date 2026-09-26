@@ -15,11 +15,15 @@
   let listPage=$state(1);
   const waitingPage=$derived(paginate(sorted(),listPage));
   $effect(()=>{projectFilter;mode;listPage=1;});
-  let projectFilter=$state("all");
 
-  import {onMount} from 'svelte';
+  import {onMount,untrack} from 'svelte';
   import NaturalCapture from './NaturalCapture.svelte';
-  let {focusId=null,mode='active'}:{focusId?:number|null;mode?:'active'|'done'}=$props();
+  import ManualCompletionFeedback from './ManualCompletionFeedback.svelte';
+  import ItemDeleteDialog from './ItemDeleteDialog.svelte';
+  import {completeManual} from '$lib/stores/manualCompletions';
+  let {focusId=null,mode='active',workId=null}:{focusId?:number|null;mode?:'active'|'done';workId?:number|null}=$props();
+  let projectFilter=$state(untrack(()=>workId?String(workId):"all"));
+  let deleteTarget=$state<Waiting|null>(null);
   let focused=$state(false);let progressWaiting=$state<Waiting|null>(null);
   onMount(async()=>{await load();if(focusId){const item=items.find(t=>t.id===focusId);if(item){focused=true;openEdit(item);}else error=currentLocale==='en-US'?'This item no longer exists.':'该事项已不存在。';}});
   type Waiting = {
@@ -92,7 +96,7 @@
     newFollowUp = "";
     formStarted = fmtTime(nowSec()).replace(" ","T");
     formNotes = "";
-    formWorkId = null;
+    formWorkId = Number(projectFilter)>0?Number(projectFilter):null;
     showForm = true;
   }
 
@@ -137,7 +141,7 @@
 
   async function resolve(w: Waiting) {
     try {
-      await invoke("resolve_waiting", { id: w.id });
+      await completeManual('waiting',w.id);
       invalidate("waiting", "works", "brief");
       await load();
     } catch (e) {
@@ -146,13 +150,7 @@
   }
 
   async function remove(w: Waiting) {
-    try {
-      await invoke("delete_waiting", { id: w.id });
-      invalidate("waiting", "works", "brief");
-      await load();
-    } catch (e) {
-      error = String(e);
-    }
+    deleteTarget=JSON.parse(JSON.stringify(w));
   }
 
   function daysWaiting(w: Waiting): number {
@@ -180,7 +178,8 @@
     <h1>{currentLocale==='en-US'?(mode==='done'?'Resolved waiting':'Waiting for a response'):(mode==='done'?'已结束的等待':'正在等回应的事')}</h1>
     <AppButton testid="waiting-create" label={tt("common.create")} onclick={() => openNew()} />
   </div>
-  <div class="status error stable-feedback"><StatusLine message={error}/></div>
+  <ManualCompletionFeedback {error} onrefresh={load}/>
+  <ItemDeleteDialog record={deleteTarget} kind="waiting" {works} onclose={()=>deleteTarget=null} oncomplete={load}/>
   <ProjectFilter {works} bind:value={projectFilter}/>
   <ListPager view={waitingPage} onchange={(page)=>listPage=page} testid="waiting-pagination"/>
 
@@ -295,11 +294,6 @@
   }
   .actions button {
     margin: 0;
-  }
-  .status.error {
-    color: var(--color-danger);
-    font-size: 13px;
-    margin: 6px 0;
   }
   @container (max-width: 720px) {
     .w-list li { grid-template-columns: minmax(0,1fr); }

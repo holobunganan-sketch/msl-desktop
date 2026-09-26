@@ -525,6 +525,7 @@ export const enUS: Record<keyof typeof zhCN, string> = {
   "status.done": "Done",
   "status.archived": "Archived",
   "status.next": "Next",
+  "status.doing": "In progress",
   "status.scheduled": "Scheduled",
   "status.resolved": "Resolved",
   "kind.meeting": "Meeting",

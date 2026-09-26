@@ -32,7 +32,7 @@
     {#each rounds as r(r.scope)}
       <div class="round-row"><div class="round-copy"><strong>{(labels[r.state]??labels.ready)[en?1:0]}</strong><p>{en?'Accepting suggestions keeps them on hold. After you finish or record progress, the secretary can prepare the next step.':'采用建议后，秘书会继续等待；您完成事项或记下进展后，再整理下一步。文件变化会留待下一轮分析。'}</p></div>
       <div class="round-actions">
-        {#if workId&&r.pending>0}<button onclick={()=>navigateTo({view:'matters',section:'review'})}>{en?'Review suggestions':'查看建议'} · {r.pending}</button>{/if}
+        {#if workId&&r.pending>0}<button data-testid="project-review-suggestions" onclick={()=>navigateTo({view:'matters',section:'review',workId})}>{en?'Review suggestions':'查看建议'} · {r.pending}</button>{/if}
         {#if r.state==='waiting_review'||r.state==='waiting_progress'}<button data-testid="secretary-complete-round" disabled={busy} onclick={()=>selected={...r}}>{en?'This round is complete':'本轮已完成'}</button>{/if}
       </div></div>
     {/each}

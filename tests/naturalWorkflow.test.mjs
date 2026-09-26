@@ -7,7 +7,7 @@ test('navigation retains the exact task and project instead of sending people to
   assert.equal(typeof nav.resolveDestination, 'function');
   assert.deepEqual(nav.resolveDestination('task', 42), {view:'matters',section:'plan',id:42});
   assert.deepEqual(nav.resolveDestination('work', 7), {view:'works',id:7});
-  assert.deepEqual(nav.resolveDestination('resume_point', 21, 7), {view:'works',id:7});
+  assert.deepEqual(nav.resolveDestination('resume_point', 21, 7), {view:'works',id:7,resumeId:21});
 });
 test('legacy review and waiting links still lead to their corresponding matter view', () => {
   assert.equal(typeof nav.resolveDestination, 'function');

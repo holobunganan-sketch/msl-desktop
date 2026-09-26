@@ -6,7 +6,7 @@
   import {navigateTo} from '$lib/services/navigation';
   import {proposalPresentation} from '$lib/services/proposalPresentation';
   import {listAiProposals} from '$lib/services/api';
-  let {focusId=null}:{focusId?:number|null}=$props();
+  let {focusId=null,workId=null,runId=null}:{focusId?:number|null;workId?:number|null;runId?:number|null}=$props();
   let focusConsumed=false;
   let adjusting=$state(false);
   let showDecline=$state(false);
@@ -19,7 +19,7 @@
   import ProposalStatus from "./ProposalStatus.svelte";
   import { command, deferAiProposal } from "$lib/services/api";
   import { invalidate } from "$lib/stores/dataRevision";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import AppButton from "$lib/components/ui/AppButton.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
   import { confirmAiProposal, getClassificationMemoryStats, listAnalysisRuns, listRecentAiProposals, listWorks, rejectAiProposal, runAnalysisNow, updateAiProposalClassification } from "$lib/services/api";
@@ -38,7 +38,7 @@
   let payloadText = $state("{}");
   let repairedStatus = $state(false);
   let statusFilter = $state("pending");
-  let runFilter = $state("all");
+  let runFilter = $state(untrack(()=>runId?String(runId):"all"));
   let busy = $state(false);
   let lifecycle = $state<{item:AiProposal;action:'delete'|'resolve'}|null>(null);
   let selectedIds = $state<number[]>([]);
@@ -48,13 +48,14 @@
   let loaded = $state(false);
   const savedRoutes=new Map<number,Pick<AiProposal,"kind"|"operation"|"target_id">>();
 
-  const items = $derived(allItems.filter((item) => {
+  const scopedItems=$derived(allItems.filter(item=>workId===null||item.work_id===workId||item.suggested_work_id===workId));
+  const items = $derived(scopedItems.filter((item) => {
     const display = item.status === "pending" && item.deferred_at ? "deferred" : item.status;
     return (statusFilter === "all" || display === statusFilter) && (runFilter === "all" || String(item.analysis_run_id ?? "none") === runFilter);
   }));
-  const latestRun = $derived(analysisRuns.find(run=>run.status!=='reused') ?? null);
-  const latestPendingCount = $derived(latestRun ? allItems.filter((item) => item.analysis_run_id === latestRun.id && item.status === "pending" && !item.deferred_at).length : 0);
-  const runIds = $derived([...new Set(allItems.map((item) => item.analysis_run_id).filter((id): id is number => id !== null))]);
+  const latestRun = $derived(analysisRuns.find(run=>run.status!=='reused'&&(workId===null||scopedItems.some(item=>item.analysis_run_id===run.id))) ?? null);
+  const latestPendingCount = $derived(latestRun ? scopedItems.filter((item) => item.analysis_run_id === latestRun.id && item.status === "pending" && !item.deferred_at).length : 0);
+  const runIds = $derived([...new Set(scopedItems.map((item) => item.analysis_run_id).filter((id): id is number => id !== null))]);
 
   function displayStatus(item: AiProposal): string { return item.status === "pending" && item.deferred_at ? "deferred" : item.status; }
   function statusText(item: AiProposal): string { const value = displayStatus(item); if(value==='resolved')return currentLocale==='en-US'?'Resolved':'已解决'; if(value==='completed')return currentLocale==='en-US'?'Round completed':'本轮已完成'; return tt(`aiReview.status${value.charAt(0).toUpperCase()}${value.slice(1)}` as Parameters<typeof t>[0]); }
@@ -217,7 +218,7 @@
 
 <div class="review-page">
   <div class="page-head">
-    <div><h1>{currentLocale==='en-US'?'Arrangements for your decision':'秘书准备好了这些安排'}</h1><p>{currentLocale==='en-US'?'Recent 7 days, plus anything still awaiting your decision.':'最近7天的记录，以及仍未处理的建议。采用后才会更新项目与事项。'}</p></div>
+    <div><h1>{currentLocale==='en-US'?'Arrangements for your decision':'秘书准备好了这些安排'}</h1><p>{currentLocale==='en-US'?'Recent 7 days, plus anything still awaiting your decision.':'最近7天的记录，以及仍未处理的建议。采用后才会更新项目与事项。'}</p>{#if workId!==null}<p data-testid="review-project-scope">{currentLocale==='en-US'?'Suggestions for this project':'当前项目的建议'}{works.find(w=>w.id===workId)?.title?' · '+works.find(w=>w.id===workId)!.title:''} <button onclick={()=>navigateTo({view:'matters',section:'review'})}>{currentLocale==='en-US'?'All projects':'查看全部项目'}</button></p>{/if}</div>
     <details class="filter-options"><summary>{currentLocale==='en-US'?'Filter & history':'筛选与历史'}</summary><div class="review-filters">
       <label>{tt("common.status")}<select bind:value={statusFilter} onchange={resetFilter}><option value="all">{tt("aiReview.filterAll")}</option><option value="pending">{tt("aiReview.statusPending")}</option><option value="deferred">{tt("aiReview.statusDeferred")}</option><option value="confirmed">{tt("aiReview.statusConfirmed")}</option><option value="resolved">{currentLocale==='en-US'?'Resolved':'已解决'}</option><option value="completed">{currentLocale==='en-US'?'Round completed':'本轮已完成'}</option><option value="rejected">{tt("aiReview.statusRejected")}</option><option value="superseded">{tt("aiReview.statusSuperseded")}</option></select></label>
       <label>{tt("aiReview.filterRun")}<select bind:value={runFilter} onchange={resetFilter}><option value="all">{tt("aiReview.allRuns")}</option>{#each runIds as runId}<option value={String(runId)}>#{runId}</option>{/each}</select></label>

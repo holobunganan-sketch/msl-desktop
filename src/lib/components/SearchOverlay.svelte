@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { locale, t, translateStatus } from "$lib/i18n";
+  import {resolveDestination,type Destination} from '$lib/services/navigation';
+  import Modal from './ui/Modal.svelte';
 
   type Work = { id: number; title: string; status: string };
   type FileHit = { path: string; label: string | null; work_id: number | null };
@@ -9,7 +11,7 @@
   type CalendarEvent = { id: number; title: string; start_at: number; kind: string };
   type InboxItem = { id: number; content: string };
   type ResumePoint = { id: number; work_id: number; current_state: string; next_step: string };
-  type ActivityEvent = { id: number; timestamp: number; display_text: string; event_type: string };
+  type ActivityEvent = { id: number; timestamp: number; display_text: string; event_type: string;entity_type?:string|null;entity_id?:number|null;work_id?:number|null;path?:string|null };
   type SearchResults = {
     works: Work[];
     files: FileHit[];
@@ -21,7 +23,8 @@
     activity: ActivityEvent[];
   };
 
-  let { open = $bindable(false), onSelect = (kind: string, id: number) => {} } = $props();
+  let { open = $bindable(false), onSelect = (_target:Destination) => {} } = $props();
+  let activity=$state<ActivityEvent|null>(null);
 
   let query = $state("");
   let results = $state<SearchResults | null>(null);
@@ -49,10 +52,12 @@
     debounceTimer = setTimeout(() => doSearch(query), 150);
   }
 
-  function pick(kind: string, id: number) {
-    onSelect(kind, id);
+  function pick(kind: string, id: number,workId?:number) {
+    const destination=resolveDestination(kind,id,workId);if(!destination)return;onSelect(destination);
     close();
   }
+  function pickFile(path:string){onSelect({view:'workspace',filePath:path});close();}
+  function pickActivity(value:ActivityEvent){const destination=value.entity_type&&value.entity_id?resolveDestination(value.entity_type,value.entity_id,value.work_id):null;if(destination){onSelect(destination);close();}else if(value.path)pickFile(value.path);else{activity=value;close();}}
 
   function close() {
     open = false;
@@ -138,7 +143,7 @@
             <div class="group">
               <div class="group-title">{tt("search.files")}</div>
               {#each results.files as f (f.path)}
-                <button class="item" onclick={() => pick("file", f.work_id ?? 0)}>
+                <button class="item" onclick={() => pickFile(f.path)}>
                   <span class="name">{f.label || f.path.split(/[\\/]/).pop()}</span>
                   <span class="muted path">{f.path}</span>
                 </button>
@@ -197,7 +202,7 @@
             <div class="group">
               <div class="group-title">{tt("search.resume")}</div>
               {#each results.resume_points as rp (rp.id)}
-                <button class="item" onclick={() => pick("resume", rp.work_id)}>
+                <button class="item" onclick={() => pick("resume", rp.id, rp.work_id)}>
                   <span class="name">{rp.current_state || rp.next_step}</span>
                 </button>
               {/each}
@@ -208,7 +213,7 @@
             <div class="group">
               <div class="group-title">{tt("search.activity")}</div>
               {#each results.activity as a (a.id)}
-                <button class="item" onclick={() => pick("activity", a.id)}>
+                <button class="item" onclick={() => pickActivity(a)}>
                   <span class="name">{a.display_text}</span>
                   <span class="muted">{fmtTime(a.timestamp)}</span>
                 </button>
@@ -223,6 +228,7 @@
   </div>
 {/if}
 
+<Modal open={activity!==null} title={currentLocale==='en-US'?'Recorded activity':'工作记录'} onclose={()=>activity=null}><p>{activity?.display_text}</p>{#if activity}<p>{fmtTime(activity.timestamp)}</p>{/if}<p>{currentLocale==='en-US'?'This is a historical event without an editable destination.':'这是一条历史事件，没有对应的可编辑事项。'}</p></Modal>
 <style>
   .overlay {
     position: fixed;

@@ -1,8 +1,9 @@
 <script lang="ts">
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
-  import { untrack } from "svelte";
+  import { untrack,tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import CognitionPanel from "$lib/components/CognitionPanel.svelte";
+  import WorkspaceDocuments from "$lib/components/WorkspaceDocuments.svelte";
   import AppButton from "$lib/components/ui/AppButton.svelte";
   import AppCard from "$lib/components/ui/AppCard.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -16,6 +17,9 @@
   type SyncStatus = { workspace_id: number | null; root: string | null; paused: boolean; watching: boolean; baseline_count: number; last_scan: number | null; last_warning: string | null };
   type DocumentIndex = { id: number; relative_path: string; extract_status: string; error_message: string | null };
   type DocumentStatus = { ready: number; unsupported: number; failed: number; needs_ocr: number; too_large: number };
+  let {workspaceId=null,relativePath=null,filePath=null,activityId=null}:{workspaceId?:number|null;relativePath?:string|null;filePath?:string|null;activityId?:number|null}=$props();
+  let focusConsumed=false,focusedPath=$state('');
+  const normalizePath=(path:string)=>displayPath(path).replace(/\\/g,'/').replace(/\/$/,'').toLowerCase();
   let directories = $state<Directory[]>([]);
   let selectedId = $state<number | null>(null);
   let selected = $derived(directories.find(d => d.id === selectedId) ?? null);
@@ -77,6 +81,16 @@
       const items = await invoke<Directory[]>("get_project_directories");
       if (token !== listVersion) return;
       directories = items;
+      if(!focusConsumed&&(workspaceId||filePath||relativePath||activityId)){
+        focusConsumed=true;
+        const directory=workspaceId?items.find(d=>d.id===workspaceId):items.filter(d=>filePath&&normalizePath(filePath).startsWith(normalizePath(d.root_path)+'/')).sort((a,b)=>b.root_path.length-a.root_path.length)[0];
+        if(!directory){clearSelection();error=en?'This source is no longer in a linked directory on this computer.':'此来源不在本机已绑定的目录中。';return;}
+        const relative=relativePath??(filePath?filePath.slice(directory.root_path.length).replace(/^[\\/]+/,''):'');
+        const segments=relative.split(/[\\/]/).filter(Boolean);if(segments.some(s=>s==='..'||s==='.'||s.includes(':'))){error=en?'Source path is unavailable.':'来源路径不可用。';return;}
+        await selectDirectory(directory);
+        if(segments.length){focusedPath=directory.root_path.replace(/[\\/]$/,'')+'\\'+segments.join('\\');const parents=segments.slice(0,-1);const rootTrail=[{name:directory.name,path:directory.root_path}];for(let i=0;i<parents.length;i++)rootTrail.push({name:parents[i],path:directory.root_path+'\\'+parents.slice(0,i+1).join('\\')});if(parents.length)await loadDir(rootTrail.at(-1)!.path,rootTrail);if(!entries.some(e=>normalizePath(e.path)===normalizePath(focusedPath)))error=en?'This file has moved or is no longer available.':'该文件已移动或暂时不可用。';await tick();document.querySelector('[data-focused-file="true"]')?.scrollIntoView({block:'center'});}
+        return;
+      }
       if (!items.length) { clearSelection(); return; }
       const current = items.find(d => d.id === selectedId);
       if (!current) await selectDirectory(items[0]);
@@ -140,10 +154,10 @@
     <div data-testid="workspace-browser"><AppCard>
       <nav class="breadcrumb" aria-label={en ? "Current folder" : "当前文件夹"}>{#each trail as segment, i (segment.path)}<button onclick={() => loadDir(segment.path, trail.slice(0, i + 1))}>{segment.name}</button>{#if i < trail.length - 1}<span>›</span>{/if}{/each}</nav>
       {#if loading}<p class="muted">{tt("common.loading")}</p>{:else if !entries.length}<p class="muted">{tt("workspace.empty")}</p>{:else}
-        <div class="file-table-wrap"><table><thead><tr><th>{tt("workspace.name")}</th><th>{tt("workspace.modified")}</th><th>{tt("workspace.size")}</th><th><span class="muted">{en ? "Actions" : "操作"}</span></th></tr></thead><tbody>{#each entries as item (item.path)}<tr><td><button class="file-name" onclick={() => enter(item)}>{item.is_dir ? "📁" : "📄"} {item.name}</button></td><td>{fmtTime(item.modified)}</td><td>{item.is_dir ? "—" : fmtSize(item.size)}</td><td><div class="file-actions"><button onclick={() => openPath(item.path)}>{tt("common.open")}</button><button onclick={() => openPath(item.path, true)}>{tt("common.reveal")}</button></div></td></tr>{/each}</tbody></table></div>
+        <div class="file-table-wrap"><table><thead><tr><th>{tt("workspace.name")}</th><th>{tt("workspace.modified")}</th><th>{tt("workspace.size")}</th><th><span class="muted">{en ? "Actions" : "操作"}</span></th></tr></thead><tbody>{#each entries as item (item.path)}<tr data-focused-file={normalizePath(item.path)===normalizePath(focusedPath)} style:background={normalizePath(item.path)===normalizePath(focusedPath)?'var(--color-primary-soft)':undefined}><td><button class="file-name" onclick={() => enter(item)}>{item.is_dir ? "📁" : "📄"} {item.name}</button></td><td>{fmtTime(item.modified)}</td><td>{item.is_dir ? "—" : fmtSize(item.size)}</td><td><div class="file-actions"><button onclick={() => openPath(item.path)}>{tt("common.open")}</button><button onclick={() => openPath(item.path, true)}>{tt("common.reveal")}</button></div></td></tr>{/each}</tbody></table></div>
       {/if}
     </AppCard></div>
-    <div data-testid="workspace-documents"><AppCard><div class="doc-head"><div><h2>{tt("workspace.documents")}</h2><p class="muted">{documentStatus ? `${tt("workspace.readyCount", { count: documentStatus.ready })} · ${tt("workspace.skippedCount", { count: documentStatus.unsupported + documentStatus.failed + documentStatus.needs_ocr + documentStatus.too_large })}` : tt("common.loading")}</p></div><div class="doc-actions"><AppButton variant="secondary" loading={indexing} onclick={reindex}>{tt("workspace.reindex")}</AppButton><AppButton variant="ghost" loading={draftBusy} onclick={generateDraft}>{tt("workspace.generateDraft")}</AppButton></div></div><div class="doc-list">{#each documents.slice(0, 8) as doc (doc.id)}<div class="doc-row"><span>{doc.relative_path}</span><span class="muted">{doc.extract_status}{doc.error_message ? ` · ${doc.error_message}` : ""}</span></div>{/each}{#if documents.length > 8}<p class="muted">{tt("workspace.moreDocuments", { count: documents.length - 8 })}</p>{/if}{#if !documents.length}<p class="muted">{tt("workspace.noSupportedDocuments")}</p>{/if}</div></AppCard></div>
+    <div data-testid="workspace-documents"><AppCard><div class="doc-head"><div><h2>{tt("workspace.documents")}</h2><p class="muted">{documentStatus ? `${tt("workspace.readyCount", { count: documentStatus.ready })} · ${tt("workspace.skippedCount", { count: documentStatus.unsupported + documentStatus.failed + documentStatus.needs_ocr + documentStatus.too_large })}` : tt("common.loading")}</p></div><div class="doc-actions"><AppButton variant="secondary" loading={indexing} onclick={reindex}>{tt("workspace.reindex")}</AppButton><AppButton variant="ghost" loading={draftBusy} onclick={generateDraft}>{tt("workspace.generateDraft")}</AppButton></div></div>{#key selected.id}<WorkspaceDocuments {documents}/>{/key}</AppCard></div>
     <details class="global-cognition"><summary>{en ? "All-project context" : "查看整体项目认知"}</summary><CognitionPanel scope="global"/></details>
   {/if}
 </div>
@@ -171,7 +185,6 @@
   .doc-actions,.file-actions,.modal-actions{display:flex;gap:8px;flex-wrap:wrap}.modal-actions{justify-content:flex-end;margin-top:22px}.remove-message{line-height:1.8}
   .breadcrumb{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}.breadcrumb button,.file-actions button{padding:7px 10px;border:1px solid var(--color-border);background:var(--color-surface);border-radius:9px;overflow-wrap:anywhere;text-align:left}
   .file-table-wrap{max-width:100%;overflow:auto;border:1px solid var(--color-border);border-radius:12px}table{width:100%;border-collapse:collapse;font-size:15px;table-layout:fixed}th,td{padding:12px;vertical-align:top;text-align:left;border-bottom:1px solid var(--color-border);overflow-wrap:anywhere}th{color:var(--color-muted);font-weight:600}th:first-child{width:34%}th:nth-child(2){width:23%}th:nth-child(3){width:12%}.file-name{padding:0;border:0;background:none;font:inherit;text-align:left;overflow-wrap:anywhere}
-  .doc-list{display:grid;gap:10px;margin-top:16px}.doc-row{display:flex;justify-content:space-between;gap:16px;border-top:1px solid var(--color-border);padding-top:10px;font-size:15px}.doc-row>span{min-width:0;overflow-wrap:anywhere}.doc-row>span:last-child{flex-shrink:0;max-width:45%}
   .error{color:var(--color-danger);background:var(--color-danger-soft);border:1px solid var(--color-border);border-radius:12px;padding:14px;overflow-wrap:anywhere}.warning{color:var(--color-warning);margin-top:10px}.global-cognition summary{color:var(--color-muted);cursor:pointer}
   @media(max-width:900px){.directory-list{grid-template-columns:1fr}th,td{padding:8px}.file-actions{flex-direction:column}.doc-head{align-items:flex-start}}
 </style>

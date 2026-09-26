@@ -3,12 +3,14 @@
   import { aiJobs, refreshJobs, type AiJob } from "$lib/stores/aiJobs";
   import { locale } from "$lib/i18n";
   import Icon from "$lib/components/ui/Icon.svelte";
+  import {navigateTo} from '$lib/services/navigation';
+  import {jobDestination} from '$lib/services/workflowContinuity';
   let expanded=$state(false);
   let error=$state("");
   let running=$derived($aiJobs.filter(job=>job.status==="running"));
   const label=(command:string)=>({ask_workbench:["工作台问答","Workbench Q&A"],analyze_kol:["专家与洞察","Experts & insights"],refresh_project_cognition:["更新项目认知","Refresh cognition"],organize_inbox_item:["整理一句记录","Organize observation"],run_analysis_now:["秘书分析","Secretary analysis"],start_workspace_work_draft:["项目整理","Project organization"],generate_brief:["秘书简报","Daily brief"],translate_text:["AI 翻译","Translation"],generate_report:["工作报告","Work report"],retry_report:["重试报告","Retry report"],retry_analysis_run:["重试分析","Retry analysis"]}[command]?.[$locale==="en-US"?1:0]??command);
   const status=(value:string)=>({running:["后台进行中","Running"],completed:["已完成","Completed"],failed:["未完成","Failed"],interrupted:["已中断","Interrupted"]}[value]?.[$locale==="en-US"?1:0]??value);
-  function visit(job:AiJob){expanded=false;if(job.command==="ask_workbench"||job.command==="analyze_kol"){const result=job.result as {session_id?:number;expert_id?:number}|null;window.dispatchEvent(new CustomEvent("dashboard:navigate",{detail:job.command==="ask_workbench"?{view:"qa",id:result?.session_id}:{view:"kol",id:result?.expert_id??job.args.expertId}}));return;}window.dispatchEvent(new CustomEvent("dashboard:navigate",{detail:job.command==="refresh_project_cognition"?(job.args.scope==="work"?"works":"workspace"):job.command==="translate_text"?"translation":job.command.includes("report")?"reports":job.command==="generate_brief"?"today":"review"}));}
+  function visit(job:AiJob){navigateTo(jobDestination(job));if(job.status==='completed')expanded=false;}
   onMount(()=>{
     const refresh=()=>void refreshJobs().then(()=>error="").catch(()=>error=$locale==="en-US"?"Unable to refresh task status":"暂时无法刷新任务状态");
     const dismissOutside=(event:MouseEvent)=>{if(event.target instanceof Element&&!event.target.closest('.job-center'))expanded=false;};
