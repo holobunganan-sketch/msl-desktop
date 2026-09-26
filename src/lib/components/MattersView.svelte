@@ -37,9 +37,9 @@
   {/if}
 </div>
 <style>
-  .stage-guide{display:flex;gap:14px;align-items:flex-start;padding:4px 6px;min-width:0}.stage-guide>span{color:var(--color-primary);background:var(--color-primary-soft);padding:8px 10px;border-radius:10px;font-size:14px}.stage-guide strong{font-size:16px}.stage-guide p{margin:5px 0 0;line-height:1.65;font-size:15px;color:var(--color-muted);overflow-wrap:anywhere}
+  .stage-guide{display:flex;gap:14px;align-items:flex-start;padding:16px 18px;min-width:0;border-left:3px solid var(--color-border-strong);background:var(--color-surface)}.stage-guide>span{color:var(--color-primary);background:var(--color-primary-soft);width:36px;height:36px;display:grid;place-items:center;flex-shrink:0;border-radius:50%;font-size:14px;font-weight:600}.stage-guide strong{font-size:16px}.stage-guide p{margin:5px 0 0;line-height:1.65;font-size:14px;color:var(--color-muted);overflow-wrap:anywhere}
   .matters-view{display:grid;gap:20px;min-width:0}
-  .matter-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:6px;background:var(--color-surface-muted);border-radius:14px;border:1px solid var(--color-border)}
-  button{padding:10px 20px;min-height:42px;font-size:15px;border:0;border-radius:10px;background:transparent;color:var(--color-muted);cursor:pointer}.matter-tabs .active{background:var(--color-surface);color:var(--color-text);box-shadow:var(--shadow-sm);font-weight:650}
+  .matter-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;padding:5px;background:var(--color-surface);border-radius:10px;border:1px solid var(--color-border)}
+  button{padding:10px 16px;min-height:42px;font-size:15px;border:0;border-radius:7px;background:transparent;color:var(--color-muted);cursor:pointer}.matter-tabs .active{background:var(--color-primary-soft);color:var(--color-primary);font-weight:650}
   .queue-switch{display:flex;flex-wrap:wrap;gap:8px}.queue-switch button{font-size:14px;padding:7px 14px;min-height:36px;border:1px solid var(--color-border)}.queue-switch .active{background:var(--color-primary-soft);color:var(--color-primary)}
 </style>

@@ -19,8 +19,8 @@
 <Modal bind:open title={$locale==='zh-CN'?'通知详情':'Notification details'}><p style="white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7">{details}</p></Modal>
 
 <style>
-  .toast-host { height:32px;flex:0 0 32px;min-width:0;background:var(--color-surface);border-bottom:1px solid var(--color-border); }
-  .toast { height:100%;display:flex;align-items:center;gap:8px;padding:0 20px;font-size:13px;color:var(--color-muted);min-width:0;border-left:4px solid var(--color-primary); }
+  .toast-host { position:fixed;z-index:90;top:82px;right:24px;width:min(540px,calc(100vw - 48px));display:grid;gap:8px;pointer-events:none; }
+  .toast { pointer-events:auto;min-height:46px;display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:14px;color:var(--color-text);min-width:0;border:1px solid var(--color-border);border-left:4px solid var(--color-primary);border-radius:8px;background:var(--color-surface);box-shadow:var(--shadow-md); }
   .toast .toast-message{flex:1;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font:inherit}
   .toast .toast-detail{flex:0 0 auto;font:inherit}
   .toast.success { border-left-color: var(--color-success); }

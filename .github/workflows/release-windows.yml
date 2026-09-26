@@ -41,6 +41,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check:publish
       - run: pnpm check:installer
+      - run: pnpm check:ui
       - run: pnpm check
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Test with isolated application data

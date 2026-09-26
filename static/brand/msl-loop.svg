@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 128 128" role="img" aria-label="MSL Desktop">
+  <defs>
+    <linearGradient id="loop" x1="14" y1="82" x2="109" y2="39" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69c8c2"/>
+      <stop offset=".48" stop-color="#269dac"/>
+      <stop offset="1" stop-color="#086381"/>
+    </linearGradient>
+  </defs>
+  <path d="M57 69C46 53 31 47 21 57C6 72 16 96 34 90C46 86 52 70 60 57L74 34C87 12 113 21 111 40C109 54 97 77 87 84C75 93 65 82 57 69Z" fill="none" stroke="url(#loop)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

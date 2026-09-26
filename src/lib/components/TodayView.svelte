@@ -1,4 +1,5 @@
 <script lang="ts">
+ import DashboardOverview from './DashboardOverview.svelte';
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import ProposalPreview from './ProposalPreview.svelte';
   import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
@@ -151,38 +152,80 @@
   const briefHighlights = $derived(briefItems.filter(line =>
     !/^(?:今日日程|等待与阻塞|当前无|today.s calendar|waiting and blockers)[:：]?\s*(?:无|none|no )/i.test(line)
   ).slice(0, 3));
-  const focusRows = $derived.by(() => {
-    const rows: Array<{kind:string;id:number;workId:number|null;title:string;scope:string;label:string}> = [];
-    for (const event of (data?.today_calendar ?? []).slice(0, 2)) rows.push({kind:'calendar',id:event.id,workId:event.work_id,title:event.title,scope:works.find(w=>w.id===event.work_id)?.title??'',label:fmtDayTime(event.start_at)});
-    for (const task of activeTasks.slice(0, 3)) rows.push({kind:'task',id:task.id,workId:task.work_id,title:task.title,scope:works.find(w=>w.id===task.work_id)?.title??'',label:task.scheduled_start?actionTimeLabel(task.scheduled_start,Math.floor(Date.now()/1000)):(currentLocale==='en-US'?'Action':'待推进')});
-    for (const waiting of (data?.waiting_followups ?? []).slice(0, 1)) rows.push({kind:'waiting',id:waiting.id,workId:waiting.work_id,title:waiting.title,scope:works.find(w=>w.id===waiting.work_id)?.title??'',label:currentLocale==='en-US'?'Follow up':'待跟进'});
-    return rows.slice(0, 3);
-  });
   const lastCompletedAnalysis = $derived(analysisRuns.find((run) => run.status === "completed") ?? analysisRuns[0] ?? null);
 
   $effect(() => { $dataRevision.global; $dataRevision.brief; $dataRevision.workspace; load(); });
 </script>
 
 <div class="dashboard-c1">
-  <div class="module-error stable-feedback"><StatusLine message={dataError} onretry={()=>{dataError='';void load();}}/></div>
-  <section class="brief-hero" data-testid="dashboard-brief-hero">
-    <div class="brief-eyebrow">{currentLocale==='en-US'?'YOUR WORKDAY':'今天的工作'} · {briefDate}</div>
-    <h1>{currentLocale==='en-US'?'Start with what matters today.':'今天，先看这几件事。'}</h1>
-    <p class="day-judgment">{currentLocale==='en-US'?`${appointmentCount} events today · ${pendingProposals} new decisions · ${data?.waiting_followups.length??0} follow-ups`:`今天 ${appointmentCount} 项日程 · ${pendingProposals} 条新建议 · ${data?.waiting_followups.length??0} 件等待需跟进`}</p>
-    {#if focusRows.length}
-      <div class="today-focus" aria-label={currentLocale==='en-US'?'Today priorities':'今日重点'}>
-        {#each focusRows as row,i(`${row.kind}-${row.id}`)}
-          <button class="today-focus-row" onclick={()=>nav(row.kind,row.id,row.workId)}>
-            <span class="today-focus-index">{String(i+1).padStart(2,'0')}</span>
-            <span class="today-focus-title">{row.title}</span>
-            <span class="today-focus-meta">{row.scope?`${row.scope} · `:''}{row.label}</span>
-          </button>
+  <section class="dashboard-intro" data-testid="dashboard-brief-hero">
+    <div class="intro-copy">
+      <div class="brief-eyebrow">{currentLocale==='en-US'?'TODAY’S WORKSPACE':'今日工作台'} <span>· {briefDate}</span></div>
+      <h1>{currentLocale==='en-US'?'Make room for meaningful conversations.':'专注于有价值的医学连接。'}</h1>
+      <p class="day-judgment">{currentLocale==='en-US'?`${appointmentCount} arrangements today · ${pendingProposals} new suggestions to review`:`今天 ${appointmentCount} 项日程，${pendingProposals} 条新建议待确认。`}</p>
+      <div class="module-error stable-feedback"><StatusLine message={dataError} onretry={()=>{dataError='';void load();}}/></div>
+    </div>
+    <aside class="quiet-note" aria-label={currentLocale==='en-US'?'Our philosophy':'我们的理念'}>
+      <p>{currentLocale==='en-US'?'Let every professional conversation lead to a thoughtful next step.':'让每一次专业对话，都有持续的跟进。'}</p>
+      <span>{currentLocale==='en-US'?'YOUR MEDICAL AFFAIRS WORKSPACE':'把时间留给值得跟进的事'}</span>
+      <svg viewBox="0 0 350 120" preserveAspectRatio="xMaxYMax meet" aria-hidden="true"><path d="M0 120L69 76L102 97L189 27L227 56L281 7L350 60V120Z" fill="currentColor" opacity=".09"/><path d="M135 120L220 69L244 85L281 7L315 48L350 27V120Z" fill="currentColor" opacity=".13"/><path d="M240 87L281 7L275 45L290 49L274 55Z" fill="white" opacity=".85"/></svg>
+    </aside>
+  </section>
+  <DashboardOverview en={currentLocale==='en-US'} counts={{
+    projects:data?works.filter(work=>!work.archived_at&&work.status!=='archived').length:null,
+    tasks:data?activeTasks.length:null,
+    waiting:data?data.waiting_followups.length:null,
+    calendar:data?appointmentCount:null,
+    inbox:data?data.inbox_pending.length:null,
+    decisions:data?pendingProposals+earlierPending:null
+  }}/>
+  <section class="focus-grid">
+    <section class="desk-card agenda-card">
+      <div class="card-head"><div><span class="eyebrow">01 · {currentLocale==='en-US'?'CONTINUE':'继续做'}</span><h2>{currentLocale==='en-US'?'Keep moving':'继续推进'}</h2><p>{currentLocale==='en-US'?'Next actions, connected to your projects.':'下一步行动，连着对应的项目。'}</p></div><button class="text-button" onclick={()=>nav('plan')}>{tt('common.all')} ↗</button></div>
+      <div class="agenda-list">
+        {#each activeTasks.slice(0,4) as item(item.id)}
+          <div class="agenda-row"><span class="agenda-time">{item.scheduled_start?actionTimeLabel(item.scheduled_start,Math.floor(Date.now()/1000)):item.due_at?fmtTime(item.due_at).slice(5,10):(currentLocale==='en-US'?'Next':'下一步')}</span><button class="agenda-body" onclick={()=>nav('task',item.id)}><strong>{item.title}</strong><small>{works.find(w=>w.id===item.work_id)?.title||(currentLocale==='en-US'?'Standalone item':'独立事项')} · {translateStatus(item.status,currentLocale)}</small></button><button class="row-action" onclick={()=>completeTask(item)} aria-label={`${tt('common.complete')} ${item.title}`}>✓</button></div>
+        {/each}
+        {#if activeTasks.length<3}{#each (data?.continue_works??[]).slice(0,3-activeTasks.length) as entry(entry.work.id)}<div class="agenda-row"><span class="agenda-time">{currentLocale==='en-US'?'Project':'项目'}</span><button class="agenda-body" onclick={()=>nav('works',entry.work.id)}><strong>{entry.work.title}</strong><small>{entry.latest_resume?.next_step||tt('work.resumeEmpty')}</small></button></div>{/each}{/if}
+        {#if data&&!activeTasks.length&&!data.continue_works.length}<div class="empty-state"><strong>{currentLocale==='en-US'?'Start with one small note':'从记下一件事开始'}</strong><p>{currentLocale==='en-US'?'Use the capture box above. The secretary can help arrange the next step.':'在上方记一件事，秘书会帮您准备下一步安排。'}</p></div>{/if}
+      </div>
+      {#if activeTasks.length>4}<button class="more-link" onclick={()=>nav('plan')}>{currentLocale==='en-US'?`View ${activeTasks.length-4} more actions`:`还有 ${activeTasks.length-4} 件事，查看全部`} →</button>{/if}
+    </section>
+    <section class="desk-card decision-card" data-testid="latest-decision-card">
+      <div class="card-head"><div><span class="eyebrow">02 · {currentLocale==='en-US'?'DECIDE':'您来决定'}</span><h2>{tt('dashboard.needsDecision')}</h2><p>{currentLocale==='en-US'?'Latest arrangements, ready for your approval.':'最近一次整理的安排，看一眼就能决定。'}</p></div><button class="text-button" onclick={()=>nav('review')}>{tt('common.all')} ↗</button></div>
+      {#if decisionMessage}<div class="decision-message" role="status">{decisionMessage}{#if lastReceipt&&receiptTarget}<div><button onclick={()=>nav(receiptTarget!.kind,receiptTarget!.id,receiptTarget!.workId)}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button disabled={decisionBusy!==null} onclick={undoLastDecision}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}</div>{/if}
+      <div class="decision-list">
+        {#each latestProposals.slice(0,3) as item(item.id)}
+          <article class="decision-row" data-testid={`latest-decision-${item.id}`}><h3>{item.title}</h3><ProposalPreview {item} {works} compact/><div class="decision-actions"><button class="primary" disabled={decisionBusy!==null||proposalPresentation(item,works,currentLocale).needsAttention} onclick={()=>confirmDecision(item)}>{currentLocale==='en-US'?'Accept':'采用安排'}</button><button disabled={decisionBusy!==null} onclick={()=>nav('review',item.id)}>{currentLocale==='en-US'?'Adjust':'调整'}</button><button disabled={decisionBusy!==null} onclick={()=>deferDecision(item)}>{currentLocale==='en-US'?'Later':'稍后'}</button><details class="decision-more"><summary data-testid={`decision-more-${item.id}`} aria-label={currentLocale==='en-US'?'Other actions for this suggestion':'这条建议的其他操作'}>{currentLocale==='en-US'?'More':'更多'}</summary><div><button data-testid={`decision-delete-${item.id}`} disabled={decisionBusy!==null} onclick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');deleteCandidate={...item};}}>{currentLocale==='en-US'?'Delete record':'删除记录'}</button></div></details></div></article>
         {/each}
       </div>
-    {:else if data}
-      <p class="today-focus-empty">{currentLocale==='en-US'?'No fixed next action. Check the decisions below when ready.':'暂时没有明确的下一步。可以先看下方「需要您决定」。'}</p>
-    {/if}
-    <details class="brief-details">
+      {#if !latestProposals.length}<div class="empty-state"><strong>{currentLocale==='en-US'?'No new decisions for now':'眼下没有新的安排要决定'}</strong><p>{currentLocale==='en-US'?'Keep working. New suggestions will appear after organizing.':'安心推进工作，整理完成后，新建议会出现在这里。'}</p><button onclick={analyze} disabled={analysisBusy}>{analysisBusy?(currentLocale==='en-US'?'Organizing…':'后台整理中…'):(currentLocale==='en-US'?'Ask secretary to organize':'让秘书整理一次')}</button></div>{/if}
+      {#if earlierPending||latestProposals.length>3}<button class="more-link" onclick={()=>nav('review')}>{currentLocale==='en-US'?`View remaining and deferred suggestions (${earlierPending+Math.max(0,latestProposals.length-3)})`:`还有 ${earlierPending+Math.max(0,latestProposals.length-3)} 条其他或暂缓建议，继续查看`} →</button>{/if}
+    </section>
+
+    <aside class="dashboard-side">
+      <section class="desk-card schedule-card">
+        <div class="small-card-head"><h2>{currentLocale==='en-US'?'Today’s calendar':'今日日程'}</h2><button class="text-button" onclick={()=>nav('calendar')} aria-label={currentLocale==='en-US'?'Open calendar':'打开日历'}><Icon name="chevron-right" size={16}/></button></div>
+        <div class="schedule-date">{briefDate}</div>
+        {#each (data?.today_calendar??[]).slice(0,2) as item(item.id)}
+          <div class="agenda-row"><span class="agenda-time">{fmtDayTime(item.start_at)}</span><button class="agenda-body" onclick={()=>nav('calendar',item.id)}><strong>{item.title}</strong><small>{currentLocale==='en-US'?'Today’s arrangement':'今天的安排'} · {works.find(w=>w.id===item.work_id)?.title||(currentLocale==='en-US'?'Standalone':'独立事项')}</small></button></div>
+        {/each}
+        {#each scheduledToday.slice(0,2) as task(task.id)}
+          <button class="schedule-item" onclick={()=>nav('task',task.id)}><span>{fmtDayTime(task.scheduled_start!)}</span><strong>{task.title}</strong></button>
+        {/each}
+        {#if data&&!appointmentCount}<p class="secondary-empty">{currentLocale==='en-US'?'No fixed arrangements today.':'今天暂无固定安排，可以按自己的节奏推进。'}</p>{/if}
+      </section>
+      <section class="desk-card files-card">
+        <div class="small-card-head"><h2>{currentLocale==='en-US'?'Recent materials':'资料动态'}</h2><button class="text-button" onclick={()=>nav('workspace')} aria-label={currentLocale==='en-US'?'Open directories':'打开工作目录'}><Icon name="chevron-right" size={16}/></button></div>
+        {#each recentFiles.slice(0,3) as file(file.path+file.timestamp)}
+          <button class="material-row" onclick={()=>nav('workspace')} title={file.path.split(/[\\/]/).pop()}>
+            <span class="file-icon"><Icon name="file" size={20}/></span><span><strong>{file.path.split(/[\\/]/).pop()}</strong><small>{fmtTime(file.timestamp).slice(5)} · {file.event_type}</small></span>
+          </button>
+        {:else}<p class="secondary-empty">{currentLocale==='en-US'?'Changes in linked project folders will appear here.':'关联项目目录后，在这里查看资料变化。'}</p>{/each}
+      </section>
+    </aside>
+  </section>
+  <section class="brief-rail">    <details class="brief-details">
       <summary>{currentLocale==='en-US'?'Secretary brief':'秘书简报'}</summary>
       {#if briefHighlights.length}
         <ul class="brief-highlights" data-testid="dashboard-brief-highlights">{#each briefHighlights as line,i(i)}<li title={line}>{line}</li>{/each}</ul>
@@ -199,33 +242,7 @@
       {#if briefError}<p class="notice">{briefError}</p>{/if}
       {#if showSources&&briefResult}<div class="source-drawer">{#each briefResult.source_preview.slice(0,5) as source,i(i)}<span>{source.title||source.display||source.type}</span>{/each}</div>{/if}
     </details>
-  </section>
-  <section class="focus-grid">
-    <section class="desk-card agenda-card">
-      <div class="card-head"><div><span class="eyebrow">01 · {currentLocale==='en-US'?'CONTINUE':'继续做'}</span><h2>{currentLocale==='en-US'?'Keep moving':'继续推进'}</h2><p>{currentLocale==='en-US'?'Your next actions and today’s arrangements.':'接下来要做的事，以及今天的安排。'}</p></div><button class="text-button" onclick={()=>nav('plan')}>{tt('common.all')} ↗</button></div>
-      <div class="agenda-list">
-        {#each (data?.today_calendar??[]).slice(0,2) as item(item.id)}
-          <div class="agenda-row"><span class="agenda-time">{fmtDayTime(item.start_at)}</span><button class="agenda-body" onclick={()=>nav('calendar',item.id)}><strong>{item.title}</strong><small>{currentLocale==='en-US'?'Today’s arrangement':'今天的安排'} · {works.find(w=>w.id===item.work_id)?.title||(currentLocale==='en-US'?'Standalone':'独立事项')}</small></button></div>
-        {/each}
-        {#each activeTasks.slice(0,4) as item(item.id)}
-          <div class="agenda-row"><span class="agenda-time">{item.scheduled_start?actionTimeLabel(item.scheduled_start,Math.floor(Date.now()/1000)):item.due_at?fmtTime(item.due_at).slice(5,10):(currentLocale==='en-US'?'Next':'下一步')}</span><button class="agenda-body" onclick={()=>nav('task',item.id)}><strong>{item.title}</strong><small>{works.find(w=>w.id===item.work_id)?.title||(currentLocale==='en-US'?'Standalone item':'独立事项')} · {translateStatus(item.status,currentLocale)}</small></button><button class="row-action" onclick={()=>completeTask(item)} aria-label={`${tt('common.complete')} ${item.title}`}>✓</button></div>
-        {/each}
-        {#if activeTasks.length<3}{#each (data?.continue_works??[]).slice(0,3-activeTasks.length) as entry(entry.work.id)}<div class="agenda-row"><span class="agenda-time">{currentLocale==='en-US'?'Project':'项目'}</span><button class="agenda-body" onclick={()=>nav('works',entry.work.id)}><strong>{entry.work.title}</strong><small>{entry.latest_resume?.next_step||tt('work.resumeEmpty')}</small></button></div>{/each}{/if}
-        {#if data&&!activeTasks.length&&!data.today_calendar.length&&!data.continue_works.length}<div class="empty-state"><strong>{currentLocale==='en-US'?'Start with one small note':'从记下一件事开始'}</strong><p>{currentLocale==='en-US'?'Use the capture box above. The secretary can help arrange the next step.':'在上方记一件事，秘书会帮您准备下一步安排。'}</p></div>{/if}
-      </div>
-      {#if activeTasks.length>4}<button class="more-link" onclick={()=>nav('plan')}>{currentLocale==='en-US'?`View ${activeTasks.length-4} more actions`:`还有 ${activeTasks.length-4} 件事，查看全部`} →</button>{/if}
-    </section>
-    <section class="desk-card decision-card" data-testid="latest-decision-card">
-      <div class="card-head"><div><span class="eyebrow">02 · {currentLocale==='en-US'?'DECIDE':'您来决定'}</span><h2>{tt('dashboard.needsDecision')}</h2><p>{currentLocale==='en-US'?'Latest arrangements, ready for your approval.':'最近一次整理的安排，看一眼就能决定。'}</p></div><button class="text-button" onclick={()=>nav('review')}>{tt('common.all')} ↗</button></div>
-      {#if decisionMessage}<div class="decision-message" role="status">{decisionMessage}{#if lastReceipt&&receiptTarget}<div><button onclick={()=>nav(receiptTarget!.kind,receiptTarget!.id,receiptTarget!.workId)}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button disabled={decisionBusy!==null} onclick={undoLastDecision}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}</div>{/if}
-      <div class="decision-list">
-        {#each latestProposals.slice(0,3) as item(item.id)}
-          <article class="decision-row" data-testid={`latest-decision-${item.id}`}><h3>{item.title}</h3><ProposalPreview {item} {works}/><div class="decision-actions"><button class="primary" disabled={decisionBusy!==null||proposalPresentation(item,works,currentLocale).needsAttention} onclick={()=>confirmDecision(item)}>{currentLocale==='en-US'?'Accept':'采用安排'}</button><button disabled={decisionBusy!==null} onclick={()=>nav('review',item.id)}>{currentLocale==='en-US'?'Adjust':'调整'}</button><button disabled={decisionBusy!==null} onclick={()=>deferDecision(item)}>{currentLocale==='en-US'?'Later':'稍后'}</button><details class="decision-more"><summary data-testid={`decision-more-${item.id}`} aria-label={currentLocale==='en-US'?'Other actions for this suggestion':'这条建议的其他操作'}>{currentLocale==='en-US'?'More':'更多'}</summary><div><button data-testid={`decision-delete-${item.id}`} disabled={decisionBusy!==null} onclick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');deleteCandidate={...item};}}>{currentLocale==='en-US'?'Delete record':'删除记录'}</button></div></details></div></article>
-        {/each}
-      </div>
-      {#if !latestProposals.length}<div class="empty-state"><strong>{currentLocale==='en-US'?'No new decisions for now':'眼下没有新的安排要决定'}</strong><p>{currentLocale==='en-US'?'Keep working. New suggestions will appear after organizing.':'安心推进工作，整理完成后，新建议会出现在这里。'}</p><button onclick={analyze} disabled={analysisBusy}>{analysisBusy?(currentLocale==='en-US'?'Organizing…':'后台整理中…'):(currentLocale==='en-US'?'Ask secretary to organize':'让秘书整理一次')}</button></div>{/if}
-      {#if earlierPending||latestProposals.length>3}<button class="more-link" onclick={()=>nav('review')}>{currentLocale==='en-US'?`View remaining and deferred suggestions (${earlierPending+Math.max(0,latestProposals.length-3)})`:`还有 ${earlierPending+Math.max(0,latestProposals.length-3)} 条其他或暂缓建议，继续查看`} →</button>{/if}
-    </section>
+
   </section>
   <section class="attention-strip">
     <div><strong>{currentLocale==='en-US'?'Worth a look':'值得留意'}</strong><p>{(data?.waiting_followups??[]).slice(0,2).map(item=>item.title).join(' · ')||(currentLocale==='en-US'?'No waiting items need following up today.':'今天暂无到期的等待事项。')}</p></div><button onclick={()=>nav('waiting')}>{currentLocale==='en-US'?'View waiting':'查看等待'} ↗</button>
@@ -246,11 +263,18 @@
   .decision-more>summary:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
   .decision-more>div{position:absolute;z-index:10;right:0;bottom:calc(100% + 6px);min-width:136px;padding:5px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);box-shadow:var(--shadow-md)}
   .decision-more>div button{width:100%;color:var(--color-danger);border:0;text-align:left}
-  .dashboard-c1{display:grid;gap:20px;padding-bottom:12px;min-width:0}button{cursor:pointer;font:inherit;font-size:14px;padding:9px 13px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface);color:var(--color-primary)}button:disabled{opacity:.5;cursor:default}summary{cursor:pointer;font-size:14px;line-height:1.7}p{line-height:1.65}
-  .brief-hero{padding:24px 28px;border:1px solid var(--color-border);border-radius:20px;background:linear-gradient(115deg,var(--color-surface),var(--color-primary-soft));min-width:0}.brief-eyebrow,.eyebrow{color:var(--color-muted);font-size:12px;letter-spacing:.08em;font-weight:600}.brief-hero h1{font:500 clamp(25px,2.7vw,34px) var(--font-serif);line-height:1.5;margin:10px 0}.day-judgment{margin:0 0 14px;color:var(--color-muted);font-size:15px}.today-focus{display:grid;gap:0;margin:10px 0 12px;border-top:1px solid var(--color-border)}.today-focus-row{display:grid;grid-template-columns:34px minmax(0,1fr) minmax(100px,27%);align-items:center;gap:12px;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--color-border);background:transparent;text-align:left;color:var(--color-text)}.today-focus-row:hover,.today-focus-row:focus-visible{background:var(--color-surface)}.today-focus-index{font-size:13px;color:var(--color-primary)}.today-focus-title{font-size:16px;font-weight:600;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.today-focus-meta{font-size:13px;color:var(--color-muted);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.today-focus-empty{margin:10px 0 12px;font-size:15px;color:var(--color-muted)}.brief-details>summary{color:var(--color-primary)}.brief-highlights{display:grid;gap:8px;max-width:920px;margin:14px 0 10px;padding-left:20px;font-size:15px;line-height:1.6}.brief-highlights li{display:-webkit-box;-webkit-box-orient:vertical;line-clamp:2;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}.brief-full>summary{font-size:13px;color:var(--color-muted)}.brief-summary{display:grid;gap:9px;max-height:300px;overflow:auto;scrollbar-gutter:stable;margin:12px 0;padding:0 12px 0 22px;font-size:15px;line-height:1.7;overflow-wrap:anywhere}.brief-empty{font-size:14px;color:var(--color-muted)}.brief-toolbar,.range-fields{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:12px}.range-fields{padding:10px 0}.range-fields input,.range-fields select{padding:8px}.notice{font-size:14px;color:var(--color-warning);overflow-wrap:anywhere}.source-drawer{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--color-muted)}
-  .focus-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start}.desk-card{border:1px solid var(--color-border);border-radius:18px;background:var(--color-surface);padding:24px;min-width:0;box-shadow:var(--shadow-sm)}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:start;margin-bottom:15px}.card-head h2{font-size:22px;margin:7px 0;line-height:1.4}.card-head p{color:var(--color-muted);font-size:14px;margin:0}.text-button{border:0;padding:5px;white-space:nowrap;background:transparent}
-  .agenda-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;align-items:start;padding:18px 0;border-bottom:1px solid var(--color-border)}.agenda-row:last-child{border-bottom:0}.agenda-time{white-space:pre-line;font-size:13px;color:var(--color-muted);padding-top:5px}.agenda-body{display:grid;gap:8px;text-align:left;border:0;padding:0;background:transparent;min-width:0}.agenda-body strong{font-size:18px;line-height:1.55;overflow-wrap:anywhere;color:var(--color-text)}.agenda-body small{font-size:14px;line-height:1.6;color:var(--color-muted)}.row-action{min-width:33px;padding:6px}
-  .decision-list{display:grid;gap:14px}.decision-row{padding:17px;border:1px solid var(--color-border);border-radius:13px;background:var(--color-surface-muted);min-width:0}.decision-row h3{font-size:18px;line-height:1.6;margin:0 0 8px;overflow-wrap:anywhere}.decision-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}.primary{background:var(--color-primary);color:white;border-color:var(--color-primary)}.decision-message{padding:12px;margin-bottom:12px;border-radius:10px;background:var(--color-success-soft);font-size:14px;line-height:1.6}.decision-message>div{display:flex;gap:8px;margin-top:8px}.empty-state{padding:32px 8px;line-height:1.6}.empty-state strong{font-size:17px}.empty-state p{font-size:14px;color:var(--color-muted);margin:10px 0 16px}.more-link{display:block;width:100%;text-align:left;margin-top:15px;border:0;background:var(--color-primary-soft);font-size:14px;line-height:1.6}
+  .dashboard-c1{display:grid;gap:16px;padding-bottom:12px;min-width:0}button{cursor:pointer;font:inherit;font-size:14px;padding:9px 13px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface);color:var(--color-primary)}button:disabled{opacity:.5;cursor:default}summary{cursor:pointer;font-size:14px;line-height:1.7}p{line-height:1.65}
+  .dashboard-intro{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:28px;align-items:center;min-width:0;padding:2px 2px 6px}.intro-copy{min-width:0}.brief-eyebrow,.eyebrow{font-size:12px;font-weight:600;color:var(--color-muted);letter-spacing:.055em}.brief-eyebrow span{font-weight:400;letter-spacing:0}.intro-copy h1{font-size:clamp(24px,2vw,28px);font-weight:650;line-height:1.5;margin:12px 0 8px;letter-spacing:-.03em}.day-judgment{font-size:14px;margin:0;color:var(--color-muted)}
+  .quiet-note{position:relative;isolation:isolate;min-height:100px;padding:16px 20px;border:1px solid var(--color-border);border-radius:10px;background:linear-gradient(120deg,var(--color-surface-muted),var(--color-primary-soft));overflow:hidden}.quiet-note p{position:relative;z-index:1;max-width:215px;margin:0 0 7px;font-size:15px;line-height:1.8;font-weight:500}.quiet-note span{position:relative;z-index:1;font-size:11px;letter-spacing:.04em;color:var(--color-muted)}.quiet-note svg{position:absolute;right:0;bottom:0;width:210px;height:105px;color:var(--color-primary);z-index:0}
+  .brief-rail{border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);padding:12px 18px}.brief-details>summary{color:var(--color-primary);font-weight:550}.brief-highlights{display:grid;gap:8px;margin:14px 0 10px;padding-left:20px;font-size:14px;line-height:1.7}.brief-highlights li{overflow-wrap:anywhere}.brief-full>summary{font-size:13px;color:var(--color-muted)}.brief-summary{display:grid;gap:9px;max-height:300px;overflow:auto;scrollbar-gutter:stable;margin:12px 0;padding:0 12px 0 22px;font-size:15px;line-height:1.7;overflow-wrap:anywhere}.brief-empty{font-size:14px;color:var(--color-muted)}.brief-toolbar,.range-fields{display:flex;flex-wrap:wrap;align-items:center;gap:9px;margin-top:12px}.range-fields{padding:10px 0}.range-fields input,.range-fields select{padding:8px}.notice{font-size:14px;color:var(--color-warning);overflow-wrap:anywhere}.source-drawer{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;font-size:13px;color:var(--color-muted)}
+  .focus-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1.25fr) minmax(215px,.8fr);gap:16px;align-items:start}.desk-card{border:1px solid var(--color-border);border-radius:12px;background:var(--color-surface);padding:20px;min-width:0;box-shadow:var(--shadow-sm)}.card-head{display:flex;justify-content:space-between;gap:14px;align-items:start;margin-bottom:15px}.card-head h2{font-size:20px;margin:7px 0;line-height:1.4}.card-head p{color:var(--color-muted);font-size:14px;margin:0}.text-button{border:0;padding:5px;white-space:nowrap;background:transparent}
+  .agenda-row{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:12px;align-items:start;padding:16px 0;border-bottom:1px solid var(--color-border)}.agenda-row:last-child{border-bottom:0}.agenda-time{white-space:pre-line;font-size:13px;color:var(--color-muted);padding-top:5px}.agenda-body{display:grid;gap:8px;text-align:left;border:0;padding:0;background:transparent;min-width:0}.agenda-body strong{font-size:16px;line-height:1.55;overflow-wrap:anywhere;color:var(--color-text)}.agenda-body small{font-size:13px;line-height:1.6;color:var(--color-muted)}.row-action{min-width:33px;padding:6px}
+  .decision-list{display:grid;gap:14px}.decision-row{padding:14px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface-muted);min-width:0}.decision-row h3{font-size:16px;line-height:1.6;margin:0 0 8px;overflow-wrap:anywhere}.decision-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}.decision-actions>button{padding:8px 10px;font-size:13px}.primary{background:var(--color-primary);color:white;border-color:var(--color-primary)}.decision-message{padding:12px;margin-bottom:12px;border-radius:10px;background:var(--color-success-soft);font-size:14px;line-height:1.6}.decision-message>div{display:flex;gap:8px;margin-top:8px}.empty-state{padding:32px 8px;line-height:1.6}.empty-state strong{font-size:17px}.empty-state p{font-size:14px;color:var(--color-muted);margin:10px 0 16px}.more-link{display:block;width:100%;text-align:left;margin-top:15px;border:0;background:var(--color-primary-soft);font-size:14px;line-height:1.6}
   .attention-strip{display:flex;flex-wrap:wrap;gap:16px;align-items:center;padding:18px 22px;border:1px solid var(--color-border);border-radius:14px;background:var(--color-surface)}.attention-strip>div{flex:1 1 320px;min-width:0}.attention-strip strong{font-size:15px}.attention-strip p{margin:5px 0 0;font-size:14px;color:var(--color-muted);overflow-wrap:anywhere}.secretary-line{padding:4px 8px;color:var(--color-muted);min-width:0}.secretary-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:end;padding:16px 0}.secretary-controls label{display:grid;gap:8px;font-size:14px}.secretary-controls select{padding:9px}.secretary-line p{font-size:14px;overflow-wrap:anywhere}.module-error{display:flex;flex-wrap:wrap;gap:12px;align-items:center;background:var(--color-danger-soft);border-radius:12px;padding:14px;color:var(--color-danger);font-size:14px}
-  @container(max-width:850px){.focus-grid{grid-template-columns:1fr}.brief-hero{padding:20px}.desk-card{padding:20px}}@container(max-width:500px){.agenda-row{grid-template-columns:38px minmax(0,1fr) auto;gap:8px}.card-head h2{font-size:21px}.today-focus-row{grid-template-columns:26px minmax(0,1fr)}.today-focus-meta{grid-column:2;text-align:left}}
+
+  .dashboard-side{display:grid;gap:16px;min-width:0}.small-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}.small-card-head h2{font-size:16px;margin:0}.schedule-date{font-size:12px;color:var(--color-muted);background:var(--color-surface-muted);border-radius:5px;padding:7px 9px}.schedule-card .agenda-row{grid-template-columns:40px minmax(0,1fr);gap:8px;padding:12px 0}.schedule-card .agenda-body strong{font-size:14px;font-weight:550}.schedule-card .agenda-body small{font-size:12px}.schedule-item{display:grid;gap:6px;text-align:left;width:100%;padding:12px 0 12px 10px;border:0;border-left:2px solid var(--color-primary);border-radius:0;margin-top:14px;background:transparent}.schedule-item span{font-size:12px;color:var(--color-muted)}.schedule-item strong{font-size:14px;line-height:1.6;color:var(--color-text)}.secondary-empty{font-size:13px;color:var(--color-muted);line-height:1.8;margin:10px 0 0}
+  .material-row{display:flex;gap:10px;align-items:center;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--color-border);border-radius:0;text-align:left;background:transparent}.material-row:last-child{border-bottom:0}.file-icon{display:grid;place-items:center;width:31px;height:37px;border-radius:6px;background:var(--color-primary-soft);color:var(--color-primary);flex-shrink:0}.material-row>span:last-child{min-width:0;display:grid;gap:5px}.material-row strong{font-size:13px;font-weight:550;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.material-row small{font-size:11px;color:var(--color-muted)}
+  @container(max-width:1120px){.focus-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dashboard-side{grid-column:1/-1;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dashboard-intro{grid-template-columns:minmax(0,1fr) 270px}.quiet-note{padding:18px}}
+  @container(max-width:740px){.focus-grid{grid-template-columns:minmax(0,1fr)}.dashboard-intro{grid-template-columns:minmax(0,1fr)}.quiet-note{display:none}.desk-card{padding:18px}.intro-copy h1{font-size:24px}.card-head h2{font-size:20px}}
+  @container(max-width:500px){.dashboard-side{grid-template-columns:minmax(0,1fr)}.agenda-row{grid-template-columns:38px minmax(0,1fr) auto;gap:8px}}
 </style>
