@@ -110,7 +110,7 @@ pub(crate) async fn execute_focused_analysis(
         return Err(format!("分析运行 #{run_id} 失败：{error}"));
     }
     let snapshot = match with_db(state, |db| {
-        let mut snapshot = crate::ai::analysis_snapshot::build(
+        let mut snapshot = crate::ai::analysis_snapshot::build_for_round(
             db,
             "global_analysis",
             &date,
@@ -119,6 +119,7 @@ pub(crate) async fn execute_focused_analysis(
             today_start,
             today_end,
             "zh-CN",
+            &tickets,
         )?;
         if let Some(id) = inbox_id {
             let item = crate::db::inbox::InboxRepo::new(db.conn())
@@ -143,7 +144,7 @@ pub(crate) async fn execute_focused_analysis(
             snapshot.snapshot_hash =
                 crate::cognition::digest(&serde_json::to_string(&snapshot).unwrap_or_default());
         }
-        crate::ai::rounds::restrict(db, snapshot, tickets.clone())
+        Ok(snapshot)
     }) {
         Ok(value) => value,
         Err(error) => {
@@ -455,6 +456,12 @@ pub async fn start_workspace_work_draft(
         return Err(format!("项目整理 #{run_id} 失败：{error}"));
     }
     let snapshot = match with_db(&state, |db| {
+        let eligible_ids = crate::ai::rounds::eligible_workspaces(db, &tickets)?;
+        let selected_ids = workspace_ids
+            .iter()
+            .copied()
+            .filter(|id| eligible_ids.contains(id))
+            .collect::<Vec<_>>();
         let snapshot = crate::ai::analysis_snapshot::build_scoped(
             db,
             "work_draft",
@@ -464,7 +471,7 @@ pub async fn start_workspace_work_draft(
             today_start,
             today_end,
             "zh-CN",
-            Some(&workspace_ids),
+            Some(&selected_ids),
         )?;
         let snapshot = if let Some(id) = work_id {
             crate::ai::analysis_snapshot::focus_work(db, snapshot, id)?

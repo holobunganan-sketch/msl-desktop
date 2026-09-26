@@ -33,6 +33,22 @@ pub fn inbox_scope(conn: &Connection, inbox: i64) -> DbResult<String> {
         )
         .optional()?
         .flatten();
+    if work.is_none() {
+        let context: Option<(Option<String>, Option<i64>)> = conn
+            .query_row(
+                "SELECT entity_kind,entity_id FROM capture_context WHERE inbox_id=?1",
+                [inbox],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((Some(kind), Some(target))) = context {
+            if kind != "inbox" {
+                if let Some(scope) = entity_scope(conn, &kind, target)? {
+                    return Ok(scope);
+                }
+            }
+        }
+    }
     Ok(work
         .map(|w| format!("work:{w}"))
         .unwrap_or_else(|| format!("inbox:{inbox}")))
@@ -60,9 +76,21 @@ fn entity_scope(conn: &Connection, kind: &str, target: i64) -> DbResult<Option<S
         )
         .optional()?
         .flatten();
+    if work.is_none() {
+        let canonical = match table {
+            "tasks" => "task",
+            "waiting_items" => "waiting",
+            "calendar_events" => "calendar",
+            _ => kind,
+        };
+        let origin:Option<String>=conn.query_row("SELECT s.scope FROM ai_proposal_outcomes o JOIN secretary_proposal_scopes s ON s.proposal_id=o.proposal_id WHERE o.kind=?1 AND o.target_id=?2 AND s.scope NOT LIKE 'work:%' AND s.scope<>'loose' ORDER BY s.scope LIMIT 1",params![canonical,target],|r|r.get(0)).optional()?;
+        if let Some(origin) = origin {
+            return Ok(Some(origin));
+        }
+    }
     Ok(Some(
         work.map(|w| format!("work:{w}"))
-            .unwrap_or_else(|| "loose".into()),
+            .unwrap_or_else(|| format!("{table}:{target}")),
     ))
 }
 pub fn proposal_scopes(
@@ -95,7 +123,7 @@ pub fn proposal_scopes(
 }
 // Adopt old and newly synced opinions without rewriting their contents/status.
 fn adopt(conn: &Connection) -> DbResult<()> {
-    let mut stmt=conn.prepare("SELECT id,kind,target_id,work_id,source_refs_json,workspace_id FROM ai_proposals WHERE id NOT IN (SELECT proposal_id FROM secretary_proposal_scopes)")?;
+    let mut stmt=conn.prepare("SELECT id,kind,target_id,work_id,source_refs_json,workspace_id FROM ai_proposals WHERE id NOT IN (SELECT proposal_id FROM secretary_proposal_scopes) OR id IN (SELECT proposal_id FROM secretary_proposal_scopes WHERE scope='loose')")?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -130,6 +158,12 @@ fn adopt(conn: &Connection) -> DbResult<()> {
                 scopes.insert("loose".into());
             }
         }
+        if !scopes.contains("loose") {
+            conn.execute(
+                "DELETE FROM secretary_proposal_scopes WHERE proposal_id=?1 AND scope='loose'",
+                [p],
+            )?;
+        }
         for scope in scopes {
             conn.execute(
                 "INSERT OR IGNORE INTO secretary_proposal_scopes VALUES (?1,?2)",
@@ -160,29 +194,62 @@ fn fingerprint_with_expert_feedback(
         "calendar_events",
         "resume_points",
         "inbox_items",
+        "kol_notes",
     ];
     for table in tables {
-        let condition = if let Some(w) = work {
+        let mut condition = if let Some(w) = work {
             match table {
                 "works" => format!("id={w}"),
                 "inbox_items" => {
                     format!("id IN (SELECT inbox_id FROM capture_context WHERE work_id={w})")
                 }
+                "kol_notes" => continue,
                 _ => format!("work_id={w}"),
             }
         } else if let Some(inbox) = id(scope, "inbox:") {
-            if table != "inbox_items" {
-                continue;
+            if table == "inbox_items" {
+                format!("id={inbox}")
+            } else {
+                "0".into()
             }
-            format!("id={inbox}")
+        } else if let Some(target) = id(scope, &format!("{table}:")) {
+            format!("id={target}")
         } else if scope == "loose" {
             if !matches!(table, "tasks" | "waiting_items" | "calendar_events") {
                 continue;
             }
             "work_id IS NULL".into()
         } else {
-            continue;
+            if scope == "loose" || work.is_some() {
+                continue;
+            }
+            "0".into()
         };
+        if include_expert_feedback && work.is_none() && scope != "loose" {
+            let kind = match table {
+                "tasks" => "task",
+                "waiting_items" => "waiting",
+                "calendar_events" => "calendar",
+                "inbox_items" => "inbox",
+                _ => "",
+            };
+            let mut linked=conn.prepare("SELECT o.target_id FROM ai_proposal_outcomes o JOIN secretary_proposal_scopes s ON s.proposal_id=o.proposal_id WHERE s.scope=?1 AND o.kind=?2")?;
+            let ids = linked
+                .query_map(params![scope, kind], |r| r.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for target in ids {
+                condition.push_str(&format!(" OR id={target}"));
+            }
+            if table == "inbox_items" {
+                let mut captures=conn.prepare("SELECT inbox_id FROM capture_context WHERE work_id IS NULL AND entity_id IS NOT NULL")?;
+                for inbox in captures.query_map([], |r| r.get::<_, i64>(0))? {
+                    let inbox = inbox?;
+                    if inbox_scope(conn, inbox)? == scope {
+                        condition.push_str(&format!(" OR id={inbox}"));
+                    }
+                }
+            }
+        }
         let mut stmt = conn.prepare(&format!(
             "SELECT * FROM {table} WHERE {condition} ORDER BY id"
         ))?;
@@ -217,7 +284,10 @@ fn fingerprint_with_expert_feedback(
             }
             Ok(Value::Object(obj))
         })?;
-        data.push(json!({"table":table,"rows":rows.collect::<rusqlite::Result<Vec<_>>>()?}));
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        if condition != "0" {
+            data.push(json!({"table":table,"rows":rows}));
+        }
     }
     if include_expert_feedback && (work.is_some() || scope == "loose") {
         let condition = if let Some(w) = work {
@@ -283,11 +353,25 @@ fn ensure(conn: &Connection, scope: &str) -> DbResult<()> {
             [scope],
             |r| r.get(0),
         )?;
+        let legacy: Option<String> = conn
+            .query_row(
+                "SELECT baseline FROM secretary_rounds WHERE scope='loose'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let inherited = scope != "loose"
+            && !scope.starts_with("work:")
+            && !scope.starts_with("inbox:")
+            && legacy.is_some_and(|baseline| {
+                !baseline.is_empty()
+                    && fingerprint(conn, "loose").is_ok_and(|current| current == baseline)
+            });
         conn.execute(
             "INSERT INTO secretary_rounds(scope,baseline,last_run) VALUES (?1,?2,?3)",
             params![
                 scope,
-                if seen {
+                if seen || inherited {
                     fingerprint(conn, scope)?
                 } else {
                     String::new()
@@ -417,11 +501,30 @@ pub fn candidates(
             linked.iter().map(|w| format!("work:{w}")).collect()
         });
     }
-    let mut s=conn.prepare("SELECT 'work:'||id FROM works WHERE status<>'archived' UNION SELECT 'inbox:'||id FROM inbox_items WHERE processed_at IS NULL AND id NOT IN (SELECT inbox_id FROM capture_context WHERE work_id IS NOT NULL) UNION SELECT 'loose' WHERE EXISTS(SELECT 1 FROM tasks WHERE work_id IS NULL AND status<>'done') OR EXISTS(SELECT 1 FROM waiting_items WHERE work_id IS NULL AND status='open') OR EXISTS(SELECT 1 FROM calendar_events WHERE work_id IS NULL) OR EXISTS(SELECT 1 FROM kol_notes WHERE work_id IS NULL)")?;
+    let mut s=conn.prepare("SELECT 'work:'||id FROM works WHERE status<>'archived' UNION SELECT 'inbox:'||id FROM inbox_items WHERE processed_at IS NULL AND id NOT IN (SELECT inbox_id FROM capture_context WHERE work_id IS NOT NULL) UNION SELECT 'tasks:'||id FROM tasks WHERE work_id IS NULL AND status<>'done' UNION SELECT 'waiting_items:'||id FROM waiting_items WHERE work_id IS NULL AND status='open' UNION SELECT 'calendar_events:'||id FROM calendar_events WHERE work_id IS NULL UNION SELECT 'kol_notes:'||id FROM kol_notes WHERE work_id IS NULL")?;
     let scopes = s
-        .query_map([], |r| r.get(0))?
+        .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(scopes)
+    scopes
+        .into_iter()
+        .map(|s| {
+            if let Some(i) = id(&s, "inbox:") {
+                return inbox_scope(conn, i);
+            }
+            for (prefix, kind) in [
+                ("tasks:", "task"),
+                ("waiting_items:", "waiting"),
+                ("calendar_events:", "calendar"),
+                ("kol_notes:", "kol_note"),
+            ] {
+                if let Some(i) = id(&s, prefix) {
+                    return Ok(entity_scope(conn, kind, i)?.unwrap_or(s));
+                }
+            }
+            Ok(s)
+        })
+        .collect::<DbResult<BTreeSet<_>>>()
+        .map(|s| s.into_iter().collect())
 }
 pub fn reserve(db: &Database, run: i64, scopes: &[String]) -> DbResult<Vec<Ticket>> {
     let tx = crate::db::write_transaction(db.conn())?;
@@ -512,6 +615,28 @@ pub fn complete(db: &Database, scope: &str, expected_epoch: i64) -> DbResult<()>
 }
 
 /// Exclude held scopes from the model's input, including mixed/global cognition.
+pub fn eligible_workspaces(db: &Database, tickets: &[Ticket]) -> DbResult<Vec<i64>> {
+    let allowed = tickets
+        .iter()
+        .map(|t| t.scope.clone())
+        .collect::<BTreeSet<_>>();
+    let mut result = Vec::new();
+    for ws in crate::db::workspace::WorkspaceRepo::new(db.conn()).list()? {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT work_id FROM work_workspace_links WHERE workspace_id=?1")?;
+        let works = stmt
+            .query_map([ws.id], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if allowed.contains(&format!("workspace:{}", ws.id))
+            || (!works.is_empty() && works.iter().all(|w| allowed.contains(&format!("work:{w}"))))
+        {
+            result.push(ws.id);
+        }
+    }
+    Ok(result)
+}
+
 pub fn restrict(
     db: &Database,
     mut snapshot: super::analysis_snapshot::AnalysisSnapshot,
@@ -589,6 +714,8 @@ pub fn restrict(
             .and_then(|i| inbox_scope(db.conn(), i).ok())
             .is_some_and(|s| allowed.contains(&s))
     });
+    snapshot.user_directions =
+        super::analysis_snapshot::scoped_user_directions(db, Some(&allowed))?;
     snapshot.user_directions.retain(|v| {
         if let Some(w) = v["work_id"].as_i64() {
             return allowed.contains(&format!("work:{w}"));
@@ -616,7 +743,7 @@ pub fn restrict(
         }
         let mut stmt=db.conn().prepare("SELECT p.id,p.kind,p.title,p.status,p.payload_json FROM ai_proposals p JOIN secretary_proposal_scopes s ON s.proposal_id=p.id WHERE s.scope=?1 AND p.status IN ('pending','confirmed') ORDER BY p.id DESC LIMIT 30")?;
         let items=stmt.query_map([&t.scope],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"kind":r.get::<_,String>(1)?,"title":r.get::<_,String>(2)?,"status":r.get::<_,String>(3)?,"previous_arrangement":crate::cognition::bounded(&r.get::<_,String>(4)?,2000)})))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut stmt=db.conn().prepare("SELECT p.id,p.title,p.status,o.kind,o.target_id FROM ai_proposals p JOIN secretary_proposal_scopes s ON s.proposal_id=p.id LEFT JOIN ai_proposal_outcomes o ON o.proposal_id=p.id WHERE s.scope=?1 AND p.status IN ('resolved','deleted') ORDER BY p.id DESC LIMIT 200")?;
+        let mut stmt=db.conn().prepare("SELECT p.id,p.title,p.status,o.kind,o.target_id FROM ai_proposals p JOIN secretary_proposal_scopes s ON s.proposal_id=p.id LEFT JOIN ai_proposal_outcomes o ON o.proposal_id=p.id WHERE s.scope=?1 AND p.status IN ('resolved','deleted','completed','rejected') ORDER BY p.id DESC LIMIT 200")?;
         let closed=stmt.query_map([&t.scope],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"title":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"kind":r.get::<_,Option<String>>(3)?,"target_id":r.get::<_,Option<i64>>(4)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
         snapshot
             .round_history
@@ -641,6 +768,254 @@ pub fn restrict(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn adopted_unbound_task_keeps_capture_chain_and_progress_unlocks_it() {
+        let db = Database::open_in_memory().unwrap();
+        let i = crate::db::inbox::InboxRepo::new(db.conn())
+            .insert("Follow this matter")
+            .unwrap();
+        let r = run(&db);
+        let scope = format!("inbox:{}", i.id);
+        let t = reserve(&db, r, &[scope.clone()]).unwrap();
+        let s = super::super::analysis_snapshot::build_for_round(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+            &t,
+        )
+        .unwrap();
+        let output=json!({"proposals":[{"kind":"task","operation":"create","title":"Follow matter","payload":{},"source_refs":[{"source_type":"inbox","entity_id":i.id}]}]}).to_string();
+        super::super::analysis::apply_output(&db, r, &s, &output).unwrap();
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .get(1)
+            .unwrap()
+            .unwrap();
+        let result = crate::ai::apply::confirm_proposal(&db, p.id, p.updated_at, None).unwrap();
+        assert_eq!(
+            entity_scope(db.conn(), "task", result.target_id).unwrap(),
+            Some(scope.clone())
+        );
+        // Historical inbox baselines predate inclusion of their adopted task.
+        db.conn()
+            .execute(
+                "UPDATE secretary_rounds SET baseline=?1 WHERE scope=?2",
+                params![t[0].fingerprint, scope],
+            )
+            .unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "waiting_progress");
+        db.conn()
+            .execute(
+                "UPDATE tasks SET notes='Actual progress' WHERE id=?1",
+                [result.target_id],
+            )
+            .unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "ready");
+    }
+    #[test]
+    fn unchanged_legacy_loose_baseline_stays_quiet_after_split() {
+        let db = Database::open_in_memory().unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Legacy matter", "normal", None, None)
+            .unwrap();
+        let baseline = fingerprint(db.conn(), "loose").unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO secretary_rounds(scope,baseline) VALUES('loose',?1)",
+                [baseline],
+            )
+            .unwrap();
+        assert_eq!(
+            status(&db, &format!("tasks:{}", task.id)).unwrap().state,
+            "waiting_progress"
+        );
+    }
+    #[test]
+    fn legacy_loose_opinion_and_related_capture_follow_only_their_matter() {
+        let db = Database::open_in_memory().unwrap();
+        let a = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "A", "normal", None, None)
+            .unwrap();
+        let b = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "B", "normal", None, None)
+            .unwrap();
+        let r = run(&db);
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                r,
+                "task",
+                "update",
+                Some(a.id),
+                None,
+                None,
+                "legacy",
+                "A change",
+                "{}",
+                "",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO secretary_proposal_scopes VALUES (?1,'loose')",
+                [p.id],
+            )
+            .unwrap();
+        let capture =
+            crate::db::flow::capture(db.conn(), "Follow A", None, Some("task"), Some(a.id))
+                .unwrap();
+        assert_eq!(
+            inbox_scope(db.conn(), capture.id).unwrap(),
+            format!("tasks:{}", a.id)
+        );
+        assert_eq!(
+            status(&db, &format!("tasks:{}", a.id)).unwrap().state,
+            "waiting_review"
+        );
+        assert_eq!(
+            status(&db, &format!("tasks:{}", b.id)).unwrap().state,
+            "ready"
+        );
+    }
+    #[test]
+    fn completed_round_history_prevents_recreating_same_closed_advice() {
+        let db = Database::open_in_memory().unwrap();
+        let w = project(&db);
+        let p = opinion(&db, w, run(&db));
+        let s = status(&db, &format!("work:{w}")).unwrap();
+        complete(&db, &s.scope, s.epoch).unwrap();
+        let r = run(&db);
+        let t = reserve(&db, r, &[s.scope]).unwrap();
+        let s = super::super::analysis_snapshot::build_for_round(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+            &t,
+        )
+        .unwrap();
+        assert!(s.round_history.iter().any(|v| v["closed_opinions"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|x| x["id"] == p.id))));
+        let output=json!({"proposals":[{"kind":"task","operation":"create","work_id":w,"title":"Synthetic action","payload":{}}]}).to_string();
+        assert_eq!(
+            super::super::analysis::apply_output(&db, r, &s, &output).unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn independent_unbound_tasks_have_independent_rounds() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn().execute("INSERT INTO tasks(title,status,priority,created_at,updated_at) VALUES('A','todo','normal',1,1),('B','todo','normal',1,1)", []).unwrap();
+        let scopes = candidates(db.conn(), None, None, None).unwrap();
+        assert_eq!(scopes.len(), 2);
+        let r = run(&db);
+        let tickets = reserve(&db, r, &[scopes[0].clone()]).unwrap();
+        remember(db.conn(), r, &tickets).unwrap();
+        assert_eq!(status(&db, &scopes[1]).unwrap().state, "ready");
+    }
+    #[test]
+    fn scoped_directions_survive_unrelated_capture_noise_and_coded_rejection() {
+        let db = Database::open_in_memory().unwrap();
+        let w = project(&db);
+        crate::db::flow::capture(
+            db.conn(),
+            "Keep original objective",
+            Some(w),
+            Some("work"),
+            Some(w),
+        )
+        .unwrap();
+        let p = opinion(&db, w, run(&db));
+        super::super::apply::reject_proposal(&db, p.id, p.updated_at, Some("not_now")).unwrap();
+        for _ in 0..125 {
+            crate::db::flow::capture(db.conn(), "Unrelated", None, None, None).unwrap();
+        }
+        let s = super::super::analysis_snapshot::build(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+        )
+        .unwrap();
+        let s = restrict(
+            &db,
+            s,
+            vec![Ticket {
+                scope: format!("work:{w}"),
+                epoch: 0,
+                fingerprint: String::new(),
+            }],
+        )
+        .unwrap();
+        assert!(s
+            .user_directions
+            .iter()
+            .any(|v| v["content"] == "Keep original objective"));
+        assert!(s
+            .user_directions
+            .iter()
+            .any(|v| v["reason_code"] == "not_now"));
+    }
+    #[test]
+    fn inbox_can_propose_association_to_held_project_and_empty_output_remains_actionable() {
+        let db = Database::open_in_memory().unwrap();
+        let w = project(&db);
+        opinion(&db, w, run(&db));
+        let i = crate::db::inbox::InboxRepo::new(db.conn())
+            .insert("New project material")
+            .unwrap();
+        for empty in [true, false] {
+            let r = run(&db);
+            let tickets = reserve(&db, r, &[format!("inbox:{}", i.id)]).unwrap();
+            assert_eq!(tickets.len(), 1);
+            let s = super::super::analysis_snapshot::build(
+                &db,
+                "global_analysis",
+                "2026-09-26",
+                0,
+                i64::MAX,
+                0,
+                i64::MAX,
+                "zh-CN",
+            )
+            .unwrap();
+            let s = restrict(&db, s, tickets).unwrap();
+            let proposals = if empty {
+                json!([])
+            } else {
+                json!([{"kind":"task","operation":"create","work_id":w,"title":"Associate new material","payload":{},"source_refs":[{"source_type":"inbox","entity_id":i.id}]}])
+            };
+            assert_eq!(
+                super::super::analysis::apply_output(
+                    &db,
+                    r,
+                    &s,
+                    &json!({"summary":"Reviewed","proposals":proposals}).to_string()
+                )
+                .unwrap(),
+                if empty { 0 } else { 1 }
+            );
+        }
+        assert_eq!(
+            status(&db, &format!("work:{w}")).unwrap().state,
+            "waiting_review"
+        );
+    }
     fn project(db: &Database) -> i64 {
         crate::db::work::WorkRepo::new(db.conn())
             .insert("Synthetic project", "active")

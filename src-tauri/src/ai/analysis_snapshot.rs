@@ -48,8 +48,8 @@ pub struct AnalysisSnapshot {
     /// guidance, not a request to recreate completed actions.
     #[serde(default)]
     pub user_directions: Vec<serde_json::Value>,
-    /// Lightweight catalog for classifying loose information. Held projects
-    /// remain ineligible for new proposals in the current secretary round.
+    /// Lightweight catalog for classifying loose information. Captures may
+    /// propose an association without restarting held project insight rounds.
     #[serde(default)]
     pub project_catalog: Vec<serde_json::Value>,
     #[serde(default)]
@@ -80,13 +80,51 @@ fn hash_snapshot(value: &serde_json::Value) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn select_documents(mut docs: Vec<DocumentIndex>) -> (Vec<DocumentIndex>, u32) {
+fn read_bounded_cache(path: &std::path::Path, chars: usize) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(((chars + 1) * 4) as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub fn build_for_round(
+    db: &Database,
+    task_kind: &str,
+    date: &str,
+    period_start: i64,
+    period_end: i64,
+    today_start: i64,
+    today_end: i64,
+    locale: &str,
+    tickets: &[super::rounds::Ticket],
+) -> DbResult<AnalysisSnapshot> {
+    let ids = super::rounds::eligible_workspaces(db, tickets)?;
+    let snapshot = build_scoped(
+        db,
+        task_kind,
+        date,
+        period_start,
+        period_end,
+        today_start,
+        today_end,
+        locale,
+        Some(&ids),
+    )?;
+    super::rounds::restrict(db, snapshot, tickets.to_vec())
+}
+
+fn select_documents(
+    mut docs: Vec<DocumentIndex>,
+    start: i64,
+    end: i64,
+) -> (Vec<DocumentIndex>, u32) {
     docs.retain(|doc| doc.extract_status == "ready");
     docs.sort_by(|left, right| {
-        right
-            .summary
-            .is_some()
-            .cmp(&left.summary.is_some())
+        (right.modified_at >= start && right.modified_at <= end)
+            .cmp(&(left.modified_at >= start && left.modified_at <= end))
+            .then_with(|| right.summary.is_some().cmp(&left.summary.is_some()))
             .then_with(|| {
                 right
                     .last_extracted_at
@@ -184,11 +222,18 @@ fn expand_global_workbench_sources(db: &Database, brief: &mut BriefSnapshot) -> 
 }
 
 pub(crate) fn user_directions(db: &Database) -> DbResult<Vec<serde_json::Value>> {
+    scoped_user_directions(db, None)
+}
+
+pub(crate) fn scoped_user_directions(
+    db: &Database,
+    scopes: Option<&std::collections::BTreeSet<String>>,
+) -> DbResult<Vec<serde_json::Value>> {
     let mut result = Vec::new();
     let mut captures = db.conn().prepare(
         "SELECT i.id,c.work_id,c.entity_kind,c.entity_id,i.content,i.created_at,i.processed_at \
          FROM capture_context c JOIN inbox_items i ON i.id=c.inbox_id \
-         ORDER BY i.id DESC LIMIT 120",
+         ORDER BY i.id DESC",
     )?;
     result.extend(
         captures
@@ -209,7 +254,7 @@ pub(crate) fn user_directions(db: &Database) -> DbResult<Vec<serde_json::Value>>
     let mut decisions = db.conn().prepare(
         "SELECT d.id,p.work_id,p.title,d.reason_code,d.note,d.created_at \
          FROM review_decisions d JOIN ai_proposals p ON p.id=d.proposal_id \
-         WHERE length(trim(d.note))>0 ORDER BY d.id DESC LIMIT 80",
+         ORDER BY d.id DESC",
     )?;
     result.extend(
         decisions
@@ -230,7 +275,7 @@ pub(crate) fn user_directions(db: &Database) -> DbResult<Vec<serde_json::Value>>
         "SELECT i.id,k.work_id,i.expert_id,i.title,i.status,i.review_note,i.updated_at \
          FROM kol_insights i LEFT JOIN kol_projects k ON k.expert_id=i.expert_id \
          WHERE i.status IN ('reviewed','revised','dismissed') \
-         ORDER BY i.updated_at DESC,i.id DESC LIMIT 80",
+         ORDER BY i.updated_at DESC,i.id DESC",
     )?;
     result.extend(
         insights
@@ -248,6 +293,29 @@ pub(crate) fn user_directions(db: &Database) -> DbResult<Vec<serde_json::Value>>
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
+    if let Some(scopes) = scopes {
+        result.retain(|v| {
+            if let Some(w) = v["work_id"].as_i64() {
+                return scopes.contains(&format!("work:{w}"));
+            }
+            if let Some(i) = v["inbox_id"].as_i64() {
+                return super::rounds::inbox_scope(db.conn(), i).is_ok_and(|s| scopes.contains(&s));
+            }
+            scopes.contains("loose")
+        });
+    }
+    // Keep durable corrections ahead of captures, with independent per-project
+    // quotas so activity elsewhere cannot evict an effective direction.
+    result.sort_by_key(|v| v["type"] == "user_capture");
+    let mut counts = std::collections::BTreeMap::new();
+    result.retain(|v| {
+        let count = counts
+            .entry((v["work_id"].to_string(), v["type"].to_string()))
+            .or_insert(0usize);
+        *count += 1;
+        *count <= 120
+    });
+    result.truncate(280);
     Ok(result)
 }
 
@@ -370,6 +438,7 @@ pub fn build_scoped(
         });
     }
     let workspace_ids = crate::db::workspace::WorkspaceRepo::new(db.conn()).list()?;
+    let mut queues = Vec::new();
     for workspace in workspace_ids {
         if !workspace.enabled {
             continue;
@@ -385,76 +454,109 @@ pub fn build_scoped(
             content_hash: None,
             timestamp: None,
         });
-        let (workspace_documents, omitted) =
-            select_documents(DocumentIndexRepo::new(db.conn()).list(workspace.id)?);
+        let (workspace_documents, omitted) = select_documents(
+            DocumentIndexRepo::new(db.conn()).list(workspace.id)?,
+            period_start,
+            period_end,
+        );
         if omitted > 0 {
             *truncated.entry("document_metadata".into()).or_insert(0) += omitted;
         }
-        for doc in workspace_documents {
-            let remaining = MAX_TOTAL_CHARS.saturating_sub(total_chars);
-            let budget = remaining.min(MAX_FILE_CHARS);
-            let mut selected_text = None;
-            let mut selected_chars = 0;
-            let mut was_truncated = false;
-            let detailed = matches!(
-                task_kind,
-                "work_draft" | "workspace_analysis" | "monthly_report" | "weekly_report"
-            );
-            let changed_in_period =
-                doc.modified_at >= period_start && doc.modified_at <= period_end;
-            let file_limit = if detailed { MAX_FILES } else { 4 };
-            let budget = if detailed {
-                budget
-            } else {
-                budget
-                    .min(4_000)
-                    .min(12_000usize.saturating_sub(total_chars))
-            };
-            if (detailed || changed_in_period) && selected_files < file_limit && budget > 0 {
-                if let Some(rel) = doc.cache_rel_path.as_deref() {
-                    if let Ok(path) = crate::storage::paths::existing_cache_path(rel) {
-                        if let Ok(text) = std::fs::read_to_string(path) {
-                            let chars: Vec<char> = text.chars().collect();
-                            let take = chars.len().min(budget);
-                            was_truncated = take < chars.len();
-                            let value: String = chars.into_iter().take(take).collect();
-                            selected_chars = value.chars().count();
-                            total_chars += selected_chars;
-                            selected_files += 1;
-                            selected_text = Some(value);
-                            if was_truncated {
-                                *truncated.entry("document_text".into()).or_insert(0) += 1;
-                            }
+        queues.push(workspace_documents);
+    }
+    // Interleave projects before consuming either the file or character budget.
+    // Within each project, changed documents precede unchanged background.
+    for docs in &mut queues {
+        docs.sort_by_key(|d| !(d.modified_at >= period_start && d.modified_at <= period_end));
+    }
+    let mut ordered = Vec::new();
+    let max_len = queues.iter().map(Vec::len).max().unwrap_or(0);
+    for position in 0..max_len {
+        for docs in &queues {
+            if let Some(doc) = docs.get(position) {
+                ordered.push(doc.clone());
+            }
+        }
+    }
+    let detailed = matches!(
+        task_kind,
+        "work_draft" | "workspace_analysis" | "monthly_report" | "weekly_report"
+    );
+    let file_limit = if detailed { MAX_FILES } else { 4 };
+    let eligible_count = ordered
+        .iter()
+        .filter(|d| detailed || (d.modified_at >= period_start && d.modified_at <= period_end))
+        .count()
+        .min(file_limit)
+        .max(1);
+    let fair_budget = if detailed { MAX_TOTAL_CHARS } else { 12_000 } / eligible_count;
+    for doc in ordered {
+        let remaining = MAX_TOTAL_CHARS.saturating_sub(total_chars);
+        let budget = remaining.min(MAX_FILE_CHARS).min(fair_budget);
+        let mut selected_text = None;
+        let mut selected_chars = 0;
+        let mut was_truncated = false;
+        let detailed = matches!(
+            task_kind,
+            "work_draft" | "workspace_analysis" | "monthly_report" | "weekly_report"
+        );
+        let changed_in_period = doc.modified_at >= period_start && doc.modified_at <= period_end;
+        let file_limit = if detailed { MAX_FILES } else { 4 };
+        let budget = if detailed {
+            budget
+        } else {
+            budget
+                .min(4_000)
+                .min(12_000usize.saturating_sub(total_chars))
+        };
+        if (detailed || changed_in_period) && selected_files < file_limit && budget > 0 {
+            if let Some(rel) = doc.cache_rel_path.as_deref() {
+                if let Ok(path) = crate::storage::paths::existing_cache_path(rel) {
+                    if let Ok(text) = read_bounded_cache(&path, budget) {
+                        let chars: Vec<char> = text.chars().collect();
+                        let take = chars.len().min(budget);
+                        was_truncated = take < chars.len();
+                        let value: String = chars.into_iter().take(take).collect();
+                        selected_chars = value.chars().count();
+                        total_chars += selected_chars;
+                        selected_files += 1;
+                        selected_text = Some(value);
+                        if was_truncated {
+                            *truncated.entry("document_text".into()).or_insert(0) += 1;
                         }
                     }
                 }
             }
-            let source_ref = AnalysisSourceRef {
-                source_type: "document".into(),
-                entity_id: Some(doc.id),
-                workspace_id: Some(doc.workspace_id),
-                relative_path: Some(doc.relative_path.clone()),
-                content_hash: doc.content_hash.clone(),
-                timestamp: doc.last_extracted_at,
-            };
-            source_refs.push(source_ref.clone());
-            documents.push(DocumentEvidence {
-                workspace_id: doc.workspace_id,
-                document_id: doc.id,
-                relative_path: doc.relative_path,
-                extension: doc.extension,
-                content_hash: doc.content_hash.clone(),
-                summary: if doc.summary_hash == doc.content_hash {
-                    doc.summary.map(|s| crate::cognition::bounded(&s, 360))
-                } else {
-                    None
-                },
-                selected_text,
-                selected_chars,
-                truncated: was_truncated,
-                source_ref,
-            });
         }
+        if selected_text.is_none() && (detailed || changed_in_period) {
+            was_truncated = true;
+            *truncated.entry("document_unread".into()).or_insert(0) += 1;
+        }
+        let source_ref = AnalysisSourceRef {
+            source_type: "document".into(),
+            entity_id: Some(doc.id),
+            workspace_id: Some(doc.workspace_id),
+            relative_path: Some(doc.relative_path.clone()),
+            content_hash: doc.content_hash.clone(),
+            timestamp: doc.last_extracted_at,
+        };
+        source_refs.push(source_ref.clone());
+        documents.push(DocumentEvidence {
+            workspace_id: doc.workspace_id,
+            document_id: doc.id,
+            relative_path: doc.relative_path,
+            extension: doc.extension,
+            content_hash: doc.content_hash.clone(),
+            summary: if doc.summary_hash == doc.content_hash {
+                doc.summary.map(|s| crate::cognition::bounded(&s, 360))
+            } else {
+                None
+            },
+            selected_text,
+            selected_chars,
+            truncated: was_truncated,
+            source_ref,
+        });
     }
     let source_counts = serde_json::json!({
         "brief": brief.source_counts.clone(),
@@ -626,24 +728,12 @@ pub fn focus_work(
     });
     let mut total = 0usize;
     for (position, doc) in snapshot.documents.iter_mut().enumerate() {
-        doc.selected_text = None;
-        doc.selected_chars = 0;
-        doc.truncated = false;
         if position >= MAX_FILES || total >= MAX_TOTAL_CHARS {
             continue;
         }
-        let rel: Option<String> = db.conn().query_row(
-            "SELECT cache_rel_path FROM document_index WHERE id=?1 AND workspace_id=?2",
-            rusqlite::params![doc.document_id, doc.workspace_id],
-            |r| r.get(0),
-        )?;
-        if let Some(text) = rel
-            .as_deref()
-            .and_then(|rel| crate::storage::paths::existing_cache_path(rel).ok())
-            .and_then(|path| std::fs::read_to_string(path).ok())
-        {
+        if let Some(text) = doc.selected_text.take() {
             let budget = MAX_FILE_CHARS.min(MAX_TOTAL_CHARS - total);
-            doc.truncated = text.chars().count() > budget;
+            doc.truncated |= text.chars().count() > budget;
             let excerpt = crate::cognition::task_excerpt(&text, &query, budget);
             doc.selected_chars = excerpt.chars().count();
             total += doc.selected_chars;
@@ -681,6 +771,142 @@ pub fn focus_workspace(mut snapshot: AnalysisSnapshot, workspace_id: i64) -> Ana
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changed_source_precedes_old_summaries_at_metadata_limit() {
+        let db = Database::open_in_memory().unwrap();
+        let ws = crate::db::workspace::WorkspaceRepo::new(db.conn())
+            .insert("Synthetic", "C:/synthetic")
+            .unwrap();
+        for n in 0..101 {
+            DocumentIndexRepo::new(db.conn())
+                .upsert(
+                    ws.id,
+                    &format!("C:/synthetic/{n}.txt"),
+                    &format!("{n}.txt"),
+                    "txt",
+                    10,
+                    if n == 100 { 10 } else { 1 },
+                    Some("hash"),
+                    "ready",
+                    10,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        db.conn()
+            .execute(
+                "UPDATE document_index SET summary='Older summary' WHERE modified_at=1",
+                [],
+            )
+            .unwrap();
+        let s = build(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            5,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(s.documents.iter().any(|d| d.relative_path == "100.txt"));
+    }
+    #[test]
+    fn eligible_later_workspace_receives_document_budget() {
+        use crate::db::workspace::WorkspaceRepo;
+        let root = std::env::temp_dir().join(format!("msl-budget-{}", uuid::Uuid::new_v4()));
+        let _guard = crate::storage::paths::LocalAppDataTestGuard::set(&root);
+        let db = Database::open_in_memory().unwrap();
+        let a = WorkspaceRepo::new(db.conn())
+            .insert("held", "C:/synthetic/a")
+            .unwrap();
+        let b = WorkspaceRepo::new(db.conn())
+            .insert("eligible", "C:/synthetic/b")
+            .unwrap();
+        let c = WorkspaceRepo::new(db.conn())
+            .insert("third", "C:/synthetic/c")
+            .unwrap();
+        let d = WorkspaceRepo::new(db.conn())
+            .insert("fourth", "C:/synthetic/d")
+            .unwrap();
+        for ws in [a.id, b.id, c.id, d.id] {
+            for n in 0..5 {
+                let rel = format!("extracted/{ws}-{n}.txt");
+                crate::storage::paths::write_cache_atomically(
+                    &rel,
+                    "Evidence ".repeat(2000).as_bytes(),
+                )
+                .unwrap();
+                DocumentIndexRepo::new(db.conn())
+                    .upsert(
+                        ws,
+                        &format!("C:/synthetic/{ws}/{n}.txt"),
+                        &format!("{n}.txt"),
+                        "txt",
+                        18000,
+                        10,
+                        Some("hash"),
+                        "ready",
+                        18000,
+                        Some(&rel),
+                        None,
+                        None,
+                    )
+                    .unwrap();
+            }
+        }
+        let s = build(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(
+            s.documents
+                .iter()
+                .any(|d| d.workspace_id == b.id && d.selected_chars > 0),
+            "Each eligible workspace receives a share of the budget"
+        );
+        assert!(s.truncated.get("document_unread").copied().unwrap_or(0) > 0);
+        assert!(s
+            .documents
+            .iter()
+            .any(|doc| doc.workspace_id == d.id && doc.selected_chars > 0));
+        let tickets = vec![super::super::rounds::Ticket {
+            scope: format!("workspace:{}", b.id),
+            epoch: 0,
+            fingerprint: String::new(),
+        }];
+        let scoped = build_for_round(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+            &tickets,
+        )
+        .unwrap();
+        assert!(scoped.documents.iter().all(|doc| doc.workspace_id == b.id));
+        assert!(
+            scoped
+                .documents
+                .iter()
+                .filter(|doc| doc.selected_chars > 0)
+                .count()
+                >= 3
+        );
+    }
     use super::*;
     use crate::db::calendar::CalendarRepo;
     use crate::db::task::TaskRepo;
