@@ -113,6 +113,20 @@ pub fn proposal_scopes(
         for r in refs {
             if let (Some(kind), Some(target)) = (r["source_type"].as_str(), r["entity_id"].as_i64())
             {
+                let workspace = match kind {
+                    "workspace" => Some(target),
+                    "document" => conn
+                        .query_row(
+                            "SELECT workspace_id FROM document_index WHERE id=?1",
+                            [target],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()?,
+                    _ => None,
+                };
+                if let Some(workspace) = workspace {
+                    scopes.extend(candidates(conn, None, None, Some(workspace))?);
+                }
                 if let Some(s) = entity_scope(conn, kind, target)? {
                     scopes.insert(s);
                 }
@@ -842,6 +856,58 @@ pub fn restrict(
 mod tests {
     use super::*;
     #[test]
+    fn source_requirement_preserves_workspace_document_work_drafts() {
+        for kind in ["workspace", "document"] {
+            let db = Database::open_in_memory().unwrap();
+            let ws = crate::db::workspace::WorkspaceRepo::new(db.conn())
+                .insert("Synthetic", "C:/synthetic")
+                .unwrap();
+            crate::db::documents::DocumentIndexRepo::new(db.conn())
+                .upsert(
+                    ws.id,
+                    "C:/synthetic/note.txt",
+                    "note.txt",
+                    "txt",
+                    10,
+                    1,
+                    Some("hash"),
+                    "ready",
+                    10,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            let r = run(&db);
+            let t = reserve(&db, r, &[format!("workspace:{}", ws.id)]).unwrap();
+            let s = super::super::analysis_snapshot::build_for_round(
+                &db,
+                "work_draft",
+                "2026-09-26",
+                0,
+                i64::MAX,
+                0,
+                i64::MAX,
+                "zh-CN",
+                &t,
+            )
+            .unwrap();
+            let target = if kind == "workspace" {
+                ws.id
+            } else {
+                crate::db::documents::DocumentIndexRepo::new(db.conn())
+                    .list(ws.id)
+                    .unwrap()[0]
+                    .id
+            };
+            let output=json!({"proposals":[{"kind":"work","operation":"create","title":"New grounded project","payload":{},"source_refs":[{"source_type":kind,"entity_id":target}]}]}).to_string();
+            assert_eq!(
+                super::super::analysis::apply_output(&db, r, &s, &output).unwrap(),
+                1
+            );
+        }
+    }
+    #[test]
     fn review_fixes_insight_citation_uses_independent_note_chain() {
         let db = Database::open_in_memory().unwrap();
         db.conn().execute("INSERT INTO kol_experts(name,institution,created_at,updated_at) VALUES('Expert','Clinic',1,1)",[]).unwrap();
@@ -965,60 +1031,76 @@ mod tests {
     #[test]
     fn review_fixes_same_title_distinct_inbox_chain_is_allowed() {
         for closed_status in ["completed", "resolved", "deleted"] {
-            for same in [false, true] {
-                let db = Database::open_in_memory().unwrap();
-                let a = crate::db::inbox::InboxRepo::new(db.conn())
-                    .insert("First matter")
-                    .unwrap();
-                let b = crate::db::inbox::InboxRepo::new(db.conn())
-                    .insert("Second matter")
-                    .unwrap();
-                let p = crate::db::ai::ProposalRepo::new(db.conn())
-                    .upsert_pending(
-                        run(&db),
-                        "task",
-                        "create",
-                        None,
-                        None,
-                        None,
-                        "old",
-                        "Follow up",
-                        "{}",
-                        "",
-                        &json!([{"source_type":"inbox","entity_id":a.id}]).to_string(),
-                        None,
+            for grounded in [true, false] {
+                for same in [false, true] {
+                    let db = Database::open_in_memory().unwrap();
+                    let a = crate::db::inbox::InboxRepo::new(db.conn())
+                        .insert("First matter")
+                        .unwrap();
+                    let b = crate::db::inbox::InboxRepo::new(db.conn())
+                        .insert("Second matter")
+                        .unwrap();
+                    let p = crate::db::ai::ProposalRepo::new(db.conn())
+                        .upsert_pending(
+                            run(&db),
+                            "task",
+                            "create",
+                            None,
+                            None,
+                            None,
+                            "old",
+                            "Follow up",
+                            "{}",
+                            "",
+                            &json!([{"source_type":"inbox","entity_id":a.id}]).to_string(),
+                            None,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    let first = format!("inbox:{}", a.id);
+                    let state = status(&db, &first).unwrap();
+                    complete(&db, &first, state.epoch).unwrap();
+                    db.conn()
+                        .execute(
+                            "UPDATE ai_proposals SET status=?1 WHERE id=?2",
+                            params![closed_status, p.id],
+                        )
+                        .unwrap();
+                    let source = if same { a.id } else { b.id };
+                    let r = run(&db);
+                    let t = reserve(&db, r, &[format!("inbox:{source}")]).unwrap();
+                    let s = super::super::analysis_snapshot::build_for_round(
+                        &db,
+                        "global_analysis",
+                        "2026-09-26",
+                        0,
+                        i64::MAX,
+                        0,
+                        i64::MAX,
+                        "zh-CN",
+                        &t,
                     )
-                    .unwrap()
                     .unwrap();
-                let first = format!("inbox:{}", a.id);
-                let state = status(&db, &first).unwrap();
-                complete(&db, &first, state.epoch).unwrap();
-                db.conn()
-                    .execute(
-                        "UPDATE ai_proposals SET status=?1 WHERE id=?2",
-                        params![closed_status, p.id],
-                    )
-                    .unwrap();
-                let source = if same { a.id } else { b.id };
-                let r = run(&db);
-                let t = reserve(&db, r, &[format!("inbox:{source}")]).unwrap();
-                let s = super::super::analysis_snapshot::build_for_round(
-                    &db,
-                    "global_analysis",
-                    "2026-09-26",
-                    0,
-                    i64::MAX,
-                    0,
-                    i64::MAX,
-                    "zh-CN",
-                    &t,
-                )
-                .unwrap();
-                let output=json!({"proposals":[{"kind":"task","operation":"create","title":p.title,"payload":{},"source_refs":[{"source_type":"inbox","entity_id":source}]}]}).to_string();
-                assert_eq!(
-                    super::super::analysis::apply_output(&db, r, &s, &output).unwrap(),
-                    if same { 0 } else { 1 }
-                );
+                    let refs = if grounded {
+                        json!([{"source_type":"inbox","entity_id":source}])
+                    } else {
+                        json!([])
+                    };
+                    let output=json!({"proposals":[{"kind":"task","operation":"create","title":p.title,"payload":{},"source_refs":refs}]}).to_string();
+                    let result = super::super::analysis::apply_output(&db, r, &s, &output);
+                    if grounded {
+                        assert_eq!(result.unwrap(), if same { 0 } else { 1 });
+                    } else {
+                        assert!(
+                            result.is_err(),
+                            "Ungrounded output must fail instead of acknowledging a round"
+                        );
+                        assert_eq!(
+                            status(&db, &format!("inbox:{source}")).unwrap().state,
+                            "ready"
+                        );
+                    }
+                }
             }
         }
     }
