@@ -53,17 +53,21 @@ pub(crate) async fn execute_report(
             return Err(format!("报告 #{report_id} 生成失败：{error}"));
         }
     };
-    let key = match crate::ai::provider::get_api_key(&resolved.connection.credential_ref) {
-        Ok(Some(value)) => value,
-        Ok(None) => {
-            let message = format!("{task_kind} 模型未配置 API Key");
-            mark_failed(state, report_id, "missing_api_key", &message);
-            return Err(format!("报告 #{report_id} 生成失败：{message}"));
-        }
-        Err(error) => {
-            let message = error.to_string();
-            mark_failed(state, report_id, "credential_failed", &message);
-            return Err(format!("报告 #{report_id} 生成失败：{message}"));
+    let key = if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") {
+        "isolated-synthetic-key".to_string()
+    } else {
+        match crate::ai::provider::get_api_key(&resolved.connection.credential_ref) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
+                let message = format!("{task_kind} 模型未配置 API Key");
+                mark_failed(state, report_id, "missing_api_key", &message);
+                return Err(format!("报告 #{report_id} 生成失败：{message}"));
+            }
+            Err(error) => {
+                let message = error.to_string();
+                mark_failed(state, report_id, "credential_failed", &message);
+                return Err(format!("报告 #{report_id} 生成失败：{message}"));
+            }
         }
     };
     let request =
@@ -105,7 +109,7 @@ pub(crate) async fn execute_report(
     )
     .unwrap_or_else(|_| "[]".into());
     with_db(state, |db| {
-        crate::db::reports::ReportRepo::new(db.conn()).complete(
+        crate::db::reports::ReportRepo::new(db.conn()).complete_structured(
             report_id,
             resolved.model.id,
             &content,

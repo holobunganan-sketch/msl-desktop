@@ -135,6 +135,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "proposal_outcomes",
         sql: include_str!("../../migrations/0023_proposal_outcomes.sql"),
     },
+    Migration {
+        version: 24,
+        name: "recovery_evidence",
+        sql: include_str!("../../migrations/0024_recovery_evidence.sql"),
+    },
 ];
 
 /// 执行所有未应用的迁移（幂等、事务化）。

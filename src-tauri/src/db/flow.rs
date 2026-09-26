@@ -72,7 +72,7 @@ pub(crate) fn schedule_in_transaction(
     let task = super::task::TaskRepo::new(conn)
         .get(id)?
         .ok_or_else(|| DbError::NotFound("task".into()))?;
-    conn.execute("UPDATE tasks SET scheduled_start=?1,scheduled_end=?2,status=CASE WHEN status IN ('next','scheduled') THEN CASE WHEN ?1 IS NULL THEN 'next' ELSE 'scheduled' END ELSE status END,updated_at=?3 WHERE id=?4",params![start,end,now_unix(),id])?;
+    conn.execute("UPDATE tasks SET scheduled_start=?1,scheduled_end=?2,status=CASE WHEN status IN ('next','scheduled') THEN CASE WHEN ?1 IS NULL THEN 'next' ELSE 'scheduled' END ELSE status END,updated_at=MAX(updated_at+1,?3) WHERE id=?4",params![start,end,now_unix(),id])?;
     conn.execute("INSERT INTO activity_events(timestamp,event_type,work_id,entity_type,entity_id,display_text) VALUES(?1,'task.scheduled',?2,'task',?3,?4)",params![now_unix(),task.work_id,id,if start.is_some(){format!("安排任务 {}",task.title)}else{format!("取消任务时间安排 {}",task.title)}])?;
     Ok(())
 }

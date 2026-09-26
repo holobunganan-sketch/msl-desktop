@@ -14,6 +14,10 @@ pub struct Evidence {
     pub timestamp: i64,
     pub trust: String,
     pub hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<Value>,
+    #[serde(default)]
+    pub priority: u8,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvidencePack {
@@ -72,6 +76,96 @@ pub fn validate_scope(conn: &rusqlite::Connection, scope: &[i64]) -> DbResult<Ve
     }
     Ok(ids)
 }
+pub fn expert_scope(
+    conn: &rusqlite::Connection,
+    scope: &[i64],
+    expert: Option<i64>,
+) -> DbResult<(Vec<i64>, Option<String>)> {
+    let mut ids = scope.to_vec();
+    let mut label = None;
+    if let Some(expert) = expert {
+        label = Some(
+            conn.query_row("SELECT name FROM kol_experts WHERE id=?1", [expert], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|_| DbError::NotFound("专家范围已失效，请重新选择".into()))?,
+        );
+        ids.extend(
+            rows(
+                conn,
+                "SELECT work_id FROM kol_projects WHERE expert_id=?1",
+                &[&expert],
+            )?
+            .iter()
+            .filter_map(|v| v["work_id"].as_i64()),
+        );
+    }
+    Ok((validate_scope(conn, &ids)?, label))
+}
+pub fn collect_scoped(
+    db: &Database,
+    scope: &[i64],
+    query: &str,
+    expert: Option<i64>,
+    expert_scoped: bool,
+) -> DbResult<EvidencePack> {
+    if expert_scoped && expert.is_none() {
+        return Err(DbError::NotFound("专家范围已失效，不能改为全局".into()));
+    }
+    let Some(expert) = expert else {
+        return collect(db, scope, query);
+    };
+    let (ids, _) = expert_scope(db.conn(), scope, Some(expert))?;
+    let mut pack = if ids.is_empty() {
+        EvidencePack {
+            as_of: super::now_unix(),
+            ..Default::default()
+        }
+    } else {
+        collect(db, &ids, query)?
+    };
+    let expert_pack = super::kol::qa_evidence_pack(db, expert)?;
+    pack.sources.extend(expert_pack.sources);
+    pack.omitted += expert_pack.omitted;
+    pack.notes.extend(expert_pack.notes);
+    pack.scope_ids = ids;
+    pack.counts.extend(expert_pack.counts);
+    prioritize(&mut pack, query, 64, 75000);
+    attach_locations(db, &mut pack)?;
+    Ok(pack)
+}
+pub(crate) fn prioritize(pack: &mut EvidencePack, query: &str, limit: usize, max_chars: usize) {
+    pack.sources.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then(
+                crate::cognition::relevance(query, &b.text)
+                    .cmp(&crate::cognition::relevance(query, &a.text)),
+            )
+            .then(b.timestamp.cmp(&a.timestamp))
+    });
+    let mut seen = std::collections::BTreeSet::new();
+    let mut chars = 0usize;
+    let mut count = 0usize;
+    pack.sources.retain(|s| {
+        if !seen.insert(s.id.clone()) {
+            return false;
+        }
+        if count >= limit || chars + s.text.chars().count() > max_chars {
+            pack.omitted += 1;
+            return false;
+        }
+        chars += s.text.chars().count();
+        count += 1;
+        true
+    });
+    if pack.omitted > 0 {
+        pack.notes.push(format!(
+            "本次证据预算省略 {} 条来源；未覆盖内容不能视为不存在。",
+            pack.omitted
+        ));
+    }
+}
 pub fn evidence(kind: &str, row: &Value, trust: &str, query: &str) -> Evidence {
     let id = row["id"].as_i64().unwrap_or(0);
     let full = serde_json::to_string(row).unwrap_or_default();
@@ -99,6 +193,18 @@ pub fn evidence(kind: &str, row: &Value, trust: &str, query: &str) -> Evidence {
         hash: crate::cognition::digest(&text),
         text,
         trust: trust.into(),
+        location: None,
+        priority: if trust == "user_decision" {
+            3
+        } else if kind == "expert"
+            || kind == "work"
+            || (matches!(kind, "task" | "waiting" | "kol_followup")
+                && !matches!(row["status"].as_str(), Some("done" | "resolved")))
+        {
+            2
+        } else {
+            0
+        },
     }
 }
 pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePack> {
@@ -139,7 +245,7 @@ pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePa
     }
     let global_queries=[
         ("brief","SELECT id,brief_date AS title,content,generated_at,period_start,period_end,ai_used FROM daily_briefs WHERE retention_state='kept'","generated_summary"),
-        ("report","SELECT id,kind AS title,content,period_start,period_end,generated_at FROM reports WHERE status='completed' AND retention_state='kept'","generated_summary"),
+        ("report","SELECT id,kind AS title,content,period_start,period_end,generated_at FROM reports WHERE status='completed' AND retention_state='kept' AND NOT EXISTS(SELECT 1 FROM json_each(reports.evidence_json,'$.sources') s WHERE json_extract(s.value,'$.trust')='deleted')","generated_summary"),
         ("analysis","SELECT id,trigger AS title,status,summary,period_start,period_end,created_at FROM analysis_runs","generated_summary"),
         ("kol_insight","SELECT * FROM kol_insights","reviewed_hypothesis"),
     ];
@@ -186,10 +292,12 @@ pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePa
     // Counts are from the complete scope before ranking, never from the sample.
     let stats = serde_json::json!({"id":0,"title":"范围统计 / Scope counts","as_of":pack.as_of,"scope_ids":scope,"counts":pack.counts});
     pack.sources.sort_by(|a, b| {
-        crate::cognition::relevance(query, &b.text)
-            .cmp(&crate::cognition::relevance(query, &a.text))
-            .then(b.timestamp.cmp(&a.timestamp))
-            .then(a.id.cmp(&b.id))
+        b.priority.cmp(&a.priority).then(
+            crate::cognition::relevance(query, &b.text)
+                .cmp(&crate::cognition::relevance(query, &a.text))
+                .then(b.timestamp.cmp(&a.timestamp))
+                .then(a.id.cmp(&b.id)),
+        )
     });
     let mut selected = Vec::new();
     let mut budget = 0;
@@ -203,8 +311,82 @@ pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePa
     }
     selected.insert(0, evidence("coverage", &stats, "computed", query));
     pack.sources = selected;
+    attach_locations(db, &mut pack)?;
     pack.notes.push("内容按问题相关性选取；未命中、遗漏或不可读不能证明工作未发生。生成摘要及已审阅洞察均须回到原始证据核实。".into());
     Ok(pack)
+}
+
+pub fn source_location(conn: &rusqlite::Connection, kind: &str, id: i64) -> DbResult<Value> {
+    let kind = match kind {
+        "task_open" | "task_completed" => "task",
+        "weekly_report" => "report",
+        "kol_expert" => "expert",
+        "resume" => "resume_point",
+        _ => kind,
+    };
+    let table = match kind {
+        "work" => "works",
+        "task" => "tasks",
+        "waiting" => "waiting_items",
+        "calendar" => "calendar_events",
+        "inbox" => "inbox_items",
+        "resume_point" => "resume_points",
+        "expert" => "kol_experts",
+        "kol_note" => "kol_notes",
+        "kol_insight" => "kol_insights",
+        "kol_followup" => "kol_actions",
+        "kol_material" => "material_segments",
+        "report" => "reports",
+        "proposal" => "ai_proposals",
+        "decision" => "review_decisions",
+        "document" => "document_index",
+        "workspace" => "workspaces",
+        "activity" | "file_change" => "activity_events",
+        _ => return Ok(serde_json::json!({"entity_kind":kind,"entity_id":id,"available":false})),
+    };
+    let row = rows(conn, &format!("SELECT * FROM {table} WHERE id=?1"), &[&id])?
+        .into_iter()
+        .next();
+    let Some(row) = row else {
+        return Ok(serde_json::json!({"entity_kind":kind,"entity_id":id,"available":false}));
+    };
+    if kind == "decision" {
+        return source_location(conn, "proposal", row["proposal_id"].as_i64().unwrap_or(0));
+    }
+    if kind == "kol_followup" {
+        return source_location(
+            conn,
+            row["entity_kind"].as_str().unwrap_or(""),
+            row["entity_id"].as_i64().unwrap_or(0),
+        );
+    }
+    if matches!(kind, "activity" | "file_change") {
+        if let (Some(k), Some(i)) = (row["entity_type"].as_str(), row["entity_id"].as_i64()) {
+            if k != kind && !matches!(k, "activity" | "file_change") {
+                return source_location(conn, k, i);
+            }
+        }
+    }
+    Ok(
+        serde_json::json!({"entity_kind":kind,"entity_id":id,"work_id":if kind=="work" {Value::from(id)}else{row["work_id"].clone()},"expert_id":if kind=="expert"{Value::from(id)}else{row["expert_id"].clone()},"workspace_id":if kind=="workspace"{Value::from(id)}else{row["workspace_id"].clone()},"relative_path":row["relative_path"],"available":true}),
+    )
+}
+pub fn attach_locations(db: &Database, pack: &mut EvidencePack) -> DbResult<()> {
+    for source in &mut pack.sources {
+        if source
+            .location
+            .as_ref()
+            .is_some_and(|v| v["remote_only"] == true)
+        {
+            continue;
+        }
+        let mut location = source_location(db.conn(), &source.kind, source.entity_id)?;
+        if source.trust == "deleted" {
+            location["available"] = Value::Bool(false);
+        }
+        source.location = Some(location);
+    }
+    Ok(())
 }
 
 fn add_documents(
@@ -294,6 +476,40 @@ fn add_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn user_decision_survives_pressure_from_recent_matching_tasks() {
+        let db = Database::open_in_memory().unwrap();
+        let w = super::super::work::WorkRepo::new(db.conn())
+            .insert("Synthetic", "active")
+            .unwrap();
+        let run = crate::ai::analysis::create_run(&db, "manual", 0, 1).unwrap();
+        let p = super::super::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run,
+                "task",
+                "create",
+                None,
+                Some(w.id),
+                None,
+                "x",
+                "Original objective",
+                "{}",
+                "",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        db.conn().execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES(?1,'misunderstood','Preserve objective',1)",[p.id]).unwrap();
+        for _ in 0..90 {
+            super::super::task::TaskRepo::new(db.conn())
+                .insert(Some(w.id), "Recent keyword keyword", "normal", None, None)
+                .unwrap();
+        }
+        let pack = collect(&db, &[w.id], "keyword").unwrap();
+        assert!(pack.sources.iter().any(|s| s.kind == "decision"));
+        assert!(pack.omitted > 0);
+    }
     #[test]
     fn knowledge_scope_includes_compacted_progress_and_its_cognition_entry() {
         let db = Database::open_in_memory().unwrap();

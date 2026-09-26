@@ -81,7 +81,7 @@ fn sync_schema_has_durable_identity_journal_and_conflicts() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 23);
+    assert_eq!(version, 24);
     for table in [
         "sync_local_state",
         "sync_entities",

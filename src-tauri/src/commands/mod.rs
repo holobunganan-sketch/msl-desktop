@@ -614,24 +614,16 @@ pub fn update_task(
 
 /// 完成任务。
 #[tauri::command]
-pub fn complete_task(state: State<AppState>, id: i64) -> Result<(), String> {
-    with_db(&state, |db| {
-        crate::db::task::TaskRepo::new(db.conn()).complete(id)
-    })?;
-    // 记录 task.completed
-    if let Some(Ok(Some(t))) =
-        state.with_database(|db| crate::db::task::TaskRepo::new(db.conn()).get(id))
-    {
-        record_activity(
-            &state,
-            "task.completed",
-            t.work_id,
-            "task",
-            t.id,
-            &format!("完成 {}", t.title),
-        );
-    }
-    Ok(())
+pub fn complete_task(state: State<AppState>, id: i64) -> Result<serde_json::Value, String> {
+    with_db(&state, |db| crate::db::recovery::complete(db, "task", id))
+}
+#[tauri::command]
+pub fn undo_manual_completion(state: State<AppState>, receipt_id: String) -> Result<(), String> {
+    with_db(&state, |db| crate::db::recovery::undo(db, &receipt_id))
+}
+#[tauri::command]
+pub fn list_manual_completions(state: State<AppState>) -> Result<Vec<serde_json::Value>, String> {
+    with_db(&state, crate::db::recovery::list)
 }
 
 /// 列出任务（可按 status / work 过滤）。
@@ -648,9 +640,20 @@ pub fn list_tasks(
 
 /// 删除任务。
 #[tauri::command]
-pub fn delete_task(state: State<AppState>, id: i64) -> Result<(), String> {
+pub fn delete_task(
+    state: State<AppState>,
+    id: i64,
+    confirmed: Option<bool>,
+    expected_updated_at: Option<i64>,
+) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::ai::lifecycle::remove_item(db, "task", id)
+        crate::db::recovery::delete(
+            db,
+            "task",
+            id,
+            confirmed.unwrap_or(false),
+            expected_updated_at.unwrap_or(-1),
+        )
     })
 }
 
@@ -694,9 +697,9 @@ pub fn create_waiting(
 
 /// 解决 waiting item。
 #[tauri::command]
-pub fn resolve_waiting(state: State<AppState>, id: i64) -> Result<(), String> {
+pub fn resolve_waiting(state: State<AppState>, id: i64) -> Result<serde_json::Value, String> {
     with_db(&state, |db| {
-        crate::db::task::WaitingRepo::new(db.conn()).resolve(id)
+        crate::db::recovery::complete(db, "waiting", id)
     })
 }
 
@@ -743,9 +746,20 @@ pub fn list_waiting(
 
 /// 删除 waiting item。
 #[tauri::command]
-pub fn delete_waiting(state: State<AppState>, id: i64) -> Result<(), String> {
+pub fn delete_waiting(
+    state: State<AppState>,
+    id: i64,
+    confirmed: Option<bool>,
+    expected_updated_at: Option<i64>,
+) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::ai::lifecycle::remove_item(db, "waiting", id)
+        crate::db::recovery::delete(
+            db,
+            "waiting",
+            id,
+            confirmed.unwrap_or(false),
+            expected_updated_at.unwrap_or(-1),
+        )
     })
 }
 
@@ -2021,7 +2035,7 @@ mod validation_tests {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let _ = std::fs::remove_dir_all(root);

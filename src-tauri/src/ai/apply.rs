@@ -272,7 +272,7 @@ pub(crate) fn confirm_in_transaction(
                     };
                     let notes = first_text(&payload, &["notes", "summary", "next_step", "content"])
                         .or(current.2);
-                    tx.execute("UPDATE tasks SET work_id=?1,title=?2,priority=?3,due_at=?4,notes=?5,updated_at=?6 WHERE id=?7",rusqlite::params![proposal.work_id,proposal.title.trim(),priority,due_at,notes,now,target])?;
+                    tx.execute("UPDATE tasks SET work_id=?1,title=?2,priority=?3,due_at=?4,notes=?5,updated_at=MAX(updated_at+1,?6) WHERE id=?7",rusqlite::params![proposal.work_id,proposal.title.trim(),priority,due_at,notes,now,target])?;
                 }
                 "waiting" => {
                     let current = tx.query_row("SELECT waiting_for,started_at,follow_up_at,notes FROM waiting_items WHERE id=?1",[target],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<i64>>(2)?,row.get::<_,Option<String>>(3)?))).optional()?.ok_or_else(||DbError::NotFound("waiting target".into()))?;
@@ -285,7 +285,7 @@ pub(crate) fn confirm_in_transaction(
                     };
                     let notes = first_text(&payload, &["notes", "summary", "next_step", "content"])
                         .or(current.3);
-                    tx.execute("UPDATE waiting_items SET work_id=?1,title=?2,waiting_for=?3,started_at=?4,follow_up_at=?5,notes=?6,updated_at=?7 WHERE id=?8",rusqlite::params![proposal.work_id,proposal.title.trim(),waiting_for,started_at,follow_up_at,notes,now,target])?;
+                    tx.execute("UPDATE waiting_items SET work_id=?1,title=?2,waiting_for=?3,started_at=?4,follow_up_at=?5,notes=?6,updated_at=MAX(updated_at+1,?7) WHERE id=?8",rusqlite::params![proposal.work_id,proposal.title.trim(),waiting_for,started_at,follow_up_at,notes,now,target])?;
                 }
                 "calendar" => {
                     let current = tx.query_row("SELECT start_at,end_at,all_day,location,notes,kind FROM calendar_events WHERE id=?1",[target],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,Option<i64>>(1)?,row.get::<_,i64>(2)? != 0,row.get::<_,Option<String>>(3)?,row.get::<_,Option<String>>(4)?,row.get::<_,String>(5)?))).optional()?.ok_or_else(||DbError::NotFound("calendar target".into()))?;
@@ -367,10 +367,10 @@ pub(crate) fn confirm_in_transaction(
     if let Some(status) = text(&payload, "status") {
         match proposal.kind.as_str() {
             "task" => {
-                tx.execute("UPDATE tasks SET status=?1,completed_at=CASE WHEN ?1='done' THEN COALESCE(completed_at,?2) ELSE NULL END,updated_at=?2 WHERE id=?3",rusqlite::params![status,now,target_id])?;
+                tx.execute("UPDATE tasks SET status=?1,completed_at=CASE WHEN ?1='done' THEN COALESCE(completed_at,?2) ELSE NULL END,updated_at=MAX(updated_at+1,?2) WHERE id=?3",rusqlite::params![status,now,target_id])?;
             }
             "waiting" => {
-                tx.execute("UPDATE waiting_items SET status=?1,resolved_at=CASE WHEN ?1='resolved' THEN COALESCE(resolved_at,?2) ELSE NULL END,updated_at=?2 WHERE id=?3",rusqlite::params![status,now,target_id])?;
+                tx.execute("UPDATE waiting_items SET status=?1,resolved_at=CASE WHEN ?1='resolved' THEN COALESCE(resolved_at,?2) ELSE NULL END,updated_at=MAX(updated_at+1,?2) WHERE id=?3",rusqlite::params![status,now,target_id])?;
             }
             "work" => {
                 tx.execute("UPDATE works SET archived_at=CASE WHEN ?1='archived' THEN COALESCE(archived_at,?2) ELSE NULL END WHERE id=?3",rusqlite::params![status,now,target_id])?;

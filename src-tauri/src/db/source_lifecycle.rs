@@ -72,6 +72,39 @@ pub fn retire(conn: &Connection, ids: &[String]) -> DbResult<()> {
             }
         }
     }
+    for row in knowledge::rows(
+        conn,
+        "SELECT id,evidence_json FROM reports WHERE evidence_json IS NOT NULL",
+        &[],
+    )? {
+        let Ok(mut evidence) =
+            serde_json::from_str::<Value>(row["evidence_json"].as_str().unwrap_or(""))
+        else {
+            continue;
+        };
+        let mut changed = false;
+        if let Some(sources) = evidence["sources"].as_array_mut() {
+            for source in sources {
+                let kind = match source["source_type"].as_str().unwrap_or("") {
+                    "task_open" | "task_completed" => "task",
+                    "weekly_report" => "report",
+                    other => other,
+                };
+                let key = format!("{kind}:{}", source["entity_id"].as_i64().unwrap_or(0));
+                if ids.contains(&key) {
+                    source["trust"] = Value::String("deleted".into());
+                    source["location"]["available"] = Value::Bool(false);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            conn.execute(
+                "UPDATE reports SET evidence_json=?1 WHERE id=?2",
+                params![evidence.to_string(), row["id"].as_i64()],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -94,6 +127,27 @@ pub fn usable_insight(conn: &Connection, row: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deleted_report_evidence_remains_readable_but_not_reusable_as_current_evidence() {
+        let db = super::super::Database::open_in_memory().unwrap();
+        let evidence =
+            serde_json::json!({"sources":[{"source_type":"task_completed","entity_id":42}]})
+                .to_string();
+        db.conn().execute("INSERT INTO reports(kind,period_start,period_end,status,content,retention_state,created_at,updated_at,evidence_json) VALUES('weekly',1,2,'completed','Historical','kept',1,1,?1)",[evidence]).unwrap();
+        retire(db.conn(), &["task:42".into()]).unwrap();
+        let row = super::super::reports::ReportRepo::new(db.conn())
+            .get(1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.content.as_deref(), Some("Historical"));
+        let evidence: Value = serde_json::from_str(&row.evidence_json.unwrap()).unwrap();
+        assert_eq!(evidence["sources"][0]["trust"], "deleted");
+        assert!(!knowledge::collect(&db, &[], "")
+            .unwrap()
+            .sources
+            .iter()
+            .any(|s| s.kind == "report"));
+    }
     #[test]
     fn deleted_evidence_preserves_history_but_blocks_followup_and_late_answers() {
         let db = super::super::Database::open_in_memory().unwrap();

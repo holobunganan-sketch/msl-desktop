@@ -33,10 +33,10 @@ pub fn resolve(db: &Database, id: i64, expected: i64) -> DbResult<AiProposal> {
     }
     match (p.applied_kind.as_deref(), p.applied_id) {
         (Some("task"), Some(target)) => {
-            tx.execute("UPDATE tasks SET status='done',completed_at=COALESCE(completed_at,?1),updated_at=?1 WHERE id=?2", params![now_unix(),target])?;
+            tx.execute("UPDATE tasks SET status='done',completed_at=COALESCE(completed_at,?1),updated_at=MAX(updated_at+1,?1) WHERE id=?2", params![now_unix(),target])?;
         }
         (Some("waiting"), Some(target)) => {
-            tx.execute("UPDATE waiting_items SET status='resolved',resolved_at=COALESCE(resolved_at,?1),updated_at=?1 WHERE id=?2", params![now_unix(),target])?;
+            tx.execute("UPDATE waiting_items SET status='resolved',resolved_at=COALESCE(resolved_at,?1),updated_at=MAX(updated_at+1,?1) WHERE id=?2", params![now_unix(),target])?;
         }
         _ => (), // Older records may lack an unambiguous target; close advice only.
     }
@@ -47,6 +47,12 @@ pub fn resolve(db: &Database, id: i64, expected: i64) -> DbResult<AiProposal> {
 }
 
 pub fn remove_item(db: &Database, kind: &str, id: i64) -> DbResult<()> {
+    let tx = crate::db::write_transaction(db.conn())?;
+    remove_item_in_transaction(&tx, kind, id)?;
+    tx.commit()?;
+    Ok(())
+}
+pub(crate) fn remove_item_in_transaction(tx: &Connection, kind: &str, id: i64) -> DbResult<()> {
     let table = match kind {
         "task" => "tasks",
         "waiting" => "waiting_items",
@@ -55,7 +61,6 @@ pub fn remove_item(db: &Database, kind: &str, id: i64) -> DbResult<()> {
         "resume_point" => "resume_points",
         _ => return Err(DbError::Migration("不支持的记录类型".into())),
     };
-    let tx = crate::db::write_transaction(db.conn())?;
     let exists: bool = tx.query_row(
         &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE id=?1)"),
         [id],
@@ -67,7 +72,6 @@ pub fn remove_item(db: &Database, kind: &str, id: i64) -> DbResult<()> {
     crate::db::source_lifecycle::retire(&tx, &[format!("{kind}:{id}")])?;
     tx.execute("UPDATE ai_proposals SET status='deleted',decided_at=?1,updated_at=MAX(updated_at+1,?1) WHERE status<>'deleted' AND id IN (SELECT proposal_id FROM ai_proposal_outcomes WHERE kind=?2 AND target_id=?3)",params![now_unix(),kind,id])?;
     tx.execute(&format!("DELETE FROM {table} WHERE id=?1"), [id])?;
-    tx.commit()?;
     Ok(())
 }
 

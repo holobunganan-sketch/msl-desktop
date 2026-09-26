@@ -115,7 +115,7 @@ impl<'a> TaskRepo<'a> {
         notes: Option<&str>,
     ) -> DbResult<()> {
         let affected = self.conn.execute(
-            "UPDATE tasks SET work_id = ?1, title = ?2, priority = ?3, due_at = ?4, notes = ?5, updated_at = ?6 WHERE id = ?7",
+            "UPDATE tasks SET work_id = ?1, title = ?2, priority = ?3, due_at = ?4, notes = ?5, updated_at = MAX(updated_at+1,?6) WHERE id = ?7",
             params![work_id, title, priority, due_at, notes, now_unix(), id],
         )?;
         if affected == 0 {
@@ -127,7 +127,7 @@ impl<'a> TaskRepo<'a> {
     /// 完成（status=done, completed_at=now）；再次完成幂等。
     pub fn complete(&self, id: i64) -> DbResult<()> {
         let affected = self.conn.execute(
-            "UPDATE tasks SET status = 'done', completed_at = ?1, updated_at = ?1 WHERE id = ?2",
+            "UPDATE tasks SET status = 'done', completed_at = ?1, updated_at = MAX(updated_at+1,?1) WHERE id = ?2",
             params![now_unix(), id],
         )?;
         if affected == 0 {
@@ -261,7 +261,7 @@ impl<'a> WaitingRepo<'a> {
     /// 解决（status=resolved, resolved_at=now）。
     pub fn resolve(&self, id: i64) -> DbResult<()> {
         let affected = self.conn.execute(
-            "UPDATE waiting_items SET status = 'resolved', resolved_at = ?1, updated_at = ?1 WHERE id = ?2",
+            "UPDATE waiting_items SET status = 'resolved', resolved_at = ?1, updated_at = MAX(updated_at+1,?1) WHERE id = ?2",
             params![now_unix(), id],
         )?;
         if affected == 0 {
@@ -284,7 +284,7 @@ impl<'a> WaitingRepo<'a> {
         let affected = self.conn.execute(
             "UPDATE waiting_items
              SET work_id = ?1, title = ?2, waiting_for = ?3, started_at = ?4,
-                 follow_up_at = ?5, notes = ?6, updated_at = ?7
+                 follow_up_at = ?5, notes = ?6, updated_at = MAX(updated_at+1,?7)
              WHERE id = ?8",
             params![
                 work_id,

@@ -22,6 +22,8 @@ pub struct Report {
     pub generated_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub structured_json: Option<String>,
+    pub evidence_json: Option<String>,
 }
 
 fn row_report(row: &Row<'_>) -> rusqlite::Result<Report> {
@@ -42,13 +44,31 @@ fn row_report(row: &Row<'_>) -> rusqlite::Result<Report> {
         generated_at: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
+        structured_json: row.get(16)?,
+        evidence_json: row.get(17)?,
     })
 }
 
-const REPORT_SELECT: &str = "SELECT id,kind,period_start,period_end,status,provider_model_id,content,snapshot_hash,source_counts_json,source_report_ids_json,error_code,error_message,retention_state,generated_at,created_at,updated_at FROM reports";
+const REPORT_SELECT: &str = "SELECT id,kind,period_start,period_end,status,provider_model_id,content,snapshot_hash,source_counts_json,source_report_ids_json,error_code,error_message,retention_state,generated_at,created_at,updated_at,structured_json,evidence_json FROM reports";
 
 pub struct ReportRepo<'a> {
     conn: &'a Connection,
+}
+fn refresh_locations(conn: &Connection, evidence: &mut serde_json::Value) -> DbResult<()> {
+    if let Some(sources) = evidence["sources"].as_array_mut() {
+        for source in sources {
+            if source["location"]["remote_only"] == true {
+                continue;
+            }
+            let kind = source["source_type"].as_str().unwrap_or("");
+            let id = source["entity_id"].as_i64().unwrap_or(0);
+            source["location"] = super::knowledge::source_location(conn, kind, id)?;
+            if source["trust"] == "deleted" {
+                source["location"]["available"] = serde_json::Value::Bool(false);
+            }
+        }
+    }
+    Ok(())
 }
 
 impl<'a> ReportRepo<'a> {
@@ -70,10 +90,24 @@ impl<'a> ReportRepo<'a> {
     }
 
     pub fn get(&self, id: i64) -> DbResult<Option<Report>> {
-        self.conn
+        let mut report = self
+            .conn
             .query_row(&format!("{} WHERE id=?1", REPORT_SELECT), [id], row_report)
             .optional()
-            .map_err(DbError::from)
+            .map_err(DbError::from)?;
+        if let Some(report) = &mut report {
+            self.hydrate(report)?;
+        }
+        Ok(report)
+    }
+    fn hydrate(&self, report: &mut Report) -> DbResult<()> {
+        if let Some(raw) = &report.evidence_json {
+            if let Ok(mut evidence) = serde_json::from_str(raw) {
+                refresh_locations(self.conn, &mut evidence)?;
+                report.evidence_json = Some(evidence.to_string());
+            }
+        }
+        Ok(())
     }
 
     pub fn complete(
@@ -95,6 +129,38 @@ impl<'a> ReportRepo<'a> {
         }
         self.get(id)?
             .ok_or_else(|| DbError::NotFound("report".into()))
+    }
+
+    pub fn complete_structured(
+        &self,
+        id: i64,
+        provider_model_id: i64,
+        checked: &crate::ai::report_contract::ValidatedReport,
+        snapshot_hash: &str,
+        source_counts_json: &str,
+        source_report_ids_json: &str,
+    ) -> DbResult<Report> {
+        let conn = super::write_transaction(self.conn)?;
+        let repo = ReportRepo::new(&conn);
+        repo.complete(
+            id,
+            provider_model_id,
+            &checked.content,
+            snapshot_hash,
+            source_counts_json,
+            source_report_ids_json,
+        )?;
+        let mut evidence = checked.evidence.clone();
+        refresh_locations(&conn, &mut evidence)?;
+        conn.execute(
+            "UPDATE reports SET structured_json=?1,evidence_json=?2 WHERE id=?3",
+            params![checked.structured.to_string(), evidence.to_string(), id],
+        )?;
+        let report = repo
+            .get(id)?
+            .ok_or_else(|| DbError::NotFound("report".into()))?;
+        conn.commit()?;
+        Ok(report)
     }
 
     pub fn fail(&self, id: i64, code: &str, message: &str) -> DbResult<Report> {
@@ -132,6 +198,9 @@ impl<'a> ReportRepo<'a> {
                 values.push(row?);
             }
         }
+        for report in &mut values {
+            self.hydrate(report)?;
+        }
         Ok(values)
     }
 
@@ -142,7 +211,7 @@ impl<'a> ReportRepo<'a> {
         limit: usize,
     ) -> DbResult<Vec<Report>> {
         let mut stmt = self.conn.prepare(&format!(
-            "{} WHERE kind='weekly' AND status='completed' AND period_start < ?2 AND period_end > ?1 ORDER BY period_start ASC,id ASC LIMIT ?3",
+            "{} WHERE kind='weekly' AND status='completed' AND NOT EXISTS(SELECT 1 FROM json_each(reports.evidence_json,'$.sources') s WHERE json_extract(s.value,'$.trust')='deleted') AND period_start < ?2 AND period_end > ?1 ORDER BY period_start ASC,id ASC LIMIT ?3",
             REPORT_SELECT
         ))?;
         let rows = stmt.query_map(
@@ -279,6 +348,41 @@ mod tests {
         let rows = repo.list(None, 20).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].status, "failed");
+    }
+
+    #[test]
+    fn structured_report_survives_reload_and_deleted_source_is_unavailable() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn().execute_batch("INSERT INTO provider_settings(display_name,provider_type,base_url,model,enabled,created_at,updated_at) VALUES('Mock','openai_compatible','http://127.0.0.1','',1,1,1); INSERT INTO provider_models(provider_id,model_id,display_name,protocol,endpoint_path,source,created_at,updated_at) VALUES(1,'mock','Mock','chat_completions','/chat/completions','manual',1,1);").unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Synthetic", "normal", None, None)
+            .unwrap();
+        let repo = ReportRepo::new(db.conn());
+        let r = repo.create("weekly", 100, 200).unwrap();
+        let checked = crate::ai::report_contract::ValidatedReport {
+            content: "Readable".into(),
+            structured: serde_json::json!({"items":[{"headline":"Saved","evidence_refs":[{"source_type":"task_completed","entity_id":task.id}]}]}),
+            evidence: serde_json::json!({"sources":[{"source_type":"task_completed","entity_id":task.id}]}),
+        };
+        repo.complete_structured(r.id, 1, &checked, "hash", "{}", "[]")
+            .unwrap();
+        let loaded = repo.get(r.id).unwrap().unwrap();
+        assert_eq!(loaded.content.as_deref(), Some("Readable"));
+        assert!(loaded.structured_json.unwrap().contains("Saved"));
+        let evidence: serde_json::Value =
+            serde_json::from_str(&loaded.evidence_json.unwrap()).unwrap();
+        assert_eq!(evidence["sources"][0]["location"]["entity_kind"], "task");
+        assert_eq!(evidence["sources"][0]["location"]["available"], true);
+        db.conn()
+            .execute("DELETE FROM tasks WHERE id=?1", [task.id])
+            .unwrap();
+        let loaded = repo.list(None, 10).unwrap().remove(0);
+        let evidence: serde_json::Value =
+            serde_json::from_str(&loaded.evidence_json.unwrap()).unwrap();
+        assert_eq!(evidence["sources"][0]["location"]["available"], false);
+        let old = repo.create("weekly", 200, 300).unwrap();
+        repo.complete(old.id, 1, "Old", "h", "{}", "[]").unwrap();
+        assert!(repo.get(old.id).unwrap().unwrap().structured_json.is_none());
     }
 
     #[test]

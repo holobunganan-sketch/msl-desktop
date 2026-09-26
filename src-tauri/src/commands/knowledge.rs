@@ -16,8 +16,11 @@ pub fn create_qa_session(
     state: State<AppState>,
     title: String,
     scope: Vec<i64>,
+    expert_id: Option<i64>,
 ) -> Result<Value, String> {
-    with_db(&state, |db| db::qa::create(db, &title, &scope))
+    with_db(&state, |db| {
+        db::qa::create_scoped(db, &title, &scope, expert_id)
+    })
 }
 #[tauri::command]
 pub fn list_qa_turns(state: State<AppState>, session_id: i64) -> Result<Vec<Value>, String> {
@@ -29,9 +32,10 @@ pub fn queue_qa_question(
     session_id: i64,
     question: String,
     scope: Vec<i64>,
+    expert_id: Option<i64>,
 ) -> Result<Value, String> {
     with_db(&state, |db| {
-        db::qa::queue(db, session_id, &question, &scope)
+        db::qa::queue_scoped(db, session_id, &question, &scope, expert_id)
     })
 }
 #[tauri::command]
@@ -242,9 +246,10 @@ pub async fn ask_workbench(
         let history=with_db(&state,|db|db::qa::history(db,&turn))?;
         let question=turn["question"].as_str().ok_or("问题不存在")?.to_string();
         let retrieval_query=format!("{} {}",history.last().and_then(|h|h["question"].as_str()).unwrap_or(""),question);
+        let expert=turn["expert_id"].as_i64();let expert_scoped=turn["expert_scoped"]==1;
         let pack=tauri::async_runtime::spawn_blocking(move ||{
             let db=db::Database::open(&db::default_db_path()).map_err(|e|e.to_string())?;
-            db::knowledge::collect(&db,&scope,&retrieval_query).map_err(|e|e.to_string())
+            db::knowledge::collect_scoped(&db,&scope,&retrieval_query,expert,expert_scoped).map_err(|e|e.to_string())
         }).await.map_err(|_|"证据检索任务中断")??;
         with_db(&state,|db|db::qa::save_evidence(db,turn_id,&pack))?;
         let input=json!({"question":question,"locale":locale.unwrap_or_else(||"zh-CN".into()),"local_time":chrono::Local::now().to_rfc3339(),"history_context_only":history,"evidence":pack});

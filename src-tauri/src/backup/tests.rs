@@ -123,10 +123,24 @@ fn backup_roundtrip_includes_committed_wal_and_keeps_source_unchanged() {
     AppSettingsRepo::new(db.conn())
         .set("synthetic_note", "Synthetic private record")
         .unwrap();
+    let task = crate::db::task::TaskRepo::new(db.conn())
+        .insert(None, "Synthetic completion", "normal", None, None)
+        .unwrap();
+    let receipt = crate::db::recovery::complete(&db, "task", task.id).unwrap();
+    db.conn().execute("INSERT INTO qa_sessions(title,scope_json,expert_scoped,expert_label,created_at,updated_at) VALUES('Deleted expert','[]',1,'Historical expert',1,1)",[]).unwrap();
     let archive = archive::create_snapshot(&f.data, &f.out, "fixture-owner").unwrap();
     let target = f.root.join("restored");
     archive::unpack(&archive, &target).unwrap();
     let restored = Database::open(&target.join(crate::db::DB_FILE_NAME)).unwrap();
+    assert_eq!(
+        crate::db::recovery::list(&restored).unwrap()[0]["id"],
+        receipt["id"]
+    );
+    crate::db::recovery::undo(&restored, receipt["id"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        crate::db::qa::sessions(&restored).unwrap()[0]["expert_scoped"],
+        1
+    );
     assert_eq!(
         AppSettingsRepo::new(restored.conn())
             .get("synthetic_note")

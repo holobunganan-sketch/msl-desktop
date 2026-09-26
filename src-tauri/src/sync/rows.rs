@@ -16,7 +16,8 @@ struct TableSpec {
 }
 
 const WORK_REF: &[(&str, &str)] = &[("work_id", "works")];
-const QA_TURN_REFS: &[(&str, &str)] = &[("session_id", "qa_sessions")];
+const QA_TURN_REFS: &[(&str, &str)] =
+    &[("session_id", "qa_sessions"), ("expert_id", "kol_experts")];
 const KOL_NOTE_REFS: &[(&str, &str)] = &[
     ("expert_id", "kol_experts"),
     ("work_id", "works"),
@@ -136,7 +137,7 @@ const TABLES: &[TableSpec] = &[
     TableSpec {
         name: "qa_sessions",
         key: "id",
-        refs: &[],
+        refs: KOL_DRAFT_REFS,
         excluded: NO_EXCLUSIONS,
     },
     TableSpec {
@@ -1121,6 +1122,21 @@ fn apply_row(conn: &Connection, spec: TableSpec, row: &Value) -> SyncResult<()> 
     Ok(())
 }
 
+#[cfg(test)]
+#[test]
+fn legacy_receiver_rejects_unknown_expert_scope_columns_without_global_fallback() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE qa_sessions(id INTEGER PRIMARY KEY,title TEXT,scope_json TEXT,created_at INTEGER,updated_at INTEGER);").unwrap();
+    let row = serde_json::json!({"id":1,"title":"Expert only","scope_json":"[]","created_at":1,"updated_at":1,"expert_id":null,"expert_scoped":1,"expert_label":"Removed expert"});
+    assert!(apply_row(&conn, table_spec("qa_sessions").unwrap(), &row).is_err());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM qa_sessions", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
 fn delete_row(conn: &Connection, spec: TableSpec, key: &str) -> SyncResult<()> {
     if spec.name == "works" {
         // Preserve even this device's unpublished tasks when a confirmed project
@@ -1326,6 +1342,7 @@ fn localize_remote(conn: &Connection, remote: &RecordState) -> SyncResult<Record
         };
         object.insert(column.clone(), localized_ref);
     }
+    references::retire_local_locations(&mut localized.row)?;
     Ok(localized)
 }
 

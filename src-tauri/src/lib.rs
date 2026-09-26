@@ -349,6 +349,8 @@ fn run_app() {
             commands::create_task,
             commands::update_task,
             commands::complete_task,
+            commands::undo_manual_completion,
+            commands::list_manual_completions,
             commands::list_tasks,
             commands::delete_task,
             commands::create_waiting,

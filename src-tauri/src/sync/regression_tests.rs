@@ -60,6 +60,69 @@ fn mirror(from: &Path, to: &Path) {
 }
 
 #[test]
+fn report_and_expert_scope_sync_maps_business_ids_but_never_local_documents() {
+    let p = Pair::new();
+    p.b.conn().execute_batch("INSERT INTO tasks(id,title,created_at,updated_at) VALUES(1,'Receiver unrelated',1,1); INSERT INTO kol_experts(id,name,institution,created_at,updated_at) VALUES(1,'Receiver expert','B',1,1);").unwrap();
+    p.a.conn().execute_batch("INSERT INTO tasks(id,title,created_at,updated_at) VALUES(1,'Sender task',1,1); INSERT INTO kol_experts(id,name,institution,created_at,updated_at) VALUES(1,'Sender expert','A',1,1);").unwrap();
+    let session = crate::db::qa::create_scoped(&p.a, "Scoped", &[], Some(1)).unwrap();
+    let report = crate::db::reports::ReportRepo::new(p.a.conn())
+        .create("weekly", 1, 2)
+        .unwrap();
+    let structured=serde_json::json!({"items":[{"evidence_refs":[{"source_type":"task_completed","entity_id":1}]}]}).to_string();
+    let evidence=serde_json::json!({"sources":[{"source_type":"task_completed","entity_id":1},{"source_type":"document","entity_id":1,"location":{"entity_kind":"document","entity_id":1,"workspace_id":1,"relative_path":"synthetic.txt","available":true}}]}).to_string();
+    p.a.conn()
+        .execute(
+            "UPDATE reports SET structured_json=?1,evidence_json=?2 WHERE id=?3",
+            rusqlite::params![structured, evidence, report.id],
+        )
+        .unwrap();
+    p.send_a();
+    let expert: i64 =
+        p.b.conn()
+            .query_row(
+                "SELECT id FROM kol_experts WHERE name='Sender expert'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_ne!(expert, 1);
+    let sessions = crate::db::qa::sessions(&p.b).unwrap();
+    assert_eq!(sessions[0]["expert_id"], expert);
+    assert_eq!(sessions[0]["expert_scoped"], 1);
+    let task: i64 =
+        p.b.conn()
+            .query_row("SELECT id FROM tasks WHERE title='Sender task'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+    let report = crate::db::reports::ReportRepo::new(p.b.conn())
+        .list(None, 10)
+        .unwrap()
+        .remove(0);
+    let structured: serde_json::Value =
+        serde_json::from_str(&report.structured_json.unwrap()).unwrap();
+    assert_eq!(
+        structured["items"][0]["evidence_refs"][0]["entity_id"],
+        task
+    );
+    let evidence: serde_json::Value = serde_json::from_str(&report.evidence_json.unwrap()).unwrap();
+    assert_eq!(evidence["sources"][1]["location"]["available"], false);
+    assert_eq!(evidence["sources"][1]["location"]["remote_only"], true);
+    p.a.conn()
+        .execute("DELETE FROM kol_experts WHERE id=1", [])
+        .unwrap();
+    p.send_a();
+    let sessions = crate::db::qa::sessions(&p.b).unwrap();
+    assert!(sessions[0]["expert_id"].is_null());
+    assert_eq!(sessions[0]["expert_scoped"], 1);
+    assert!(
+        crate::db::qa::queue_scoped(&p.b, sessions[0]["id"].as_i64().unwrap(), "Q", &[], None)
+            .is_err()
+    );
+    assert_eq!(session["expert_scoped"], 1);
+}
+
+#[test]
 fn incoming_change_preserves_unpublished_local_edit() {
     let p = Pair::new();
     p.seed();

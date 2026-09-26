@@ -212,6 +212,16 @@ pub fn followups(db: &Database, expert_id: Option<i64>) -> DbResult<Vec<Value>> 
     knowledge::rows(db.conn(),"SELECT a.id,a.expert_id,COALESCE(e.name,'跨专家跟进') AS name,a.entity_kind,a.entity_id,t.title,t.status,t.work_id,t.scheduled_start AS at,t.notes FROM kol_actions a LEFT JOIN kol_experts e ON e.id=a.expert_id JOIN tasks t ON a.entity_kind='task' AND a.entity_id=t.id WHERE (?1 IS NULL OR a.expert_id=?1) AND t.status!='done' UNION ALL SELECT a.id,a.expert_id,COALESCE(e.name,'跨专家跟进'),a.entity_kind,a.entity_id,w.title,w.status,w.work_id,w.follow_up_at AS at,w.notes FROM kol_actions a LEFT JOIN kol_experts e ON e.id=a.expert_id JOIN waiting_items w ON a.entity_kind='waiting' AND a.entity_id=w.id WHERE (?1 IS NULL OR a.expert_id=?1) AND w.status='open' UNION ALL SELECT a.id,a.expert_id,COALESCE(e.name,'跨专家跟进'),a.entity_kind,a.entity_id,c.title,'scheduled',c.work_id,c.start_at AS at,c.notes FROM kol_actions a LEFT JOIN kol_experts e ON e.id=a.expert_id JOIN calendar_events c ON a.entity_kind='calendar' AND a.entity_id=c.id WHERE (?1 IS NULL OR a.expert_id=?1) AND COALESCE(c.end_at,c.start_at)>=?2 UNION ALL SELECT a.id,a.expert_id,COALESCE(e.name,'跨专家跟进'),a.entity_kind,a.entity_id,i.content,'inbox',NULL,NULL,i.content FROM kol_actions a LEFT JOIN kol_experts e ON e.id=a.expert_id JOIN inbox_items i ON a.entity_kind='inbox' AND a.entity_id=i.id WHERE (?1 IS NULL OR a.expert_id=?1) AND i.processed_at IS NULL ORDER BY at",&[&expert_id,&super::now_unix()])
 }
 pub fn evidence_pack(db: &Database, expert_id: Option<i64>) -> DbResult<EvidencePack> {
+    evidence_pack_inner(db, expert_id, true)
+}
+pub(crate) fn qa_evidence_pack(db: &Database, expert_id: i64) -> DbResult<EvidencePack> {
+    evidence_pack_inner(db, Some(expert_id), false)
+}
+fn evidence_pack_inner(
+    db: &Database,
+    expert_id: Option<i64>,
+    require_evidence: bool,
+) -> DbResult<EvidencePack> {
     let all_notes = notes(db, expert_id)?;
     let expert_records = experts(db)?
         .into_iter()
@@ -229,6 +239,36 @@ pub fn evidence_pack(db: &Database, expert_id: Option<i64>) -> DbResult<Evidence
         as_of: super::now_unix(),
         ..Default::default()
     };
+    let mut scopes = std::collections::BTreeSet::new();
+    for note in &all_notes {
+        scopes.extend(crate::ai::rounds::evidence_scopes(db.conn(), note)?);
+    }
+    for expert in &expert_records {
+        if let Some(id) = expert["id"].as_i64() {
+            for row in knowledge::rows(
+                db.conn(),
+                "SELECT work_id FROM kol_projects WHERE expert_id=?1",
+                &[&id],
+            )? {
+                if let Some(w) = row["work_id"].as_i64() {
+                    scopes.insert(format!("work:{w}"));
+                }
+            }
+        }
+    }
+    let (directions, omitted) =
+        crate::ai::analysis_snapshot::scoped_user_directions(db, Some(&scopes))?;
+    pack.omitted += omitted;
+    for mut direction in directions {
+        let (kind, key) = match direction["type"].as_str() {
+            Some("review_correction") => ("decision", "decision_id"),
+            Some("user_capture") => ("inbox", "inbox_id"),
+            _ => ("kol_insight", "insight_id"),
+        };
+        direction["id"] = direction[key].clone();
+        pack.sources
+            .push(knowledge::evidence(kind, &direction, "user_decision", ""));
+    }
     pack.counts.insert("kol_note".into(), all_notes.len());
     pack.counts.insert("expert".into(), expert_records.len());
     for (kind, items, trust) in [
@@ -251,17 +291,22 @@ pub fn evidence_pack(db: &Database, expert_id: Option<i64>) -> DbResult<Evidence
     pack.omitted += material_count.saturating_sub(materials.len());
     pack.counts.insert("kol_material".into(), material_count);
     pack.sources.extend(materials);
-    if !pack
-        .sources
-        .iter()
-        .any(|s| s.kind == "kol_note" || s.kind == "kol_material")
+    if require_evidence
+        && !pack
+            .sources
+            .iter()
+            .any(|s| s.kind == "kol_note" || s.kind == "kol_material")
     {
         return Err(DbError::Migration(
             "请先记录交流或上传可读取的专家资料，AI 将根据已有证据整理".into(),
         ));
     }
     // Every action references a real project catalog entry, not a guessed ID.
-    let works = super::work::WorkRepo::new(db.conn()).list(None)?;
+    let works = super::work::WorkRepo::new(db.conn())
+        .list(None)?
+        .into_iter()
+        .filter(|w| expert_id.is_none() || scopes.contains(&format!("work:{}", w.id)))
+        .collect::<Vec<_>>();
     pack.sources.extend(works.iter().map(|w| {
         knowledge::evidence(
             "work",
@@ -270,17 +315,8 @@ pub fn evidence_pack(db: &Database, expert_id: Option<i64>) -> DbResult<Evidence
             "",
         )
     }));
-    let mut chars = 0usize;
-    pack.sources.retain(|s| {
-        let len = s.text.chars().count();
-        if chars + len > 75000 {
-            pack.omitted += 1;
-            false
-        } else {
-            chars += len;
-            true
-        }
-    });
+    knowledge::prioritize(&mut pack, "", 400, 75000);
+    knowledge::attach_locations(db, &mut pack)?;
     pack.notes
         .push("专家观点是交流记录，不代表已证实的医学结论。请按原始交流来源去重。".into());
     Ok(pack)
@@ -446,6 +482,54 @@ pub fn review(db: &Database, id: i64, revision: i64, decision: &str, raw: &str) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expert_correction_and_project_link_survive_long_note_pressure() {
+        let db = db();
+        db.conn()
+            .execute(
+                "INSERT INTO kol_projects(expert_id,work_id) VALUES(1,1)",
+                [],
+            )
+            .unwrap();
+        for _ in 0..100 {
+            capture(
+                &db,
+                1,
+                Some(1),
+                None,
+                &"Old context ".repeat(350),
+                super::super::now_unix(),
+            )
+            .unwrap();
+        }
+        let run = crate::ai::analysis::create_run(&db, "manual", 0, 1).unwrap();
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run,
+                "task",
+                "create",
+                None,
+                Some(1),
+                None,
+                "scope",
+                "Original",
+                "{}",
+                "",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        db.conn().execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES(?1,'misunderstood','Preserve corrected direction',1)",[p.id]).unwrap();
+        let pack = evidence_pack(&db, Some(1)).unwrap();
+        assert!(pack
+            .sources
+            .iter()
+            .any(|s| s.kind == "decision" && s.text.contains("Preserve corrected")));
+        assert!(pack.sources.iter().any(|s| s.kind == "work"));
+        assert!(pack.omitted > 0);
+        assert!(pack.notes.iter().any(|n| n.contains("省略")));
+    }
     use super::*;
     #[test]
     fn typed_delete_keeps_business_records_and_invalidates_deleted_evidence() {

@@ -13,12 +13,12 @@ pub(super) struct Slot {
 pub(super) fn kind_table(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "work" | "project" => "works",
-        "task" => "tasks",
+        "task" | "task_open" | "task_completed" => "tasks",
         "waiting" => "waiting_items",
         "calendar" => "calendar_events",
         "inbox" => "inbox_items",
         "resume" | "resume_point" | "progress" => "resume_points",
-        "activity" => "activity_events",
+        "activity" | "file_change" => "activity_events",
         "proposal" => "ai_proposals",
         "decision" => "review_decisions",
         "report" | "weekly_report" => "reports",
@@ -149,6 +149,7 @@ pub(super) fn slots(table: &str, row: &Value) -> SyncResult<Vec<Slot>> {
         "source_refs_json",
         "answer_json",
         "evidence_json",
+        "structured_json",
         "citations_json",
         "document_json",
     ] {
@@ -219,6 +220,59 @@ pub(super) fn replace(row: &mut Value, slot: &Slot, key: &str) -> SyncResult<()>
         *row = value;
     } else {
         row[&slot.column] = Value::String(value.to_string());
+    }
+    Ok(())
+}
+
+/// Machine-local indices have no portable identity. Preserve the cited text but
+/// never resolve their numbers against this receiver's unrelated local files.
+pub(super) fn retire_local_locations(row: &mut Value) -> SyncResult<()> {
+    fn walk(value: &mut Value) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    walk(item)
+                }
+            }
+            Value::Object(object) => {
+                let local = ["source_type", "entity_kind", "kind"].iter().any(|k| {
+                    object
+                        .get(*k)
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| matches!(v, "document" | "workspace" | "file_ref"))
+                });
+                for item in object.values_mut() {
+                    walk(item);
+                }
+                if object.contains_key("workspace_id") {
+                    object.insert("workspace_id".into(), Value::Null);
+                }
+                if local {
+                    object.insert("entity_id".into(), Value::from(0));
+                    object.insert("available".into(), Value::Bool(false));
+                    object.insert("remote_only".into(), Value::Bool(true));
+                    if object.contains_key("source_type") || object.contains_key("kind") {
+                        object.insert("location".into(),serde_json::json!({"entity_kind":object.get("source_type").or(object.get("kind")).cloned().unwrap_or(Value::Null),"entity_id":0,"workspace_id":null,"available":false,"remote_only":true}));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for column in [
+        "evidence_json",
+        "structured_json",
+        "source_refs_json",
+        "citations_json",
+        "answer_json",
+        "document_json",
+    ] {
+        if let Some(raw) = row[column].as_str() {
+            if let Ok(mut value) = serde_json::from_str::<Value>(raw) {
+                walk(&mut value);
+                row[column] = Value::String(value.to_string());
+            }
+        }
     }
     Ok(())
 }

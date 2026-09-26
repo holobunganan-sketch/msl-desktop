@@ -1,14 +1,25 @@
 //! Evidence-checked report contract. Model findings are rendered locally for people.
 use crate::ai::reports::ReportSnapshot;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[derive(Deserialize)]
+pub struct ValidatedReport {
+    pub content: String,
+    pub structured: Value,
+    pub evidence: Value,
+}
+pub fn validate_structured(
+    snapshot: &ReportSnapshot,
+    raw: &str,
+) -> Result<ValidatedReport, String> {
+    validate_report(snapshot, raw)
+}
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReportOutput {
     items: Vec<Finding>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Finding {
     category: String,
@@ -39,6 +50,9 @@ fn valid_text(text: &str, max: usize, required: bool) -> bool {
         .any(|v| lower.contains(v))
 }
 pub fn validate_and_render(snapshot: &ReportSnapshot, raw: &str) -> Result<String, String> {
+    Ok(validate_report(snapshot, raw)?.content)
+}
+fn validate_report(snapshot: &ReportSnapshot, raw: &str) -> Result<ValidatedReport, String> {
     if raw.len() > 2 * 1024 * 1024 {
         return Err("报告超过安全读取限制，请按阶段分别生成".into());
     }
@@ -60,7 +74,9 @@ pub fn validate_and_render(snapshot: &ReportSnapshot, raw: &str) -> Result<Strin
     let en = snapshot.analysis.locale == "en-US";
     let mut lines = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for item in output.items {
+    let mut items = Vec::new();
+    let mut sources = Vec::new();
+    for mut item in output.items {
         if item.category.trim().is_empty()
             || !["observed", "inferred", "unknown"].contains(&item.certainty.as_str())
             || !["period", "current", "next"].contains(&item.horizon.as_str())
@@ -206,6 +222,13 @@ pub fn validate_and_render(snapshot: &ReportSnapshot, raw: &str) -> Result<Strin
             ));
         }
         lines.push(text);
+        item.evidence_refs = refs.into_iter().cloned().collect();
+        for source in &item.evidence_refs {
+            if !sources.contains(source) {
+                sources.push(source.clone());
+            }
+        }
+        items.push(item);
     }
     if !snapshot.analysis.truncated.is_empty()
         || snapshot.source_counts["period_changes_omitted"]
@@ -215,7 +238,11 @@ pub fn validate_and_render(snapshot: &ReportSnapshot, raw: &str) -> Result<Strin
     {
         lines.push(format!("{}. {}",lines.len()+1,if en{"Coverage: some records or document text exceeded the current evidence range. Absence of evidence does not mean no work occurred."}else{"范围说明：部分记录或文件正文超出本次输入范围；未提及的工作不能据此认定没有进展。"}));
     }
-    Ok(lines.join("\n\n"))
+    Ok(ValidatedReport {
+        content: lines.join("\n\n"),
+        structured: serde_json::json!({"version":"report-spec-v2","items":items}),
+        evidence: serde_json::json!({"sources":sources,"coverage_notes":snapshot.analysis.truncated,"source_counts":snapshot.source_counts}),
+    })
 }
 
 /// Validate both the first response and the single repair identically.
@@ -225,11 +252,11 @@ pub async fn complete_report(
     key: &str,
     request: &crate::ai::provider::AiTextRequest,
     snapshot: &ReportSnapshot,
-) -> Result<String, String> {
+) -> Result<ValidatedReport, String> {
     let first = crate::ai::provider::complete_model(connection, model, key, request)
         .await
         .map_err(|e| e.to_string())?;
-    let error = match validate_and_render(snapshot, &first.content) {
+    let error = match validate_structured(snapshot, &first.content) {
         Ok(content) => return Ok(content),
         Err(error) => error,
     };
@@ -238,7 +265,7 @@ pub async fn complete_report(
     let second = crate::ai::provider::complete_model(connection, model, key, &repair)
         .await
         .map_err(|e| e.to_string())?;
-    validate_and_render(snapshot, &second.content)
+    validate_structured(snapshot, &second.content)
         .map_err(|e| format!("报告校正后仍未通过核验：{e}"))
 }
 
@@ -246,6 +273,18 @@ pub async fn complete_report(
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    #[test]
+    fn validated_structure_preserves_canonical_evidence_not_model_metadata() {
+        let (snapshot, mut output) = fixture();
+        output["items"][0]["evidence_refs"][0]["location"] = json!({"entity_id":9999});
+        let checked = validate_structured(&snapshot, &output.to_string()).unwrap();
+        assert_eq!(
+            checked.structured["items"][0]["headline"],
+            output["items"][0]["headline"]
+        );
+        assert_eq!(checked.evidence["sources"][0]["timestamp"], 150);
+        assert!(checked.evidence["sources"][0].get("location").is_none());
+    }
     fn fixture() -> (ReportSnapshot, Value) {
         let db = crate::db::Database::open_in_memory().unwrap();
         let work = crate::db::work::WorkRepo::new(db.conn())
