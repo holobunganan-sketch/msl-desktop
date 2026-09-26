@@ -1,5 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+test('review page required parallel reads resolve with typed memory statistics and matching runs',async()=>{
+  const {invoke}=await fixture();
+  const [recent,pending,works,runs,memory]=await Promise.all([
+    invoke('list_recent_ai_proposals',{cutoffCreatedAt:0,status:null,limit:500}),invoke('list_ai_proposals',{status:'pending',limit:500}),
+    invoke('list_works',{status:null}),invoke('list_analysis_runs',{limit:20}),invoke('get_classification_memory_stats')
+  ]);
+  assert.deepEqual(memory,{pattern_count:0,feedback_count:0,accepted_count:0,corrected_count:0,rejected_count:0,updated_at:null});
+  assert.ok(works.length>0&&pending.length>0);
+  for(const proposal of recent)assert.ok(runs.some(run=>run.id===proposal.analysis_run_id));
+});
 let serial=0;
 async function fixture(search='') {
   globalThis.location={search};globalThis.window={};
