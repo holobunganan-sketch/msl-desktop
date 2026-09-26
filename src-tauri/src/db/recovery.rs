@@ -31,7 +31,7 @@ fn invalidate(conn: &rusqlite::Connection, kind: &str, id: i64) -> DbResult<()> 
 pub fn complete(db: &Database, kind: &str, id: i64) -> DbResult<Value> {
     let (table, finished, status) = table(kind)?;
     let tx = super::write_transaction(db.conn())?;
-    let before = snapshot(&tx, kind, id)?;
+    let mut before = snapshot(&tx, kind, id)?;
     if before["entity"]["status"] == status {
         return Err(DbError::Migration("事项已经完成，请刷新".into()));
     }
@@ -39,10 +39,11 @@ pub fn complete(db: &Database, kind: &str, id: i64) -> DbResult<Value> {
     tx.execute(&format!("UPDATE {table} SET status=?1,{finished}=?2,updated_at=MAX(updated_at+1,?2) WHERE id=?3"),params![status,now,id])?;
     let after = snapshot(&tx, kind, id)?;
     let receipt = uuid::Uuid::new_v4().to_string();
+    tx.execute("INSERT INTO activity_events(timestamp,event_type,entity_type,entity_id,work_id,display_text,metadata_json) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![now,format!("{kind}.completed"),kind,id,before["entity"]["work_id"].as_i64(),format!("完成 {}",before["entity"]["title"].as_str().unwrap_or("事项")),json!({"manual_completion_receipt_id":receipt}).to_string()])?;
+    before["completion_event_id"] = Value::from(tx.last_insert_rowid());
     tx.execute("INSERT INTO manual_completion_receipts(id,entity_kind,entity_id,title,before_json,after_json,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![receipt,kind,id,before["entity"]["title"].as_str(),before.to_string(),after.to_string(),now])?;
     tx.execute("DELETE FROM manual_completion_receipts WHERE id NOT IN (SELECT id FROM manual_completion_receipts ORDER BY created_at DESC,rowid DESC LIMIT 100)",[])?;
     invalidate(&tx, kind, id)?;
-    tx.execute("INSERT INTO activity_events(timestamp,event_type,entity_type,entity_id,work_id,display_text) VALUES(?1,?2,?3,?4,?5,?6)",params![now,format!("{kind}.completed"),kind,id,before["entity"]["work_id"].as_i64(),format!("完成 {}",before["entity"]["title"].as_str().unwrap_or("事项"))])?;
     tx.commit()?;
     Ok(
         json!({"id":receipt,"entity_kind":kind,"entity_id":id,"title":before["entity"]["title"],"created_at":now,"undone_at":null}),
@@ -79,6 +80,8 @@ pub fn undo(db: &Database, id: &str) -> DbResult<()> {
         tx.execute("UPDATE ai_proposals SET status=?1,decided_at=?2,updated_at=MAX(updated_at+1,?3) WHERE id=?4",params![p["status"].as_str(),p["decided_at"].as_i64(),now,p["id"].as_i64()])?;
     }
     invalidate(&tx, kind, entity_id)?;
+    let original = before["completion_event_id"].as_i64();
+    tx.execute("INSERT INTO activity_events(timestamp,event_type,entity_type,entity_id,work_id,display_text,metadata_json) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![now,format!("{kind}.completion_undone"),if original.is_some(){"activity"}else{kind},original.unwrap_or(entity_id),entity["work_id"].as_i64(),format!("撤销完成 {}，已恢复待处理状态",entity["title"].as_str().unwrap_or("事项")),json!({"manual_completion_receipt_id":id,"restored_status":entity["status"]}).to_string()])?;
     tx.execute(
         "UPDATE manual_completion_receipts SET undone_at=?1 WHERE id=?2",
         params![now, id],
@@ -115,6 +118,54 @@ pub fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completion_undo_emits_one_reversal_and_report_does_not_claim_completion() {
+        let db = Database::open_in_memory().unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Synthetic reversal", "normal", None, None)
+            .unwrap();
+        let receipt = complete(&db, "task", task.id).unwrap();
+        let original: i64 = db
+            .conn()
+            .query_row(
+                "SELECT id FROM activity_events WHERE event_type='task.completed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        undo(&db, receipt["id"].as_str().unwrap()).unwrap();
+        assert!(undo(&db, receipt["id"].as_str().unwrap()).is_err());
+        let events = super::super::knowledge::rows(
+            db.conn(),
+            "SELECT * FROM activity_events WHERE event_type='task.completion_undone'",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["entity_type"], "activity");
+        assert_eq!(events[0]["entity_id"], original);
+        let snapshot = crate::ai::reports::build_report_snapshot(
+            &db,
+            "weekly",
+            0,
+            super::super::now_unix() + 10,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(!snapshot
+            .period_changes
+            .iter()
+            .any(|v| v["event_type"] == "task.completed"));
+        assert!(snapshot
+            .period_changes
+            .iter()
+            .any(|v| v["event_type"] == "task.completion_undone"));
+        assert!(!snapshot
+            .analysis
+            .source_refs
+            .iter()
+            .any(|r| r.source_type == "activity" && r.entity_id == Some(original)));
+    }
     #[test]
     fn delete_refuses_imported_content_change_with_identical_timestamp() {
         let db = Database::open_in_memory().unwrap();

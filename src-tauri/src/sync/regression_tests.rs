@@ -184,6 +184,45 @@ fn same_timestamp_remote_task_edit_invalidates_displayed_delete_confirmation() {
 }
 
 #[test]
+fn manual_completion_reversal_maps_original_event_identity_across_devices() {
+    let p = Pair::new();
+    p.b.conn().execute("INSERT INTO activity_events(timestamp,event_type,display_text) VALUES(1,'synthetic.other','Unrelated')",[]).unwrap();
+    let task = crate::db::task::TaskRepo::new(p.a.conn())
+        .insert(None, "Synthetic undo", "normal", None, None)
+        .unwrap();
+    let receipt = crate::db::recovery::complete(&p.a, "task", task.id).unwrap();
+    crate::db::recovery::undo(&p.a, receipt["id"].as_str().unwrap()).unwrap();
+    p.send_a();
+    let completed: i64 =
+        p.b.conn()
+            .query_row(
+                "SELECT id FROM activity_events WHERE event_type='task.completed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+    assert_ne!(completed, 1);
+    let reversed:i64=p.b.conn().query_row("SELECT entity_id FROM activity_events WHERE event_type='task.completion_undone' AND entity_type='activity'",[],|r|r.get(0)).unwrap();
+    assert_eq!(reversed, completed);
+    let snapshot = crate::ai::reports::build_report_snapshot(
+        &p.b,
+        "weekly",
+        0,
+        crate::db::now_unix() + 10,
+        "zh-CN",
+    )
+    .unwrap();
+    assert!(!snapshot
+        .period_changes
+        .iter()
+        .any(|v| v["event_type"] == "task.completed"));
+    assert!(snapshot
+        .period_changes
+        .iter()
+        .any(|v| v["event_type"] == "task.completion_undone"));
+}
+
+#[test]
 fn conflict_write_failure_rolls_back_the_entire_received_batch() {
     for table in ["sync_conflicts", "sync_peer_rows"] {
         let p = Pair::new();

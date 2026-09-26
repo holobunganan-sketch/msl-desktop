@@ -112,7 +112,16 @@ pub fn build_report_snapshot(
         Vec::new()
     };
     // Preserve business history separately from current-state snapshots. Source files stay read-only.
-    let mut stmt=db.conn().prepare("SELECT id,timestamp,event_type,work_id,entity_type,entity_id,display_text,metadata_json FROM activity_events WHERE timestamp>=?1 AND timestamp<?2 AND (entity_type IN ('work','task','waiting','calendar','inbox','resume_point') OR event_type LIKE 'work.%' OR event_type LIKE 'task.%' OR event_type LIKE 'waiting.%' OR event_type LIKE 'calendar.%' OR event_type LIKE 'inbox.%' OR event_type LIKE 'resume%') ORDER BY timestamp DESC,id DESC LIMIT 1001")?;
+    let reversed=crate::db::knowledge::rows(db.conn(),"SELECT entity_id FROM activity_events WHERE event_type IN ('task.completion_undone','waiting.completion_undone') AND entity_type='activity'",&[])?.into_iter().filter_map(|v|v["entity_id"].as_i64()).collect::<std::collections::BTreeSet<_>>();
+    analysis
+        .brief
+        .activity
+        .retain(|f| !f.entity_id.is_some_and(|id| reversed.contains(&id)));
+    analysis.brief.source_counts.activity = analysis.brief.activity.len() as u32;
+    analysis.source_refs.retain(|r| {
+        r.source_type != "activity" || !r.entity_id.is_some_and(|id| reversed.contains(&id))
+    });
+    let mut stmt=db.conn().prepare("SELECT id,timestamp,event_type,work_id,entity_type,entity_id,display_text,metadata_json FROM activity_events e WHERE timestamp>=?1 AND timestamp<?2 AND NOT EXISTS(SELECT 1 FROM activity_events undo WHERE undo.event_type IN ('task.completion_undone','waiting.completion_undone') AND undo.entity_type='activity' AND undo.entity_id=e.id) AND (entity_type IN ('work','task','waiting','calendar','inbox','resume_point') OR event_type LIKE 'work.%' OR event_type LIKE 'task.%' OR event_type LIKE 'waiting.%' OR event_type LIKE 'calendar.%' OR event_type LIKE 'inbox.%' OR event_type LIKE 'resume%') ORDER BY timestamp DESC,id DESC LIMIT 1001")?;
     let rows=stmt.query_map(rusqlite::params![period_start,period_end],|r|Ok(serde_json::json!({"source_type":"activity","entity_id":r.get::<_,i64>(0)?,"timestamp":r.get::<_,i64>(1)?,"event_type":r.get::<_,String>(2)?,"work_id":r.get::<_,Option<i64>>(3)?,"target_type":r.get::<_,Option<String>>(4)?,"target_id":r.get::<_,Option<i64>>(5)?,"description":r.get::<_,String>(6)?,"change_details":r.get::<_,Option<String>>(7)?})))?;
     let mut period_changes = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     let omitted = period_changes.len().saturating_sub(1000);
