@@ -109,6 +109,7 @@ pub fn proposal_scopes(
             scopes.insert(s);
         }
     }
+    let explicitly_owned = !scopes.is_empty();
     if let Some(refs) = sources.as_array() {
         for r in refs {
             if let (Some(kind), Some(target)) = (r["source_type"].as_str(), r["entity_id"].as_i64())
@@ -124,7 +125,7 @@ pub fn proposal_scopes(
                         .optional()?,
                     _ => None,
                 };
-                if let Some(workspace) = workspace {
+                if let Some(workspace) = workspace.filter(|_| !explicitly_owned) {
                     scopes.extend(candidates(conn, None, None, Some(workspace))?);
                 }
                 if let Some(s) = entity_scope(conn, kind, target)? {
@@ -696,7 +697,7 @@ pub fn eligible_workspaces(db: &Database, tickets: &[Ticket]) -> DbResult<Vec<i6
             .query_map([ws.id], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         if allowed.contains(&format!("workspace:{}", ws.id))
-            || (!works.is_empty() && works.iter().all(|w| allowed.contains(&format!("work:{w}"))))
+            || works.iter().any(|w| allowed.contains(&format!("work:{w}")))
         {
             result.push(ws.id);
         }
@@ -723,7 +724,7 @@ pub fn restrict(
         let works = s
             .query_map([ws], |r| r.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(!works.is_empty() && works.iter().all(|w| allowed.contains(&format!("work:{w}"))))
+        Ok(works.iter().any(|w| allowed.contains(&format!("work:{w}"))))
     };
     let allowed_workspaces = crate::db::workspace::WorkspaceRepo::new(db.conn())
         .list()?
@@ -855,6 +856,97 @@ pub fn restrict(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_directory_evidence_does_not_attach_held_neighbor_to_owned_proposal() {
+        for source_kind in ["workspace", "document"] {
+            for owns_ready_project in [true, false] {
+                let db = Database::open_in_memory().unwrap();
+                let a = project(&db);
+                let b = project(&db);
+                let ws = crate::db::workspace::WorkspaceRepo::new(db.conn())
+                    .insert("Shared", "C:/synthetic-shared")
+                    .unwrap();
+                db.conn().execute("INSERT INTO work_workspace_links(work_id,workspace_id,created_at) VALUES(?1,?3,1),(?2,?3,1)",params![a,b,ws.id]).unwrap();
+                crate::db::documents::DocumentIndexRepo::new(db.conn())
+                    .upsert(
+                        ws.id,
+                        "C:/synthetic-shared/note.txt",
+                        "note.txt",
+                        "txt",
+                        10,
+                        1,
+                        Some("hash"),
+                        "ready",
+                        10,
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                let source_id = if source_kind == "workspace" {
+                    ws.id
+                } else {
+                    crate::db::documents::DocumentIndexRepo::new(db.conn())
+                        .list(ws.id)
+                        .unwrap()[0]
+                        .id
+                };
+                opinion(&db, b, run(&db));
+                assert_eq!(
+                    status(&db, &format!("work:{b}")).unwrap().state,
+                    "waiting_review"
+                );
+                let r = run(&db);
+                let tickets = reserve(&db, r, &[format!("work:{a}")]).unwrap();
+                let snapshot = super::super::analysis_snapshot::build_for_round(
+                    &db,
+                    "global_analysis",
+                    "2026-09-26",
+                    0,
+                    i64::MAX,
+                    0,
+                    i64::MAX,
+                    "zh-CN",
+                    &tickets,
+                )
+                .unwrap();
+                assert!(!snapshot.brief.works.iter().any(|w| w.entity_id == Some(b)));
+                let output=json!({"proposals":[{"kind":"task","operation":"create","work_id":if owns_ready_project {a}else{b},"title":"Owned next step","payload":{},"source_refs":[{"source_type":source_kind,"entity_id":source_id}]}]}).to_string();
+                let result = super::super::analysis::apply_output(&db, r, &snapshot, &output);
+                if owns_ready_project {
+                    assert_eq!(result.unwrap(), 1);
+                } else {
+                    assert_eq!(result.unwrap_or(0), 0);
+                }
+                assert_eq!(status(&db, &format!("work:{b}")).unwrap().pending, 1);
+                let task = crate::db::task::TaskRepo::new(db.conn())
+                    .insert(Some(a), "Owned task", "normal", None, None)
+                    .unwrap();
+                assert_eq!(
+                    proposal_scopes(
+                        db.conn(),
+                        "task",
+                        Some(task.id),
+                        None,
+                        &json!([{"source_type":source_kind,"entity_id":source_id}])
+                    )
+                    .unwrap(),
+                    BTreeSet::from([format!("work:{a}")])
+                );
+                assert_eq!(
+                    proposal_scopes(
+                        db.conn(),
+                        "work",
+                        None,
+                        None,
+                        &json!([{"source_type":source_kind,"entity_id":source_id}])
+                    )
+                    .unwrap(),
+                    BTreeSet::from([format!("work:{a}"), format!("work:{b}")])
+                );
+            }
+        }
+    }
     #[test]
     fn source_requirement_preserves_workspace_document_work_drafts() {
         for kind in ["workspace", "document"] {
