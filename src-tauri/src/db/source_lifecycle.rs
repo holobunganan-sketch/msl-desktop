@@ -6,15 +6,30 @@ use super::{
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
+pub(crate) fn canonical_source_id(id: &str) -> String {
+    let Some((kind, id)) = id.split_once(':') else {
+        return id.to_string();
+    };
+    let kind = match kind {
+        "task_open" | "task_completed" => "task",
+        "resume_point" | "progress" => "resume",
+        "weekly_report" => "report",
+        "kol_expert" => "expert",
+        other => other,
+    };
+    format!("{kind}:{id}")
+}
+pub(crate) fn is_retired(conn: &Connection, id: &str) -> DbResult<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM knowledge_deleted_sources WHERE source_id=?1 OR source_id=?2)",
+        params![id, canonical_source_id(id)],
+        |r| r.get(0),
+    )?)
+}
+
 pub fn ensure_live(conn: &Connection, pack: &EvidencePack) -> DbResult<()> {
     for source in &pack.sources {
-        if source.trust == "deleted"
-            || conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM knowledge_deleted_sources WHERE source_id=?1)",
-                [&source.id],
-                |r| r.get::<_, bool>(0),
-            )?
-        {
+        if source.trust == "deleted" || is_retired(conn, &source.id)? {
             return Err(DbError::Migration(
                 "分析依据已被删除，请根据当前资料重新分析".into(),
             ));
@@ -29,7 +44,11 @@ pub fn retire(conn: &Connection, ids: &[String]) -> DbResult<()> {
     if ids.is_empty() {
         return Ok(());
     }
-    for id in ids {
+    let ids = ids
+        .iter()
+        .map(|id| canonical_source_id(id))
+        .collect::<Vec<_>>();
+    for id in &ids {
         conn.execute(
             "INSERT OR IGNORE INTO knowledge_deleted_sources VALUES(?1,?2)",
             params![id, super::now_unix()],
@@ -48,7 +67,7 @@ pub fn retire(conn: &Connection, ids: &[String]) -> DbResult<()> {
             };
             let mut changed = false;
             for source in &mut pack.sources {
-                if ids.contains(&source.id)
+                if ids.contains(&canonical_source_id(&source.id))
                     && (source.trust != "deleted" || !source.text.is_empty())
                 {
                     source.trust = "deleted".into();
@@ -72,6 +91,7 @@ pub fn retire(conn: &Connection, ids: &[String]) -> DbResult<()> {
             }
         }
     }
+    let mut retired_reports = Vec::new();
     for row in knowledge::rows(
         conn,
         "SELECT id,evidence_json FROM reports WHERE evidence_json IS NOT NULL",
@@ -85,13 +105,12 @@ pub fn retire(conn: &Connection, ids: &[String]) -> DbResult<()> {
         let mut changed = false;
         if let Some(sources) = evidence["sources"].as_array_mut() {
             for source in sources {
-                let kind = match source["source_type"].as_str().unwrap_or("") {
-                    "task_open" | "task_completed" => "task",
-                    "weekly_report" => "report",
-                    other => other,
-                };
-                let key = format!("{kind}:{}", source["entity_id"].as_i64().unwrap_or(0));
-                if ids.contains(&key) {
+                let key = canonical_source_id(&format!(
+                    "{}:{}",
+                    source["source_type"].as_str().unwrap_or(""),
+                    source["entity_id"].as_i64().unwrap_or(0)
+                ));
+                if ids.contains(&key) && source["trust"] != "deleted" {
                     source["trust"] = Value::String("deleted".into());
                     source["location"]["available"] = Value::Bool(false);
                     changed = true;
@@ -99,11 +118,15 @@ pub fn retire(conn: &Connection, ids: &[String]) -> DbResult<()> {
             }
         }
         if changed {
+            retired_reports.push(format!("report:{}", row["id"].as_i64().unwrap_or(0)));
             conn.execute(
                 "UPDATE reports SET evidence_json=?1 WHERE id=?2",
                 params![evidence.to_string(), row["id"].as_i64()],
             )?;
         }
+    }
+    if !retired_reports.is_empty() {
+        retire(conn, &retired_reports)?;
     }
     Ok(())
 }
@@ -127,6 +150,46 @@ pub fn usable_insight(conn: &Connection, row: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn project_deleted_resume_retires_report_and_dependent_monthly_sources() {
+        let db = super::super::Database::open_in_memory().unwrap();
+        let w = super::super::work::WorkRepo::new(db.conn())
+            .insert("Synthetic", "active")
+            .unwrap();
+        db.conn().execute("INSERT INTO resume_points(work_id,current_state,next_step,remember,source,created_at) VALUES(?1,'Progress','','','manual',1)",[w.id]).unwrap();
+        let id = db.conn().last_insert_rowid();
+        for (report_id, kind, source_type, source_id) in [
+            (1, "weekly", "resume_point", id),
+            (2, "monthly", "weekly_report", 1),
+        ] {
+            let evidence =
+                serde_json::json!({"sources":[{"source_type":source_type,"entity_id":source_id}]})
+                    .to_string();
+            db.conn().execute("INSERT INTO reports(id,kind,period_start,period_end,status,content,retention_state,created_at,updated_at,evidence_json) VALUES(?1,?2,1,2,'completed','Historical','kept',1,1,?3)",params![report_id,kind,evidence]).unwrap();
+        }
+        super::super::work::WorkRepo::new(db.conn())
+            .delete(w.id)
+            .unwrap();
+        assert_eq!(
+            super::super::reports::ReportRepo::new(db.conn())
+                .get(1)
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("Historical")
+        );
+        assert!(!knowledge::collect(&db, &[], "")
+            .unwrap()
+            .sources
+            .iter()
+            .any(|s| s.kind == "report"));
+        assert!(super::super::reports::ReportRepo::new(db.conn())
+            .list_overlapping_weekly(0, 3, 10)
+            .unwrap()
+            .is_empty());
+        assert!(is_retired(db.conn(), "report:2").unwrap());
+    }
     #[test]
     fn deleted_report_evidence_remains_readable_but_not_reusable_as_current_evidence() {
         let db = super::super::Database::open_in_memory().unwrap();

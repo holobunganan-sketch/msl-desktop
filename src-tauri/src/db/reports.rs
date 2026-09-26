@@ -141,6 +141,20 @@ impl<'a> ReportRepo<'a> {
         source_report_ids_json: &str,
     ) -> DbResult<Report> {
         let conn = super::write_transaction(self.conn)?;
+        if let Some(sources) = checked.evidence["sources"].as_array() {
+            for source in sources {
+                let kind = source["source_type"].as_str().unwrap_or("");
+                let id = source["entity_id"].as_i64().unwrap_or(0);
+                if source["trust"] == "deleted"
+                    || super::source_lifecycle::is_retired(&conn, &format!("{kind}:{id}"))?
+                    || super::knowledge::source_location(&conn, kind, id)?["available"] == false
+                {
+                    return Err(DbError::Migration(
+                        "报告来源已删除或失效，请根据当前资料重新生成".into(),
+                    ));
+                }
+            }
+        }
         let repo = ReportRepo::new(&conn);
         repo.complete(
             id,
@@ -321,6 +335,46 @@ impl<'a> ReportScheduleRepo<'a> {
 mod tests {
     use super::*;
     use crate::db::Database;
+    #[test]
+    fn late_report_cannot_commit_retired_evidence_including_resume_alias() {
+        for kind in ["task_completed", "resume_point"] {
+            let db = Database::open_in_memory().unwrap();
+            db.conn().execute_batch("INSERT INTO provider_settings(display_name,provider_type,base_url,model,enabled,created_at,updated_at) VALUES('Mock','openai_compatible','http://127.0.0.1','',1,1,1); INSERT INTO provider_models(provider_id,model_id,display_name,protocol,endpoint_path,source,created_at,updated_at) VALUES(1,'mock','Mock','chat_completions','/chat/completions','manual',1,1);").unwrap();
+            let repo = ReportRepo::new(db.conn());
+            let r = repo.create("weekly", 100, 200).unwrap();
+            let checked = crate::ai::report_contract::ValidatedReport {
+                content: "Late deleted evidence".into(),
+                structured: serde_json::json!({"items":[]}),
+                evidence: serde_json::json!({"sources":[{"source_type":kind,"entity_id":42}]}),
+            };
+            super::super::source_lifecycle::retire(
+                db.conn(),
+                &[format!(
+                    "{}:42",
+                    if kind == "resume_point" {
+                        "resume"
+                    } else {
+                        "task"
+                    }
+                )],
+            )
+            .unwrap();
+            assert!(repo
+                .complete_structured(r.id, 1, &checked, "h", "{}", "[]")
+                .is_err());
+            assert!(repo.get(r.id).unwrap().unwrap().content.is_none());
+            assert!(repo
+                .list_overlapping_weekly(50, 250, 10)
+                .unwrap()
+                .is_empty());
+            repo.keep(r.id).unwrap();
+            assert!(!super::super::knowledge::collect(&db, &[], "")
+                .unwrap()
+                .sources
+                .iter()
+                .any(|s| s.kind == "report"));
+        }
+    }
 
     #[test]
     fn report_lifecycle_and_overlapping_weekly_lookup_are_persisted() {

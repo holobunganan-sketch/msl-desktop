@@ -108,7 +108,7 @@ pub(crate) async fn execute_report(
             .collect::<Vec<_>>(),
     )
     .unwrap_or_else(|_| "[]".into());
-    with_db(state, |db| {
+    let saved = with_db(state, |db| {
         crate::db::reports::ReportRepo::new(db.conn()).complete_structured(
             report_id,
             resolved.model.id,
@@ -118,7 +118,11 @@ pub(crate) async fn execute_report(
             &source_ids,
         )?;
         Ok(())
-    })?;
+    });
+    if let Err(error) = saved {
+        mark_failed(state, report_id, "source_changed_or_persist_failed", &error);
+        return Err(format!("报告 #{report_id} 生成失败：{error}"));
+    }
     Ok(report_id)
 }
 
