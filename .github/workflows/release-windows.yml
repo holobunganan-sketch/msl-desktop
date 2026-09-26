@@ -39,15 +39,26 @@ jobs:
             throw 'The Git tag, package.json, tauri.conf.json and Cargo.toml versions must match.'
           }
       - run: pnpm install --frozen-lockfile
+      - name: Isolate verification and build data
+        shell: pwsh
+        run: |
+          $profileRoot = Join-Path $env:RUNNER_TEMP ('.test-runtime/msl-verification-' + [guid]::NewGuid().ToString('N'))
+          foreach ($name in @('APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')) {
+            $path = Join-Path $profileRoot $name
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            "$name=$path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          'MSL_ISOLATED_TEST=1' | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: pnpm check:publish
       - run: pnpm check:installer
       - run: pnpm check:ui
+      - run: node --test --test-concurrency=1 tests/*.test.mjs
       - run: pnpm check
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Test with isolated application data
         shell: pwsh
         run: |
-          $testRoot = Join-Path $env:RUNNER_TEMP ('msl-tests-' + [guid]::NewGuid().ToString('N'))
+          $testRoot = Join-Path $env:RUNNER_TEMP ('.test-runtime/msl-tests-' + [guid]::NewGuid().ToString('N'))
           foreach ($name in @('APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP')) {
             $path = Join-Path $testRoot $name
             New-Item -ItemType Directory -Path $path -Force | Out-Null

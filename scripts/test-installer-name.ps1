@@ -8,6 +8,12 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $generatedDir = Join-Path $projectRoot 'src-tauri\target\release\nsis\x64'
 $compiler = Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe'
+if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
+    # Tauri resolves its build-tool cache through the Windows known folder API.
+    # Read only that compiler; all installer output and data remain isolated below.
+    $compiler = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'tauri\NSIS\makensis.exe'
+}
+if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw 'The NSIS build compiler was not found. Build the release first.' }
 $source = Get-Content -LiteralPath (Join-Path $generatedDir 'installer.nsi') -Raw
 if ($source -notmatch '!define PRODUCTNAME "MSL Desktop"' -or $source -notmatch 'MigrateLegacyProductShortcuts') {
     throw 'Build the updated release installer before running this test.'
