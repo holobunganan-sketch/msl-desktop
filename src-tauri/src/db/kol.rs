@@ -166,9 +166,21 @@ pub fn insights(db: &Database, expert_id: Option<i64>) -> DbResult<Vec<Value>> {
     knowledge::rows(db.conn(),"SELECT i.*,e.name FROM kol_insights i LEFT JOIN kol_experts e ON e.id=i.expert_id WHERE ?1 IS NULL OR i.expert_id=?1 ORDER BY i.updated_at DESC,i.id DESC",&[&expert_id])
 }
 pub fn secretary_context(db: &Database, workspace_filter: Option<&[i64]>) -> DbResult<Vec<Value>> {
+    secretary_context_inner(db, workspace_filter, true)
+}
+pub(crate) fn secretary_context_for_round(db: &Database) -> DbResult<Vec<Value>> {
+    secretary_context_inner(db, None, false)
+}
+fn secretary_context_inner(
+    db: &Database,
+    workspace_filter: Option<&[i64]>,
+    bounded: bool,
+) -> DbResult<Vec<Value>> {
     let folders = workspace_filter.map(|ids| serde_json::to_string(ids).unwrap());
-    let mut context=knowledge::rows(db.conn(),"SELECT n.id,n.expert_id,e.name,e.institution,e.department,n.work_id,n.content,n.occurred_at,(SELECT json_group_array(work_id) FROM kol_projects p WHERE p.expert_id=n.expert_id) AS candidate_project_ids FROM kol_notes n JOIN kol_experts e ON e.id=n.expert_id WHERE e.archived=0 AND (?1 IS NULL OR n.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY n.created_at DESC,n.id DESC LIMIT 51",&[&folders])?;
-    let mut insights=knowledge::rows(db.conn(),"SELECT i.id,i.expert_id,e.name,e.institution,e.department,k.work_id,i.title,i.observation,i.implication,i.status,i.review_note,i.citations_json,i.updated_at FROM kol_insights i LEFT JOIN kol_experts e ON e.id=i.expert_id LEFT JOIN kol_projects k ON k.expert_id=i.expert_id WHERE i.status!='dismissed' AND (e.archived=0 OR e.id IS NULL) AND (?1 IS NULL OR k.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY i.updated_at DESC,i.id DESC LIMIT 31",&[&folders])?;
+    let note_limit = if bounded { 51 } else { -1 };
+    let insight_limit = if bounded { 31 } else { -1 };
+    let mut context=knowledge::rows(db.conn(),"SELECT n.id,n.expert_id,e.name,e.institution,e.department,n.work_id,n.content,n.occurred_at,(SELECT json_group_array(work_id) FROM kol_projects p WHERE p.expert_id=n.expert_id) AS candidate_project_ids FROM kol_notes n JOIN kol_experts e ON e.id=n.expert_id WHERE e.archived=0 AND (?1 IS NULL OR n.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY n.created_at DESC,n.id DESC LIMIT ?2",&[&folders,&note_limit])?;
+    let mut insights=knowledge::rows(db.conn(),"SELECT i.id,i.expert_id,e.name,e.institution,e.department,k.work_id,i.title,i.observation,i.implication,i.status,i.review_note,i.citations_json,i.updated_at FROM kol_insights i LEFT JOIN kol_experts e ON e.id=i.expert_id LEFT JOIN kol_projects k ON k.expert_id=i.expert_id WHERE i.status!='dismissed' AND (e.archived=0 OR e.id IS NULL) AND (?1 IS NULL OR k.work_id IN(SELECT work_id FROM work_workspace_links WHERE workspace_id IN(SELECT value FROM json_each(?1)))) ORDER BY i.updated_at DESC,i.id DESC LIMIT ?2",&[&folders,&insight_limit])?;
     insights.retain(|row| super::source_lifecycle::usable_insight(db.conn(), row));
     for insight in &mut insights {
         insight["source_type"] = json!("kol_insight");

@@ -222,13 +222,13 @@ fn expand_global_workbench_sources(db: &Database, brief: &mut BriefSnapshot) -> 
 }
 
 pub(crate) fn user_directions(db: &Database) -> DbResult<Vec<serde_json::Value>> {
-    scoped_user_directions(db, None)
+    scoped_user_directions(db, None).map(|(rows, _)| rows)
 }
 
 pub(crate) fn scoped_user_directions(
     db: &Database,
     scopes: Option<&std::collections::BTreeSet<String>>,
-) -> DbResult<Vec<serde_json::Value>> {
+) -> DbResult<(Vec<serde_json::Value>, usize)> {
     let mut result = Vec::new();
     let mut captures = db.conn().prepare(
         "SELECT i.id,c.work_id,c.entity_kind,c.entity_id,i.content,i.created_at,i.processed_at \
@@ -252,7 +252,7 @@ pub(crate) fn scoped_user_directions(
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
     let mut decisions = db.conn().prepare(
-        "SELECT d.id,p.work_id,p.title,d.reason_code,d.note,d.created_at \
+        "SELECT d.id,p.work_id,p.title,d.reason_code,d.note,d.created_at,p.id \
          FROM review_decisions d JOIN ai_proposals p ON p.id=d.proposal_id \
          ORDER BY d.id DESC",
     )?;
@@ -262,6 +262,7 @@ pub(crate) fn scoped_user_directions(
                 let note: String = row.get(4)?;
                 Ok(serde_json::json!({
                     "type":"review_correction", "decision_id":row.get::<_,i64>(0)?,
+                    "proposal_id":row.get::<_,i64>(6)?,
                     "work_id":row.get::<_,Option<i64>>(1)?,
                     "proposal_title":row.get::<_,String>(2)?,
                     "reason_code":row.get::<_,String>(3)?,
@@ -272,7 +273,7 @@ pub(crate) fn scoped_user_directions(
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
     let mut insights = db.conn().prepare(
-        "SELECT i.id,k.work_id,i.expert_id,i.title,i.status,i.review_note,i.updated_at \
+        "SELECT i.id,k.work_id,i.expert_id,i.title,i.status,i.review_note,i.updated_at,i.citations_json \
          FROM kol_insights i LEFT JOIN kol_projects k ON k.expert_id=i.expert_id \
          WHERE i.status IN ('reviewed','revised','dismissed') \
          ORDER BY i.updated_at DESC,i.id DESC",
@@ -283,6 +284,7 @@ pub(crate) fn scoped_user_directions(
                 let note: String = row.get(5)?;
                 Ok(serde_json::json!({
                     "type":"expert_insight_review", "insight_id":row.get::<_,i64>(0)?,
+                    "citations_json":row.get::<_,String>(7)?,
                     "work_id":row.get::<_,Option<i64>>(1)?,
                     "expert_id":row.get::<_,Option<i64>>(2)?,
                     "insight_title":row.get::<_,String>(3)?,
@@ -293,30 +295,41 @@ pub(crate) fn scoped_user_directions(
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?,
     );
-    if let Some(scopes) = scopes {
-        result.retain(|v| {
-            if let Some(w) = v["work_id"].as_i64() {
-                return scopes.contains(&format!("work:{w}"));
-            }
-            if let Some(i) = v["inbox_id"].as_i64() {
-                return super::rounds::inbox_scope(db.conn(), i).is_ok_and(|s| scopes.contains(&s));
-            }
-            scopes.contains("loose")
-        });
-    }
-    // Keep durable corrections ahead of captures, with independent per-project
-    // quotas so activity elsewhere cannot evict an effective direction.
+    // Keep newest corrections first inside each logical matter, then distribute
+    // the global budget across matters instead of spending it on noisy projects.
     result.sort_by_key(|v| v["type"] == "user_capture");
-    let mut counts = std::collections::BTreeMap::new();
-    result.retain(|v| {
-        let count = counts
-            .entry((v["work_id"].to_string(), v["type"].to_string()))
-            .or_insert(0usize);
-        *count += 1;
-        *count <= 120
-    });
-    result.truncate(280);
-    Ok(result)
+    let mut buckets: std::collections::BTreeMap<
+        String,
+        std::collections::VecDeque<serde_json::Value>,
+    > = std::collections::BTreeMap::new();
+    for mut value in result {
+        let mut resolved = super::rounds::evidence_scopes(db.conn(), &value)?;
+        if let Some(allowed) = scopes {
+            resolved.retain(|s| allowed.contains(s));
+        }
+        if let Some(key) = resolved.first().cloned() {
+            value["scopes"] = serde_json::json!(resolved);
+            buckets.entry(key).or_default().push_back(value);
+        }
+    }
+    let total: usize = buckets.values().map(|v| v.len()).sum();
+    let mut selected = Vec::new();
+    while selected.len() < 280 {
+        let before = selected.len();
+        for queue in buckets.values_mut() {
+            if selected.len() == 280 {
+                break;
+            }
+            if let Some(value) = queue.pop_front() {
+                selected.push(value);
+            }
+        }
+        if selected.len() == before {
+            break;
+        }
+    }
+    let omitted = total - selected.len();
+    Ok((selected, omitted))
 }
 
 fn project_catalog(db: &Database) -> DbResult<Vec<serde_json::Value>> {

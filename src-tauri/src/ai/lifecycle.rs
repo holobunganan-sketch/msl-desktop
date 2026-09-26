@@ -110,10 +110,25 @@ pub fn suppress(conn: &Connection, proposal: &super::schema::ProposalContract) -
             .collect::<String>()
     };
     let mut stmt = conn.prepare(
-        "SELECT title FROM ai_proposals WHERE work_id IS ?1 AND status IN ('resolved','deleted')",
+        "SELECT title,id FROM ai_proposals WHERE work_id IS ?1 AND status IN ('resolved','deleted')",
     )?;
-    for title in stmt.query_map([proposal.work_id], |r| r.get::<_, String>(0))? {
-        if normalize(&title?) == normalize(&proposal.title) {
+    let scopes = super::rounds::proposal_scopes(
+        conn,
+        &proposal.kind,
+        proposal.target_id,
+        proposal.work_id,
+        &serde_json::json!(proposal.source_refs),
+    )?;
+    for row in stmt.query_map([proposal.work_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })? {
+        let (title, id) = row?;
+        let previous =
+            super::rounds::evidence_scopes(conn, &serde_json::json!({"proposal_id":id}))?;
+        let same = proposal.work_id.is_some()
+            || !scopes.is_disjoint(&previous)
+            || (scopes.is_empty() && previous.is_empty());
+        if same && normalize(&title) == normalize(&proposal.title) {
             return Ok(true);
         }
     }

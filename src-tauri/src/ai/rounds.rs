@@ -121,6 +121,59 @@ pub fn proposal_scopes(
     }
     Ok(scopes)
 }
+
+pub(crate) fn evidence_scopes(conn: &Connection, value: &Value) -> DbResult<BTreeSet<String>> {
+    if let Some(w) = value["work_id"].as_i64() {
+        return Ok(BTreeSet::from([format!("work:{w}")]));
+    }
+    if let Some(i) = value["inbox_id"].as_i64() {
+        return Ok(BTreeSet::from([inbox_scope(conn, i)?]));
+    }
+    if let Some(p) = value["proposal_id"].as_i64() {
+        let (kind, target, work, refs): (String, Option<i64>, Option<i64>, String) = conn
+            .query_row(
+                "SELECT kind,target_id,work_id,source_refs_json FROM ai_proposals WHERE id=?1",
+                [p],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
+        let mut scopes = proposal_scopes(
+            conn,
+            &kind,
+            target,
+            work,
+            &serde_json::from_str(&refs).unwrap_or_default(),
+        )?;
+        let mut stmt =
+            conn.prepare("SELECT scope FROM secretary_proposal_scopes WHERE proposal_id=?1")?;
+        scopes.extend(
+            stmt.query_map([p], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+        return Ok(scopes);
+    }
+    if value["source_type"] == "kol_insight" || value["type"] == "expert_insight_review" {
+        let mut refs: Value =
+            serde_json::from_str(value["citations_json"].as_str().unwrap_or("[]"))
+                .unwrap_or_default();
+        if let Some(citations) = refs.as_array_mut() {
+            for citation in citations {
+                let identity = citation["source_id"]
+                    .as_str()
+                    .and_then(|s| s.split_once(':'))
+                    .and_then(|(kind, id)| id.parse::<i64>().ok().map(|id| (kind.to_owned(), id)));
+                if let Some((kind, id)) = identity {
+                    citation["source_type"] = json!(kind);
+                    citation["entity_id"] = json!(id);
+                }
+            }
+        }
+        return proposal_scopes(conn, "", None, None, &refs);
+    }
+    if let Some(i) = value["id"].as_i64() {
+        return Ok(entity_scope(conn, "kol_note", i)?.into_iter().collect());
+    }
+    Ok(BTreeSet::from(["loose".into()]))
+}
 // Adopt old and newly synced opinions without rewriting their contents/status.
 fn adopt(conn: &Connection) -> DbResult<()> {
     let mut stmt=conn.prepare("SELECT id,kind,target_id,work_id,source_refs_json,workspace_id FROM ai_proposals WHERE id NOT IN (SELECT proposal_id FROM secretary_proposal_scopes) OR id IN (SELECT proposal_id FROM secretary_proposal_scopes WHERE scope='loose')")?;
@@ -714,24 +767,44 @@ pub fn restrict(
             .and_then(|i| inbox_scope(db.conn(), i).ok())
             .is_some_and(|s| allowed.contains(&s))
     });
-    snapshot.user_directions =
+    let (directions, omitted) =
         super::analysis_snapshot::scoped_user_directions(db, Some(&allowed))?;
-    snapshot.user_directions.retain(|v| {
-        if let Some(w) = v["work_id"].as_i64() {
-            return allowed.contains(&format!("work:{w}"));
+    snapshot.user_directions = directions;
+    if omitted > 0 {
+        snapshot
+            .truncated
+            .insert("user_directions".into(), omitted as u32);
+    }
+    // Logical project/note eligibility is independent of directory ownership.
+    snapshot.expert_context = crate::db::kol::secretary_context_for_round(db)?
+        .into_iter()
+        .filter(|v| evidence_scopes(db.conn(), v).is_ok_and(|s| !s.is_disjoint(&allowed)))
+        .collect();
+    if snapshot.expert_context.len() > 80 {
+        snapshot.truncated.insert(
+            "expert_context".into(),
+            (snapshot.expert_context.len() - 80) as u32,
+        );
+        snapshot.expert_context.truncate(80);
+    }
+    snapshot.source_refs.retain(|r| r.source_type != "kol_note");
+    for v in &mut snapshot.expert_context {
+        if let Some(content) = v["content"].as_str() {
+            v["content"] = json!(crate::cognition::bounded(content, 2000));
         }
-        if let Some(inbox) = v["inbox_id"].as_i64() {
-            return inbox_scope(db.conn(), inbox).is_ok_and(|scope| allowed.contains(&scope));
+        if v["source_type"] != "kol_insight" {
+            snapshot
+                .source_refs
+                .push(super::analysis_snapshot::AnalysisSourceRef {
+                    source_type: "kol_note".into(),
+                    entity_id: v["id"].as_i64(),
+                    workspace_id: None,
+                    relative_path: None,
+                    content_hash: None,
+                    timestamp: v["occurred_at"].as_i64(),
+                });
         }
-        allowed.contains("loose")
-    });
-    // Keep expert evidence explicitly attached to eligible projects.
-    snapshot.expert_context.retain(|v| {
-        v["work_id"].as_i64().map_or_else(
-            || allowed.contains("loose"),
-            |w| allowed.contains(&format!("work:{w}")),
-        )
-    });
+    }
     snapshot.source_counts = json!({"works":b.works.len(),"tasks":b.tasks_open.len()+b.tasks_completed.len(),"waiting":b.waiting.len(),"calendar":b.calendar.len(),"inbox":b.inbox.len(),"documents":snapshot.documents.len(),"eligible_scopes":allowed});
     for t in &tickets {
         if let Some(work) = id(&t.scope, "work:") {
@@ -768,6 +841,187 @@ pub fn restrict(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn review_fixes_insight_citation_uses_independent_note_chain() {
+        let db = Database::open_in_memory().unwrap();
+        db.conn().execute("INSERT INTO kol_experts(name,institution,created_at,updated_at) VALUES('Expert','Clinic',1,1)",[]).unwrap();
+        db.conn().execute("INSERT INTO kol_notes(expert_id,content,occurred_at,created_at) VALUES(1,'Evidence',1,1)",[]).unwrap();
+        let review = json!({"type":"expert_insight_review","citations_json":"[{\"source_id\":\"kol_note:1\"}]"});
+        assert_eq!(
+            evidence_scopes(db.conn(), &review).unwrap(),
+            BTreeSet::from(["kol_notes:1".into()])
+        );
+    }
+    #[test]
+    fn review_fixes_keep_project_and_independent_expert_evidence_without_directories() {
+        let db = Database::open_in_memory().unwrap();
+        let w = project(&db);
+        db.conn().execute("INSERT INTO kol_experts(name,institution,created_at,updated_at) VALUES('Expert','Clinic',1,1)",[]).unwrap();
+        db.conn().execute("INSERT INTO kol_notes(expert_id,work_id,content,occurred_at,created_at) VALUES(1,?1,'Project evidence',1,1),(1,NULL,'Independent evidence',1,1)",[w]).unwrap();
+        for scope in [format!("work:{w}"), "kol_notes:2".into()] {
+            let r = run(&db);
+            let t = reserve(&db, r, &[scope.clone()]).unwrap();
+            let s = super::super::analysis_snapshot::build_for_round(
+                &db,
+                "global_analysis",
+                "2026-09-26",
+                0,
+                i64::MAX,
+                0,
+                i64::MAX,
+                "zh-CN",
+                &t,
+            )
+            .unwrap();
+            assert_eq!(s.expert_context.len(), 1, "{scope} needs its original note");
+        }
+    }
+    #[test]
+    fn review_fixes_keep_independent_coded_decision_after_progress() {
+        let db = Database::open_in_memory().unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Action", "normal", None, None)
+            .unwrap();
+        let r = run(&db);
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                r,
+                "task",
+                "update",
+                Some(task.id),
+                None,
+                None,
+                "independent",
+                "Action",
+                "{}",
+                "",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let scope = format!("tasks:{}", task.id);
+        status(&db, &scope).unwrap();
+        super::super::apply::reject_proposal(&db, p.id, p.updated_at, Some("not_now")).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE tasks SET notes='New progress' WHERE id=?1",
+                [task.id],
+            )
+            .unwrap();
+        let r = run(&db);
+        let t = reserve(&db, r, &[scope]).unwrap();
+        let s = super::super::analysis_snapshot::build_for_round(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+            &t,
+        )
+        .unwrap();
+        assert!(s
+            .user_directions
+            .iter()
+            .any(|v| v["reason_code"] == "not_now"));
+    }
+    #[test]
+    fn review_fixes_allocate_directions_fairly_between_eligible_projects() {
+        let db = Database::open_in_memory().unwrap();
+        let works = (0..4).map(|_| project(&db)).collect::<Vec<_>>();
+        for (position, w) in works.iter().enumerate() {
+            let p = opinion(&db, *w, run(&db));
+            for _ in 0..if position == 0 { 1 } else { 120 } {
+                db.conn().execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES(?1,'misunderstood','Keep objective',1)",[p.id]).unwrap();
+            }
+        }
+        let tickets = works
+            .iter()
+            .map(|w| Ticket {
+                scope: format!("work:{w}"),
+                epoch: 0,
+                fingerprint: String::new(),
+            })
+            .collect::<Vec<_>>();
+        let s = super::super::analysis_snapshot::build_for_round(
+            &db,
+            "global_analysis",
+            "2026-09-26",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+            &tickets,
+        )
+        .unwrap();
+        assert!(s.user_directions.iter().any(|v| v["work_id"] == works[0]));
+        assert!(s.user_directions.len() <= 280);
+        assert!(s.truncated.get("user_directions").copied().unwrap_or(0) > 0);
+    }
+    #[test]
+    fn review_fixes_same_title_distinct_inbox_chain_is_allowed() {
+        for closed_status in ["completed", "resolved", "deleted"] {
+            for same in [false, true] {
+                let db = Database::open_in_memory().unwrap();
+                let a = crate::db::inbox::InboxRepo::new(db.conn())
+                    .insert("First matter")
+                    .unwrap();
+                let b = crate::db::inbox::InboxRepo::new(db.conn())
+                    .insert("Second matter")
+                    .unwrap();
+                let p = crate::db::ai::ProposalRepo::new(db.conn())
+                    .upsert_pending(
+                        run(&db),
+                        "task",
+                        "create",
+                        None,
+                        None,
+                        None,
+                        "old",
+                        "Follow up",
+                        "{}",
+                        "",
+                        &json!([{"source_type":"inbox","entity_id":a.id}]).to_string(),
+                        None,
+                    )
+                    .unwrap()
+                    .unwrap();
+                let first = format!("inbox:{}", a.id);
+                let state = status(&db, &first).unwrap();
+                complete(&db, &first, state.epoch).unwrap();
+                db.conn()
+                    .execute(
+                        "UPDATE ai_proposals SET status=?1 WHERE id=?2",
+                        params![closed_status, p.id],
+                    )
+                    .unwrap();
+                let source = if same { a.id } else { b.id };
+                let r = run(&db);
+                let t = reserve(&db, r, &[format!("inbox:{source}")]).unwrap();
+                let s = super::super::analysis_snapshot::build_for_round(
+                    &db,
+                    "global_analysis",
+                    "2026-09-26",
+                    0,
+                    i64::MAX,
+                    0,
+                    i64::MAX,
+                    "zh-CN",
+                    &t,
+                )
+                .unwrap();
+                let output=json!({"proposals":[{"kind":"task","operation":"create","title":p.title,"payload":{},"source_refs":[{"source_type":"inbox","entity_id":source}]}]}).to_string();
+                assert_eq!(
+                    super::super::analysis::apply_output(&db, r, &s, &output).unwrap(),
+                    if same { 0 } else { 1 }
+                );
+            }
+        }
+    }
     #[test]
     fn adopted_unbound_task_keeps_capture_chain_and_progress_unlocks_it() {
         let db = Database::open_in_memory().unwrap();

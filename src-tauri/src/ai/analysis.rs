@@ -381,10 +381,6 @@ pub fn apply_output(
     let mut queued = 0usize;
     let mut handled = std::collections::BTreeSet::new();
     for proposal in &validated.proposals {
-        let closed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_proposals WHERE work_id IS ?1 AND kind=?2 AND lower(trim(title))=lower(trim(?3)) AND status IN ('completed','resolved','deleted'))",rusqlite::params![proposal.work_id,proposal.kind,proposal.title],|r|r.get(0)).map_err(|e|e.to_string())?;
-        if closed {
-            continue;
-        }
         let mut scopes = super::rounds::proposal_scopes(
             &tx,
             &proposal.kind,
@@ -393,6 +389,11 @@ pub fn apply_output(
             &serde_json::json!(proposal.source_refs),
         )
         .map_err(|e| e.to_string())?;
+        let scope_json = serde_json::json!(scopes).to_string();
+        let closed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_proposals p WHERE p.work_id IS ?1 AND p.kind=?2 AND lower(trim(p.title))=lower(trim(?3)) AND p.status IN ('completed','resolved','deleted') AND (?1 IS NOT NULL OR p.id IN (SELECT proposal_id FROM secretary_proposal_scopes WHERE scope IN (SELECT value FROM json_each(?4)))))",rusqlite::params![proposal.work_id,proposal.kind,proposal.title,scope_json],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if closed {
+            continue;
+        }
         if !snapshot.round_tickets.is_empty() {
             // A captured item may propose its destination without reopening
             // that project's held insight round. Only create proposals qualify.
