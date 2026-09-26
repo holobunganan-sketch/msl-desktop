@@ -324,6 +324,23 @@ pub fn source_location(conn: &rusqlite::Connection, kind: &str, id: i64) -> DbRe
         "resume" => "resume_point",
         _ => kind,
     };
+    if kind == "kol_material" {
+        let material = rows(
+            conn,
+            "SELECT m.id AS material_id,m.expert_id,m.blob_hash,m.revision,s.locator FROM material_segments s JOIN kol_materials m ON m.id=s.material_id JOIN kol_experts e ON e.id=m.expert_id WHERE s.id=?1",
+            &[&id],
+        )?
+        .into_iter()
+        .next();
+        return Ok(match material {
+            Some(row) => serde_json::json!({
+                "entity_kind":kind,"entity_id":id,"available":true,
+                "expert_id":row["expert_id"],"material_id":row["material_id"],
+                "blob_hash":row["blob_hash"],"revision":row["revision"],"locator":row["locator"]
+            }),
+            None => serde_json::json!({"entity_kind":kind,"entity_id":id,"available":false}),
+        });
+    }
     let table = match kind {
         "work" => "works",
         "task" => "tasks",
@@ -335,7 +352,6 @@ pub fn source_location(conn: &rusqlite::Connection, kind: &str, id: i64) -> DbRe
         "kol_note" => "kol_notes",
         "kol_insight" => "kol_insights",
         "kol_followup" => "kol_actions",
-        "kol_material" => "material_segments",
         "report" => "reports",
         "proposal" => "ai_proposals",
         "decision" => "review_decisions",
@@ -476,6 +492,36 @@ fn add_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn material_location_uses_verified_segment_owner_and_file_version() {
+        let db = Database::open_in_memory().unwrap();
+        let hash = "a".repeat(64);
+        db.conn().execute_batch("INSERT INTO kol_experts(id,name,institution,created_at,updated_at) VALUES(31,'Synthetic expert','Synthetic institution',1,1);").unwrap();
+        db.conn().execute("INSERT INTO material_blobs(hash,relative_path,byte_size,media_type,created_at) VALUES(?1,'synthetic.txt',1,'text/plain',1)", [&hash]).unwrap();
+        db.conn().execute("INSERT INTO kol_materials(id,expert_id,blob_hash,filename,status,revision,created_at) VALUES(41,31,?1,'Synthetic material','ready',3,1)", [&hash]).unwrap();
+        db.conn().execute_batch("INSERT INTO material_segments(id,material_id,ordinal,locator,text,kind) VALUES(51,41,0,'page 2','Synthetic evidence','extracted_text');").unwrap();
+        let location = source_location(db.conn(), "kol_material", 51).unwrap();
+        assert_eq!(location["entity_id"], 51);
+        assert_eq!(location["expert_id"], 31);
+        assert_eq!(location["material_id"], 41);
+        assert_eq!(location["blob_hash"], hash);
+        assert_eq!(location["revision"], 3);
+        assert_eq!(location["locator"], "page 2");
+        assert_eq!(location["available"], true);
+        assert_eq!(
+            crate::materials::preview_id(&db, 999, Some(51), location["blob_hash"].as_str())
+                .unwrap(),
+            41
+        );
+        assert!(location.get("relative_path").is_none());
+        db.conn()
+            .execute("DELETE FROM kol_materials WHERE id=41", [])
+            .unwrap();
+        assert_eq!(
+            source_location(db.conn(), "kol_material", 51).unwrap()["available"],
+            false
+        );
+    }
     #[test]
     fn user_decision_survives_pressure_from_recent_matching_tasks() {
         let db = Database::open_in_memory().unwrap();
