@@ -239,6 +239,25 @@ fn evidence_pack_inner(
         as_of: super::now_unix(),
         ..Default::default()
     };
+    // User reviews belong to the selected expert even when their evidence is a
+    // material segment with no project/note round. Do not broaden to global scope.
+    for insight in &insights {
+        if matches!(
+            insight["status"].as_str(),
+            Some("reviewed" | "revised" | "dismissed")
+        ) && insight["review_note"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty())
+        {
+            let direction = json!({"id":insight["id"],"expert_id":insight["expert_id"],"title":insight["title"],"status":insight["status"],"review_note":crate::cognition::bounded(insight["review_note"].as_str().unwrap(),1200),"updated_at":insight["updated_at"]});
+            pack.sources.push(knowledge::evidence(
+                "kol_insight",
+                &direction,
+                "user_decision",
+                "",
+            ));
+        }
+    }
     let mut scopes = std::collections::BTreeSet::new();
     for note in &all_notes {
         scopes.extend(crate::ai::rounds::evidence_scopes(db.conn(), note)?);
@@ -482,6 +501,41 @@ pub fn review(db: &Database, id: i64, revision: i64, decision: &str, raw: &str) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn material_only_expert_review_direction_survives_note_pressure_without_project_scope() {
+        let db = db();
+        db.conn().execute("INSERT INTO kol_experts(id,name,institution,created_at,updated_at) VALUES(2,'Other','Other',1,1)",[]).unwrap();
+        db.conn().execute_batch("INSERT INTO material_blobs(hash,relative_path,byte_size,media_type,created_at) VALUES('synthetic','synthetic.txt',1,'text/plain',1); INSERT INTO kol_materials(id,expert_id,blob_hash,filename,status,created_at) VALUES(1,1,'synthetic','Synthetic','ready',1); INSERT INTO material_segments(id,material_id,ordinal,locator,text,kind) VALUES(1,1,0,'page1','Material evidence','extracted_text'); INSERT INTO kol_drafts(id,expert_id,purpose,payload_json,evidence_json,created_at) VALUES(1,1,'organize','{}','{}',1);").unwrap();
+        for (expert, note) in [
+            (1, "User corrected material direction"),
+            (2, "Unrelated direction"),
+        ] {
+            db.conn().execute("INSERT INTO kol_insights(draft_id,expert_id,title,categories_json,observation,implication,uncertainty,next_question,citations_json,status,review_note,created_at,updated_at) VALUES(1,?1,'Historical insight','[]','Observation','','','',?2,'revised',?3,1,1)",params![expert,"[{\"source_id\":\"kol_material:1\",\"quote\":\"Material evidence\"}]",note]).unwrap();
+        }
+        for _ in 0..100 {
+            capture(
+                &db,
+                1,
+                None,
+                None,
+                &"Newer context ".repeat(350),
+                super::super::now_unix(),
+            )
+            .unwrap();
+        }
+        for pack in [
+            evidence_pack(&db, Some(1)).unwrap(),
+            knowledge::collect_scoped(&db, &[], "", Some(1), true).unwrap(),
+        ] {
+            assert!(pack.sources.iter().any(|s| s.trust == "user_decision"
+                && s.text.contains("User corrected material direction")));
+            assert!(!pack
+                .sources
+                .iter()
+                .any(|s| s.text.contains("Unrelated direction")));
+            assert!(pack.omitted > 0);
+        }
+    }
     #[test]
     fn expert_correction_and_project_link_survive_long_note_pressure() {
         let db = db();
