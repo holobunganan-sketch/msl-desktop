@@ -41,6 +41,10 @@ test('delayed capture preserves submitted expert and report/search sources carry
   assert.equal((await invoke('list_kol_notes',{expertId:2}))[0].content,'independent note');
   const reports=await invoke('list_reports');assert.equal(reports.length,2);
   assert.equal(JSON.parse(reports[1].structured_json).items[0].evidence_refs[0].source_type,'task_open');
+  const refs=JSON.parse(reports[1].structured_json).items[0].evidence_refs;
+  const reportSources=JSON.parse(reports[1].evidence_json).sources;
+  assert.deepEqual(refs.map(ref=>`${ref.source_type}:${ref.entity_id}`),['task_open:1','task_open:999']);
+  assert.deepEqual(refs.map(ref=>reportSources.find(s=>s.source_type===ref.source_type&&s.entity_id===ref.entity_id)?.location.available),[true,false]);
   assert.ok(JSON.parse(reports[1].evidence_json).sources.some(s=>s.location.available===false));
   const results=await invoke('search',{query:'演示'});
   assert.ok(results.resume_points.some(r=>r.id!==r.work_id));

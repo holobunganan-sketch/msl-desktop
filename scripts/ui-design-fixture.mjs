@@ -56,11 +56,21 @@ const experts=empty?[]:[1,2].map(id=>({id,revision:1,name:id===1?'演示专家 �
 const notes=[],sessions=[],turns=[],receipts=[];
 let nextReceipt=1,deleteConflict=params.has('delete-conflict');
 const source={id:'task:1',kind:'task',entity_id:1,title:tasks[0]?.title??'演示任务',text:'保留专家原话',timestamp:now,trust:'user',hash:'synthetic',location:{entity_kind:'task',entity_id:1,work_id:1,available:true}};
-const reports=empty?[]:[1,2].map(id=>({id,kind:'weekly',period_start:now-604800,period_end:now,status:'completed',provider_model_id:null,content:id===1?'历史周报：已记录交流要点。':'本周交流要点与待核实问题。',snapshot_hash:'synthetic',source_counts_json:'{"task":1}',source_report_ids_json:'[]',error_code:null,error_message:null,retention_state:'kept',generated_at:now,...base,structured_json:id===1?null:JSON.stringify({version:'report-spec-v2',items:[{category:'progress',project_id:1,headline:'整理交流要点',change:'已保留原话',impact:'便于下次跟进',next_action:'核实实践障碍',certainty:'confirmed',horizon:'next_week',evidence_refs:['task:1']}]}),evidence_json:id===1?null:JSON.stringify({sources:[{...source,source_type:'task_open',source_id:'task:1'},{...source,id:'task:999',source_type:'task_open',source_id:'task:999',trust:'deleted',location:{entity_kind:'task',entity_id:999,available:false}}],coverage_notes:[],source_counts:{task:2}})}));
-for(const report of reports.filter(r=>r.structured_json)){
-  const structured=JSON.parse(report.structured_json);Object.assign(structured.items[0],{certainty:'observed',horizon:'current',evidence_refs:[{source_type:'task_open',entity_id:1,workspace_id:null,relative_path:null,content_hash:null,timestamp:now}]});report.structured_json=JSON.stringify(structured);
-  const evidence=JSON.parse(report.evidence_json);evidence.sources=evidence.sources.map(s=>({source_type:s.source_type,entity_id:s.location.entity_id,workspace_id:null,relative_path:null,content_hash:null,timestamp:now,location:s.location,...(s.trust==='deleted'?{trust:'deleted'}:{})}));report.evidence_json=JSON.stringify(evidence);
-}
+const reports=empty?[]:[1,2].map(id=>({
+  id,kind:'weekly',period_start:now-604800,period_end:now,status:'completed',provider_model_id:null,
+  content:id===1?'历史周报：已记录交流要点。':'本周交流要点与待核实问题。',snapshot_hash:'synthetic',source_counts_json:'{"task":2}',source_report_ids_json:'[]',error_code:null,error_message:null,retention_state:'kept',generated_at:now,...base,
+  structured_json:id===1?null:JSON.stringify({version:'report-spec-v2',items:[{
+    category:'progress',project_id:1,headline:'整理交流要点',change:'已保留原话',impact:'便于下次跟进',next_action:'核实实践障碍',certainty:'observed',horizon:'current',
+    evidence_refs:[
+      {source_type:'task_open',entity_id:1,workspace_id:null,relative_path:null,content_hash:null,timestamp:now},
+      {source_type:'task_open',entity_id:999,workspace_id:null,relative_path:null,content_hash:null,timestamp:now}
+    ]
+  }]}),
+  evidence_json:id===1?null:JSON.stringify({sources:[
+    {source_type:'task_open',entity_id:1,workspace_id:null,relative_path:null,content_hash:null,timestamp:now,location:source.location},
+    {source_type:'task_open',entity_id:999,workspace_id:null,relative_path:null,content_hash:null,timestamp:now,trust:'deleted',location:{entity_kind:'task',entity_id:999,available:false}}
+  ],coverage_notes:[],source_counts:{task:2}})
+}));
 const routes=[{task_kind:'workbench_qa',provider_model_id:1,updated_at:now}];
 const find=(rows,id)=>{const row=rows.find(r=>r.id===id);if(!row)throw new Error('演示记录不存在');return row;};
 const same=(a,b)=>JSON.stringify(Object.entries(a??{}).sort())===JSON.stringify(Object.entries(b??{}).sort());
