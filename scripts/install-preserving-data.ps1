@@ -49,7 +49,8 @@ $process.Refresh()
 if ($process.ExitCode -ne 0) { throw "Installer failed with exit code $($process.ExitCode). Recovery copy: $backupRoot" }
 $current = Get-ItemProperty -LiteralPath $registryPath
 if ($current.DisplayName -cne 'MSL Desktop' -or $current.DisplayVersion -ne $ExpectedVersion) { throw 'Installed application identity does not match the release.' }
-if ((Get-FileHash -LiteralPath $binary).Hash -ne (Get-FileHash -LiteralPath $sourceBinary).Hash) { throw 'Installed binary differs from the verified local build.' }
+& node (Join-Path $PSScriptRoot 'verify-installed-binary.mjs') $sourceBinary $binary
+if ($LASTEXITCODE -ne 0) { throw 'Installed binary differs from the verified local build.' }
 $after = Data-Fingerprints
 if ($before.Count -ne $after.Count) { throw 'Data file count changed during installation; recovery copy retained.' }
 foreach ($relative in $before.Keys) {

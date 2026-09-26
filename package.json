@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "check:ui": "node --test scripts/dashboard-ui.test.mjs",
-    "check:installer": "node --test scripts/installer-name.test.mjs",
+    "check:installer": "node --test scripts/installer-name.test.mjs scripts/verify-installed-binary.test.mjs",
     "check:publish": "node scripts/check-publish-safety.mjs --history",
     "dev": "vite dev",
     "build": "vite build",
