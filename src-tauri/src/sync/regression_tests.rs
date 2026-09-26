@@ -144,6 +144,46 @@ fn incoming_change_preserves_unpublished_local_edit() {
 }
 
 #[test]
+fn same_timestamp_remote_task_edit_invalidates_displayed_delete_confirmation() {
+    let p = Pair::new();
+    p.a.conn()
+        .execute(
+            "INSERT INTO tasks(title,created_at,updated_at) VALUES('Before',1,100)",
+            [],
+        )
+        .unwrap();
+    p.send_a();
+    let task = crate::db::task::TaskRepo::new(p.b.conn())
+        .list(None, None)
+        .unwrap()
+        .remove(0);
+    let displayed = serde_json::to_value(&task).unwrap();
+    p.a.conn()
+        .execute("UPDATE tasks SET title='After remote edit' WHERE id=1", [])
+        .unwrap();
+    p.send_a();
+    let current = crate::db::task::TaskRepo::new(p.b.conn())
+        .get(task.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.updated_at, task.updated_at);
+    assert_ne!(current.title, task.title);
+    assert!(
+        crate::db::recovery::delete(&p.b, "task", task.id, true, task.updated_at, &displayed)
+            .is_err()
+    );
+    crate::db::recovery::delete(
+        &p.b,
+        "task",
+        task.id,
+        true,
+        current.updated_at,
+        &serde_json::to_value(current).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
 fn conflict_write_failure_rolls_back_the_entire_received_batch() {
     for table in ["sync_conflicts", "sync_peer_rows"] {
         let p = Pair::new();

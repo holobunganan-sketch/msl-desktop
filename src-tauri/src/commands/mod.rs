@@ -645,6 +645,7 @@ pub fn delete_task(
     id: i64,
     confirmed: Option<bool>,
     expected_updated_at: Option<i64>,
+    expected_record: Option<serde_json::Value>,
 ) -> Result<(), String> {
     with_db(&state, |db| {
         crate::db::recovery::delete(
@@ -653,6 +654,7 @@ pub fn delete_task(
             id,
             confirmed.unwrap_or(false),
             expected_updated_at.unwrap_or(-1),
+            &expected_record.unwrap_or(serde_json::Value::Null),
         )
     })
 }
@@ -751,6 +753,7 @@ pub fn delete_waiting(
     id: i64,
     confirmed: Option<bool>,
     expected_updated_at: Option<i64>,
+    expected_record: Option<serde_json::Value>,
 ) -> Result<(), String> {
     with_db(&state, |db| {
         crate::db::recovery::delete(
@@ -759,6 +762,7 @@ pub fn delete_waiting(
             id,
             confirmed.unwrap_or(false),
             expected_updated_at.unwrap_or(-1),
+            &expected_record.unwrap_or(serde_json::Value::Null),
         )
     })
 }

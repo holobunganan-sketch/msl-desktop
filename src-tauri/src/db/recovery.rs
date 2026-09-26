@@ -89,10 +89,20 @@ pub fn undo(db: &Database, id: &str) -> DbResult<()> {
 pub fn list(db: &Database) -> DbResult<Vec<Value>> {
     super::knowledge::rows(db.conn(),"SELECT id,entity_kind,entity_id,title,created_at,undone_at FROM manual_completion_receipts ORDER BY created_at DESC,rowid DESC LIMIT 100",&[])
 }
-pub fn delete(db: &Database, kind: &str, id: i64, confirmed: bool, expected: i64) -> DbResult<()> {
+pub fn delete(
+    db: &Database,
+    kind: &str,
+    id: i64,
+    confirmed: bool,
+    expected: i64,
+    expected_record: &Value,
+) -> DbResult<()> {
     let tx = super::write_transaction(db.conn())?;
     let row = snapshot(&tx, kind, id)?;
-    if !confirmed || row["entity"]["updated_at"].as_i64() != Some(expected) {
+    if !confirmed
+        || row["entity"]["updated_at"].as_i64() != Some(expected)
+        || &row["entity"] != expected_record
+    {
         return Err(DbError::Migration(
             "请确认删除当前版本；事项已变化时需刷新后确认".into(),
         ));
@@ -105,6 +115,25 @@ pub fn delete(db: &Database, kind: &str, id: i64, confirmed: bool, expected: i64
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn delete_refuses_imported_content_change_with_identical_timestamp() {
+        let db = Database::open_in_memory().unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Original", "normal", None, None)
+            .unwrap();
+        let displayed = serde_json::to_value(&task).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE tasks SET title='Remote same-second edit' WHERE id=?1",
+                [task.id],
+            )
+            .unwrap();
+        assert!(delete(&db, "task", task.id, true, task.updated_at, &displayed).is_err());
+        assert!(crate::db::task::TaskRepo::new(db.conn())
+            .get(task.id)
+            .unwrap()
+            .is_some());
+    }
     #[test]
     fn schedule_advances_delete_version_even_with_same_second_or_clock_skew() {
         let db = Database::open_in_memory().unwrap();
@@ -124,7 +153,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(current.updated_at > version);
-        assert!(delete(&db, "task", task.id, true, version).is_err());
+        assert!(delete(
+            &db,
+            "task",
+            task.id,
+            true,
+            version,
+            &serde_json::to_value(&task).unwrap()
+        )
+        .is_err());
     }
     #[test]
     fn undo_restores_related_advice_and_invalidates_inflight_round_after_restart() {
@@ -241,9 +278,10 @@ mod tests {
         let t = crate::db::task::TaskRepo::new(db.conn())
             .insert(None, "Synthetic", "normal", None, None)
             .unwrap();
-        assert!(delete(&db, "task", t.id, false, t.updated_at).is_err());
-        assert!(delete(&db, "task", t.id, true, t.updated_at - 1).is_err());
-        assert!(delete(&db, "task", t.id, true, t.updated_at).is_ok());
+        let expected = serde_json::to_value(&t).unwrap();
+        assert!(delete(&db, "task", t.id, false, t.updated_at, &expected).is_err());
+        assert!(delete(&db, "task", t.id, true, t.updated_at - 1, &expected).is_err());
+        assert!(delete(&db, "task", t.id, true, t.updated_at, &expected).is_ok());
         assert!(crate::db::task::TaskRepo::new(db.conn())
             .get(t.id)
             .unwrap()
