@@ -4,11 +4,12 @@
   import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import ProposalPreview from './ProposalPreview.svelte';
+  import AnalysisCoverage from './AnalysisCoverage.svelte';
   import ProposalInsightFields from './ProposalInsightFields.svelte';
   import {sourceDestination} from '$lib/services/workflowContinuity';
   import type {ProposalExpert} from '$lib/services/proposalPresentation';
   import {navigateTo} from '$lib/services/navigation';
-  import {proposalPresentation,needsTimeConfirmation} from '$lib/services/proposalPresentation';
+  import {proposalPresentation,proposalChanges,needsTimeConfirmation} from '$lib/services/proposalPresentation';
   import {listAiProposals} from '$lib/services/api';
   let {focusId=null,workId=null,runId=null}:{focusId?:number|null;workId?:number|null;runId?:number|null}=$props();
   let focusConsumed=false;
@@ -16,18 +17,19 @@
   let showDecline=$state(false);
   let receipt=$state<{receipt_id:string;kind:string;target_id:number;workId:number|null;expertId?:number;message:string}|null>(null);
   function openReceipt(){if(!receipt)return;const destination=sourceDestination({entity_kind:receipt.kind,entity_id:receipt.target_id,work_id:receipt.workId,expert_id:receipt.expertId,available:true});if(destination)navigateTo(destination);}
-  async function later(){const item=items[index];if(!item||busy)return;busy=true;try{await deferAiProposal(item.id,item.updated_at);invalidate('proposals','brief');await load();}catch(e){error=friendlyError(e);}finally{busy=false;}}
+  async function later(){const item=items[index];if(!item||busy)return;const edited=await saveDraft();if(!edited)return;busy=true;try{await command('defer_ai_proposal',{id:edited.id,expectedUpdatedAt:edited.updated_at,correctionNote:corrections[item.id]?.trim()||null});delete corrections[item.id];invalidate('proposals','brief','inbox');await load();}catch(e){error=friendlyError(e);}finally{busy=false;}}
+  async function restoreLater(){const item=items[index];if(!item||busy)return;busy=true;try{await command('restore_deferred_proposal',{id:item.id,expectedUpdatedAt:item.updated_at});statusFilter='pending';runFilter='all';await load();index=Math.max(0,items.findIndex(candidate=>candidate.id===item.id));selectCurrent();invalidate('proposals','inbox','brief');}catch(e){error=friendlyError(e);}finally{busy=false;}}
   async function undo(){if(!receipt||busy)return;busy=true;try{await command('undo_ai_confirmation',{receiptId:receipt.receipt_id});receipt=null;invalidate('works','tasks','waiting','calendar','inbox','proposals','brief');await load();}catch(e){error=friendlyError(e);}finally{busy=false;}}
   import ReviewTools from "$lib/components/ReviewTools.svelte";
   import ProposalRouting from "$lib/components/ProposalRouting.svelte";
   import { decisionPayload, reviewPayload, confirmationPayload } from "$lib/services/proposalPayload";
   import ProposalStatus from "./ProposalStatus.svelte";
-  import { command, deferAiProposal } from "$lib/services/api";
+  import { command } from "$lib/services/api";
   import { invalidate } from "$lib/stores/dataRevision";
   import { onMount, untrack } from "svelte";
   import AppButton from "$lib/components/ui/AppButton.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
-  import { confirmAiProposal, getClassificationMemoryStats, listAnalysisRuns, listRecentAiProposals, listWorks, rejectAiProposal, runAnalysisNow, updateAiProposalClassification } from "$lib/services/api";
+  import { getClassificationMemoryStats, listAnalysisRuns, listRecentAiProposals, listWorks, runAnalysisNow, updateAiProposalClassification } from "$lib/services/api";
   import type { AiProposal, AnalysisRun, ClassificationMemoryStats, Work } from "$lib/types/domain";
   import { locale, t } from "$lib/i18n";
   import { aiJobs } from "$lib/stores/aiJobs";
@@ -53,6 +55,17 @@
   let busy = $state(false);
   let lifecycle = $state<{item:AiProposal;action:'delete'|'resolve'}|null>(null);
   let selectedIds = $state<number[]>([]);
+  let corrections=$state<Record<number,string>>({});
+  type CurrentRecord={record:Record<string,unknown>;token:string};
+  let currentRecords=$state<Record<number,{key:string;value:CurrentRecord|null;loading:boolean;error:string}>>({});
+  function recordKey(item:AiProposal){return `${item.kind}:${item.target_id}`;}
+  async function readCurrent(item:AiProposal,force=false){
+    if(item.operation!=='update'||(currentRecords[item.id]?.key===recordKey(item)&&!force))return;
+    const key=recordKey(item);currentRecords[item.id]={key,value:null,loading:true,error:''};
+    try{const value=await command<CurrentRecord|null>('get_proposal_current_record',{id:item.id});if(currentRecords[item.id]?.key===key)currentRecords[item.id]={key,value,loading:false,error:''};}
+    catch(cause){if(currentRecords[item.id]?.key===key)currentRecords[item.id]={key,value:null,loading:false,error:friendlyError(cause)};}
+  }
+  $effect(()=>{const item=items[index];if(item?.status==='pending'&&item.operation==='update')void readCurrent(item);});
   let rejectionCode = $state("unspecified");
   let analysisBusy = $derived($aiJobs.some(job=>["run_analysis_now","retry_analysis_run","start_workspace_work_draft"].includes(job.command) && job.status==="running"));
   let error = $state("");
@@ -67,6 +80,8 @@
   const latestRun = $derived(analysisRuns.find(run=>run.status!=='reused'&&(workId===null||scopedItems.some(item=>item.analysis_run_id===run.id))) ?? null);
   const latestPendingCount = $derived(latestRun ? scopedItems.filter((item) => item.analysis_run_id === latestRun.id && item.status === "pending" && !item.deferred_at).length : 0);
   const runIds = $derived([...new Set(scopedItems.map((item) => item.analysis_run_id).filter((id): id is number => id !== null))]);
+  const pendingCount=$derived(scopedItems.filter(item=>item.status==='pending'&&!item.deferred_at).length);
+  const deferredCount=$derived(scopedItems.filter(item=>item.status==='pending'&&item.deferred_at).length);
 
   function displayStatus(item: AiProposal): string { return item.status === "pending" && item.deferred_at ? "deferred" : item.status; }
   function statusText(item: AiProposal): string { const value = displayStatus(item); if(value==='resolved')return currentLocale==='en-US'?'Resolved':'已解决'; if(value==='completed')return currentLocale==='en-US'?'Round completed':'本轮已完成'; return tt(`aiReview.status${value.charAt(0).toUpperCase()}${value.slice(1)}` as Parameters<typeof t>[0]); }
@@ -190,7 +205,7 @@
     finally { await load(); if (failure) error = failure; }
   }
   onMount(()=>{let revision=$dataRevision.analysis;return dataRevision.subscribe(value=>{if(value.analysis!==revision){revision=value.analysis;if(loaded)void load(true);}});});
-  function selectCurrent() { const item = items[index]; if (item) preparePayload(item); else payloadText = "{}"; error = ""; }
+  function selectCurrent() { const item = items[index]; if (item) preparePayload(item); else payloadText = "{}"; rejectionCode='unspecified';error = ""; }
   function selectItem(next: number) { adjusting=false;showDecline=false;index = next; selectCurrent(); }
   function move(delta: number) { adjusting=false;showDecline=false;index = Math.max(0, Math.min(items.length - 1, index + delta)); selectCurrent(); }
   function resetFilter() { index = 0; queueMicrotask(selectCurrent); }
@@ -216,6 +231,8 @@
     if(busy)return;
     const item=items[index];
     if(!item||item.status!=='pending')return;
+    const current=currentRecords[item.id];
+    if(item.operation==='update'&&(!current?.value||current.key!==recordKey(item)||current.loading)){error=currentLocale==='en-US'?'Load the original record before confirming.':'请先读取原记录并核对变更，再确认更新。';return;}
     const adoptedTime=suggestedTimeAccepted;
     let candidate:Record<string,unknown>;
     try {candidate=parsePayload();}catch{error=tt('aiReview.invalidJson');return;}
@@ -224,7 +241,7 @@
     const edited = await saveDraft();
     if (!edited) return;
     busy = true;
-    try { const confirmedPayload=parsePayload();const result=await confirmAiProposal(edited.id, edited.updated_at, confirmationPayload(confirmedPayload,adoptedTime));const preview=proposalPresentation(edited,works,currentLocale,experts);receipt={...result,workId:edited.work_id,expertId:typeof confirmedPayload.expert_id==='number'?confirmedPayload.expert_id:undefined,message:`${preview.action} · ${preview.scope}`};adjusting=false; invalidate("works","tasks","waiting","calendar","inbox","proposals","brief"); await load(); }
+    try { const confirmedPayload=parsePayload();const result=await command<{receipt_id:string;kind:string;target_id:number}>('confirm_ai_proposal',{id:edited.id,expectedUpdatedAt:edited.updated_at,editedPayload:confirmationPayload(confirmedPayload,adoptedTime),correctionNote:corrections[item.id]?.trim()||null,currentRecordToken:edited.operation==='update'?current?.value?.token:null});delete corrections[item.id];const preview=proposalPresentation(edited,works,currentLocale,experts);receipt={...result,workId:edited.work_id,expertId:typeof confirmedPayload.expert_id==='number'?confirmedPayload.expert_id:undefined,message:`${preview.action} · ${preview.scope}`};adjusting=false; invalidate("works","tasks","waiting","calendar","inbox","proposals","brief"); await load(); }
     catch (cause) { error = friendlyError(cause); }
     finally { busy = false; }
   }
@@ -232,7 +249,7 @@
     const item = items[index];
     if (!item || item.status !== "pending") return;
     busy = true;
-    try { if(rejectionCode==="not_now")await deferAiProposal(item.id,item.updated_at);else await rejectAiProposal(item.id, item.updated_at, rejectionCode); await load(); }
+    try { await command('reject_ai_proposal',{id:item.id,expectedUpdatedAt:item.updated_at,reason:rejectionCode,correctionNote:corrections[item.id]?.trim()||null});delete corrections[item.id];invalidate('proposals','inbox','brief');await load(); }
     catch (cause) { error = friendlyError(cause); }
     finally { busy = false; }
   }
@@ -242,6 +259,7 @@
     if(selectedIds.includes(currentId) && !(await saveDraft())) return;
     const selected=allItems.filter(item=>selectedIds.includes(item.id)&&item.status==="pending");
     if(!selected.length)return;
+    if(selected.some(item=>item.operation==='update'&&(!currentRecords[item.id]?.value||currentRecords[item.id]?.key!==recordKey(item)||currentRecords[item.id]?.loading))){error=currentLocale==='en-US'?'Open each update first to review its original values.':'请先打开每条更新建议，核对原值与拟变更内容。';return;}
     if(selected.some(item=>proposalPresentation(item,works,currentLocale,experts).needsAttention)){
       error=currentLocale==='en-US'?'Review missing details and confirm tentative times individually before accepting this group.':'请先逐条核对缺少的信息；建议时间需要单独确认，不能批量采用。';return;
     }
@@ -257,7 +275,7 @@
         savedRoutes.set(next.id,{kind:next.kind,operation:next.operation,target_id:next.target_id});
         ready.push(next);
       }
-      await command("confirm_ai_proposal_group",{items:ready.map(item=>({id:item.id,expectedUpdatedAt:item.updated_at}))});selectedIds=[];invalidate("works","tasks","waiting","calendar","inbox","proposals","brief");await load();
+      await command("confirm_ai_proposal_group",{items:ready.map(item=>({id:item.id,expectedUpdatedAt:item.updated_at,correctionNote:corrections[item.id]?.trim()||null,currentRecordToken:item.operation==='update'?currentRecords[item.id]?.value?.token:null}))});for(const item of ready)delete corrections[item.id];selectedIds=[];invalidate("works","tasks","waiting","calendar","inbox","proposals","brief");await load();
     }
     catch(e){error=friendlyError(e);}finally{busy=false;}
   }
@@ -273,6 +291,11 @@
     </div></details>
   </div>
 
+  <nav class="review-queue" aria-label={currentLocale==='en-US'?'Review queues':'建议处理队列'}>
+    <button class:active={statusFilter==='pending'} data-testid="review-pending-queue" onclick={()=>{statusFilter='pending';runFilter='all';resetFilter();}}>{currentLocale==='en-US'?'To review':'待确认'} <span>{pendingCount}</span></button>
+    <button class:active={statusFilter==='deferred'} data-testid="review-deferred-queue" onclick={()=>{statusFilter='deferred';runFilter='all';resetFilter();}}>{currentLocale==='en-US'?'For later':'稍后处理'} <span>{deferredCount}</span></button>
+  </nav>
+
   <div class="organizing-row"><details class="organizing-details" open={latestRun?.status==='failed'||latestRun?.status==='running'}><summary>{currentLocale==='en-US'?'Secretary activity & learning':'秘书整理情况与分类记忆'}</summary>
   <section class="workflow-status status-{latestRun?.status ?? 'idle'}" data-testid="analysis-workflow-status">
     <span class="workflow-icon"><Icon name={latestRun?.status === "failed" ? "activity" : latestRun?.status === "running" ? "clock" : "sparkles"} size={18} /></span>
@@ -284,6 +307,7 @@
     </div>
     <ReviewTools feedbackCount={memory.feedback_count} onchange={()=>void load()}/>
   </section>
+  <AnalysisCoverage counts={latestRun?.source_counts_json}/>
   </details><AppButton testid="review-run-analysis" loading={analysisBusy || latestRun?.status === "running"} onclick={analyzeNow}>{latestRun ? tt("aiReview.runAnalysis") : tt("aiReview.startAnalysis")}</AppButton></div>
   <div class="error stable-feedback"><StatusLine message={error} onclear={()=>error=""}/></div>
 
@@ -309,7 +333,20 @@
         <div class="editor-head"><div><div class="eyebrow">{tt("aiReview.counter", { current: index + 1, total: items.length })}</div><h2>{item.title}</h2></div><div class="pager"><button disabled={index === 0 || busy} onclick={() => move(-1)} aria-label={tt("aiReview.previous")}>‹</button><button disabled={index >= items.length - 1 || busy} onclick={() => move(1)} aria-label={tt("aiReview.next")}>›</button></div></div>
         <div class="review-meta"><span>{statusText(item)}</span>{#if item.decided_at}<span>{fmtTime(item.decided_at)}</span>{/if}</div>
         {#if item.status==='resolved'}<p class="resolved-notice" data-testid="review-resolved-notice">{currentLocale==='en-US'?'Resolved and kept for your records. The secretary will no longer follow up this insight.':'已解决，留作历史记录。秘书不再跟进这条洞察。'}</p>{/if}
-        {#if item.status==='resolved'}
+        {#if item.status==='pending'&&item.operation==='update'}
+          {@const current=currentRecords[item.id]}
+          <section class="change-preview" data-testid="review-change-preview" aria-label={currentLocale==='en-US'?'Changes to the existing record':'原记录变更对照'}>
+            <header><strong>{currentLocale==='en-US'?'Changes to review':'这次将修改'}</strong><button disabled={busy||current?.loading} onclick={()=>readCurrent(item,true)}>{currentLocale==='en-US'?'Refresh original':'刷新原记录'}</button></header>
+            {#if current?.loading}<p>{currentLocale==='en-US'?'Reading current values…':'正在读取当前内容…'}</p>
+            {:else if current?.error}<p class="attention">{current.error}</p>
+            {:else if current?.value}
+              {@const changes=proposalChanges({...item,payload_json:payloadText},current.value.record,works,currentLocale)}
+              {#if changes.length}<dl>{#each changes as change(change.key)}<div><dt>{change.label}</dt><dd><span class="before"><small>{currentLocale==='en-US'?'Current':'目前'}</small>{aiText(change.before)}</span><span aria-hidden="true">→</span><span class="after"><small>{currentLocale==='en-US'?'Proposed':'拟更新为'}</small>{aiText(change.after)}</span></dd></div>{/each}</dl>
+              {:else}<p>{currentLocale==='en-US'?'The compared fields already match. Check the arrangement details below.':'已对照的字段与当前内容一致，可展开下方详情核对其他安排。'}</p>{/if}
+            {:else}<p class="attention">{currentLocale==='en-US'?'The original record is unavailable. Refresh before confirming.':'原记录已不可用，请刷新后再核对。'}</p>{/if}
+          </section>
+          <ProposalPreview {item} {works} {experts} compact/>
+        {:else if item.status==='resolved'}
           <details class="resolved-snapshot"><summary>{currentLocale==='en-US'?'Original changes (history)':'查看当时确认的内容'}</summary><ProposalPreview {item} {works} {experts}/></details>
         {:else}<ProposalPreview {item} {works} {experts}/>{/if}
         {#if item.kind==='kol_insight'&&item.operation==='update'}{@const target=insights.find(insight=>insight.id===item.target_id)}<p class="insight-target" data-testid="review-insight-target">{currentLocale==='en-US'?'Updating insight: ':'将修改的洞察：'}{target?.title??(currentLocale==='en-US'?'Source unavailable — refresh before confirming':'原洞察不可用，请刷新后再确认')}{#if target}<button onclick={()=>{const destination=sourceDestination({entity_kind:'kol_insight',entity_id:target.id,expert_id:target.expert_id,available:true});if(destination)navigateTo(destination);}}>{currentLocale==='en-US'?'View original':'查看原内容'}</button>{/if}</p>{/if}
@@ -371,13 +408,16 @@
           </details>
         </div>
         {/if}
-        {#if item.status === "pending"}<div class="review-actions">
+        {#if item.status === "pending"}
+        <label class="correction-note">{currentLocale==='en-US'?'Add a correction or direction (optional)':'补充一句意见或纠正（可选）'}<textarea data-testid="review-correction-note" rows="2" maxlength="2000" value={corrections[item.id]??''} oninput={event=>corrections[item.id]=event.currentTarget.value} disabled={busy} placeholder={currentLocale==='en-US'?'For example: Headquarters will lead this; I only need to follow up next week.':'例如：这件事由总部推进，我只需要下周询问进展。'}></textarea><small>{currentLocale==='en-US'?'Saved with your decision and used in the next analysis of this item.':'随本次确认、暂缓或不采用一并保存，作为下次处理这件事的依据。'}</small></label>
+        {#if item.deferred_at}<p class="deferred-notice">{currentLocale==='en-US'?'Kept for later. Opening it does not start another analysis.':'这条建议已留待稍后。查看或恢复原建议都不会重新分析。'}<button data-testid="review-restore-deferred" disabled={busy} onclick={restoreLater}>{currentLocale==='en-US'?'Return to review queue':'恢复到待确认'}</button></p>{/if}
+        <div class="review-actions">
           {#if adjusting}<AppButton variant="ghost" loading={busy} onclick={saveDraft}>{tt('aiReview.saveDraft')}</AppButton>{/if}
           <button data-testid="review-adjust" class="plain-action" onclick={()=>adjusting=!adjusting}>{adjusting?(currentLocale==='en-US'?'Back to preview':'收起调整'):(currentLocale==='en-US'?'Adjust':'调整')}</button>
-          <button data-testid="review-defer" class="plain-action" disabled={busy} onclick={later}>{currentLocale==='en-US'?'Later':'稍后'}</button>
+          <button data-testid="review-defer" class="plain-action" disabled={busy} onclick={later}>{item.deferred_at?(currentLocale==='en-US'?'Keep for later':'继续留待稍后'):(currentLocale==='en-US'?'Later':'稍后')}</button>
           <AppButton testid="review-confirm" loading={busy} onclick={confirm}>{item.operation==='update'?(currentLocale==='en-US'?'Confirm update':'确认更新'):(currentLocale==='en-US'?'Confirm and save':'确认写入')}</AppButton>
         </div>
-        <details class="decline-options" bind:open={showDecline}><summary>{currentLocale==='en-US'?'Do not use this suggestion':'这条建议不需要采用'}</summary><label class="rejection-choice">{currentLocale==='en-US'?'Reason (optional)':'原因（可选）'}<select data-testid="rejection-reason" bind:value={rejectionCode}><option value="unspecified">{currentLocale==='en-US'?'No reason':'暂不说明'}</option><option value="wrong_category">{currentLocale==='en-US'?'Wrong category':'分类不对'}</option><option value="duplicate">{currentLocale==='en-US'?'Already handled':'已经处理过'}</option></select></label><AppButton variant="danger" loading={busy} onclick={reject}>{currentLocale==='en-US'?'Decline suggestion':'不采用这条建议'}</AppButton></details>
+        <details class="decline-options" bind:open={showDecline}><summary>{currentLocale==='en-US'?'Do not use this suggestion':'这条建议不需要采用'}</summary><label class="rejection-choice">{currentLocale==='en-US'?'Reason (optional)':'原因（可选）'}<select data-testid="rejection-reason" bind:value={rejectionCode}><option value="unspecified">{currentLocale==='en-US'?'No reason':'暂不说明'}</option><option value="wrong_category">{currentLocale==='en-US'?'Wrong category':'分类不对'}</option><option value="misunderstood">{currentLocale==='en-US'?'Misunderstood my intent':'理解偏了'}</option><option value="duplicate">{currentLocale==='en-US'?'Duplicate suggestion':'重复建议'}</option><option value="already_done">{currentLocale==='en-US'?'Already handled':'已经处理过'}</option></select></label><AppButton variant="danger" loading={busy} onclick={reject}>{currentLocale==='en-US'?'Decline suggestion':'不采用这条建议'}</AppButton></details>
         {:else}<button class="plain-action" onclick={()=>adjusting=!adjusting}>{currentLocale==='en-US'?'View details':'查看详情'}</button>{/if}
         <div class="record-actions">
           {#if item.status==='confirmed'}
@@ -405,6 +445,10 @@
 <ProposalLifecycleDialog item={lifecycle?.item??null} action={lifecycle?.action??'delete'} onclose={()=>lifecycle=null} oncomplete={lifecycleCompleted} onbusychange={value=>busy=value}/>
 
 <style>
+  .review-queue{display:flex;flex-wrap:wrap;gap:10px}.review-queue button{display:flex;align-items:center;gap:12px;padding:10px 16px;font:inherit;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);color:var(--color-text);cursor:pointer}.review-queue button.active{background:var(--color-primary-soft);color:var(--color-primary)}.review-queue span{min-width:24px;text-align:center;font-variant-numeric:tabular-nums}
+  .change-preview{padding:16px;border:1px solid var(--color-border);border-radius:12px;background:var(--color-surface-muted);font-size:14px;line-height:1.65;min-width:0}.change-preview header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px}.change-preview button,.deferred-notice button{font:inherit;padding:7px 10px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:8px;color:var(--color-primary);cursor:pointer}.change-preview dl{margin:12px 0 0;display:grid;gap:14px}.change-preview dl>div{min-width:0}.change-preview dt{font-weight:650;color:var(--color-text)}.change-preview dd{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:12px;margin:5px 0 0;min-width:0}.change-preview dd span{overflow-wrap:anywhere;white-space:pre-wrap;min-width:0}.change-preview small{display:block;color:var(--color-muted);font-size:12px}.change-preview .after{color:var(--color-primary)}.change-preview .attention{color:var(--color-warning)}
+  .correction-note{display:grid;gap:8px;margin-top:18px;font-size:14px;line-height:1.65;color:var(--color-text)}.correction-note textarea{width:100%;min-height:84px;resize:vertical;padding:12px;font:inherit;line-height:1.7;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);color:var(--color-text)}.correction-note small{color:var(--color-muted);font-size:13px}.deferred-notice{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 0;font-size:14px;line-height:1.65;color:var(--color-muted)}
+  @container(max-width:600px){.change-preview dd{grid-template-columns:1fr}.change-preview dd>span[aria-hidden]{display:none}}
   .insight-target{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px;background:var(--color-surface-muted);border-radius:9px;overflow-wrap:anywhere;font-size:1rem}.insight-target button{font:inherit;color:var(--color-primary);background:transparent;border:0;padding:4px}
   .suggested-time-confirm{display:flex;align-items:flex-start;gap:10px;padding:14px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-primary-soft);font-size:14px;line-height:1.65}.suggested-time-confirm input{width:18px;height:18px;flex-shrink:0;margin-top:3px}.suggested-time-confirm span{min-width:0;overflow-wrap:anywhere}.suggested-time-confirm small{display:block;color:var(--color-muted);font-size:13px}
   .record-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:18px;padding-top:14px;border-top:1px solid var(--color-border);min-width:0}

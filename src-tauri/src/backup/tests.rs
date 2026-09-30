@@ -22,6 +22,43 @@ impl Drop for Fixture {
     }
 }
 #[test]
+fn backup_preserves_work_but_excludes_device_bound_weixin_session() {
+    let f = Fixture::new();
+    let db = Database::open(&f.data.join(crate::db::DB_FILE_NAME)).unwrap();
+    crate::db::inbox::InboxRepo::new(db.conn())
+        .insert("synthetic retained work")
+        .unwrap();
+    db.conn().execute("INSERT INTO weixin_binding(id,bot_id,owner_id,base_url,credential_ref,bound_at,enabled,cursor) VALUES(1,'synthetic-bot','synthetic-owner','https://ilinkai.weixin.qq.com','synthetic-ref',1,1,'private-device-cursor')",[]).unwrap();
+    db.conn().execute("INSERT INTO weixin_receipts(bot_id,message_id,received_at,action) VALUES('synthetic-bot','message',1,'capture')",[]).unwrap();
+    let file = archive::create_snapshot(&f.data, &f.out, "fixture").unwrap();
+    let restored = f.root.join("restored");
+    archive::unpack(&file, &restored).unwrap();
+    let copy = Database::open(&restored.join(crate::db::DB_FILE_NAME)).unwrap();
+    for table in ["weixin_binding", "weixin_receipts"] {
+        let count: i64 = copy
+            .conn()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "device-bound Weixin state entered the backup");
+    }
+    assert_eq!(
+        copy.conn()
+            .query_row("SELECT COUNT(*) FROM inbox_items", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM weixin_binding", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "live connection was changed"
+    );
+}
+
+#[test]
 fn destination_cannot_be_workspace_data_install_or_their_ancestor() {
     let f = Fixture::new();
     assert!(super::service::validate_destination(&f.data, &[f.data.clone()], true).is_err());

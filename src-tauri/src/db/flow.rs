@@ -42,6 +42,160 @@ pub fn capture_context(conn: &Connection, id: i64) -> DbResult<Option<serde_json
     Ok(conn.query_row("SELECT work_id,entity_kind,entity_id FROM capture_context WHERE inbox_id=?1",[id],|row|Ok(serde_json::json!({"work_id":row.get::<_,Option<i64>>(0)?,"entity_kind":row.get::<_,Option<String>>(1)?,"entity_id":row.get::<_,Option<i64>>(2)?}))).optional()?)
 }
 
+/// Read-only projection. IDs and durable source references establish identity;
+/// matching a title or an expert's name never establishes an association.
+pub fn inbox_continuity(conn: &Connection, id: i64) -> DbResult<serde_json::Value> {
+    use serde_json::{json, Value};
+    let item = super::inbox::InboxRepo::new(conn)
+        .get(id)?
+        .ok_or_else(|| DbError::NotFound("inbox".into()))?;
+    let context = capture_context(conn, id)?;
+    let mut work_id = context.as_ref().and_then(|value| value["work_id"].as_i64());
+    let mut source = if let Some(value) = &context {
+        if let (Some(kind), Some(entity_id)) =
+            (value["entity_kind"].as_str(), value["entity_id"].as_i64())
+        {
+            Some(record_location(conn, kind, entity_id, "")?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let mut pending = Vec::new();
+    let mut deferred = Vec::new();
+    let mut destinations = Vec::new();
+    let related=super::knowledge::rows(conn,"SELECT p.id,p.status,p.deferred_at,p.title,o.kind,o.target_id FROM ai_proposals p LEFT JOIN ai_proposal_outcomes o ON o.proposal_id=p.id WHERE EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(p.source_refs_json) THEN p.source_refs_json ELSE '[]' END) s WHERE json_extract(s.value,'$.source_type')='inbox' AND json_extract(s.value,'$.entity_id')=?1) ORDER BY p.id",&[&id])?;
+    for proposal in related {
+        if proposal["status"] == "pending" {
+            if proposal["deferred_at"].is_null() {
+                pending.push(proposal["id"].clone());
+            } else {
+                deferred.push(proposal["id"].clone());
+            }
+        }
+        if let (Some(kind), Some(target)) =
+            (proposal["kind"].as_str(), proposal["target_id"].as_i64())
+        {
+            let location =
+                record_location(conn, kind, target, proposal["title"].as_str().unwrap_or(""))?;
+            if !destinations
+                .iter()
+                .any(|v: &Value| v["entity_kind"] == kind && v["entity_id"] == target)
+            {
+                destinations.push(location);
+            }
+        }
+    }
+    if let (Some(kind), Some(target)) = (item.converted_to_type.as_deref(), item.converted_to_id) {
+        if !destinations
+            .iter()
+            .any(|v| v["entity_kind"] == kind && v["entity_id"] == target)
+        {
+            destinations.push(record_location(conn, kind, target, "")?);
+        }
+    }
+    // Expert notes retain the original inbox record instead of consuming it.
+    for note in super::knowledge::rows(
+        conn,
+        "SELECT id,work_id FROM kol_notes WHERE inbox_id=?1",
+        &[&id],
+    )? {
+        if let Some(target) = note["id"].as_i64() {
+            let location = record_location(conn, "kol_note", target, "")?;
+            if context.is_none() {
+                work_id = note["work_id"].as_i64();
+                source = Some(location.clone());
+            }
+            destinations.push(location);
+        }
+    }
+    let job=super::knowledge::rows(conn,"SELECT id,status,error FROM ai_jobs WHERE command='organize_inbox_item' AND json_extract(CASE WHEN json_valid(args_json) THEN args_json ELSE '{}' END,'$.inboxId')=?1 ORDER BY id DESC LIMIT 1",&[&id])?.into_iter().next();
+    Ok(
+        json!({"inbox_id":id,"work_id":work_id,"source":source,"pending_ids":pending,"deferred_ids":deferred,"destinations":destinations,"last_job":job}),
+    )
+}
+
+pub fn list_inbox_continuity(conn: &Connection) -> DbResult<Vec<serde_json::Value>> {
+    super::inbox::InboxRepo::new(conn)
+        .list()?
+        .iter()
+        .map(|item| inbox_continuity(conn, item.id))
+        .collect()
+}
+
+fn record_location(
+    conn: &Connection,
+    kind: &str,
+    id: i64,
+    fallback_title: &str,
+) -> DbResult<serde_json::Value> {
+    let current = current_record(conn, kind, id)?;
+    let record = current.as_ref().map(|value| &value["record"]);
+    Ok(
+        serde_json::json!({"entity_kind":kind,"entity_id":id,"available":record.is_some(),"work_id":record.and_then(|r|r["work_id"].as_i64()).or_else(||(kind=="work").then_some(id)),"expert_id":record.and_then(|r|r["expert_id"].as_i64()),"title":record.and_then(|r|r["title"].as_str().or_else(||r["content"].as_str()).or_else(||r["current_state"].as_str())).unwrap_or(fallback_title)}),
+    )
+}
+
+pub fn current_record(
+    conn: &Connection,
+    kind: &str,
+    id: i64,
+) -> DbResult<Option<serde_json::Value>> {
+    let table = match kind {
+        "work" => "works",
+        "task" => "tasks",
+        "waiting" => "waiting_items",
+        "calendar" => "calendar_events",
+        "inbox" => "inbox_items",
+        "resume_point" | "resume" => "resume_points",
+        "kol_insight" => "kol_insights",
+        "kol_note" => "kol_notes",
+        _ => return Ok(None),
+    };
+    let Some(mut record) =
+        super::knowledge::rows(conn, &format!("SELECT * FROM {table} WHERE id=?1"), &[&id])?
+            .into_iter()
+            .next()
+    else {
+        return Ok(None);
+    };
+    if kind == "work" {
+        if let Some(progress) = super::work::ResumePointRepo::new(conn).latest_for_work(id)? {
+            record["current_state"] = serde_json::json!(progress.current_state);
+            record["next_step"] = serde_json::json!(progress.next_step);
+            record["remember"] = serde_json::json!(progress.remember);
+        }
+    }
+    if kind == "calendar" {
+        record["all_day"] = serde_json::json!(record["all_day"].as_i64() == Some(1));
+    }
+    if kind == "kol_insight" {
+        record["categories"] =
+            serde_json::from_str(record["categories_json"].as_str().unwrap_or("[]"))
+                .unwrap_or(serde_json::json!([]));
+    }
+    let token = crate::cognition::digest(&format!("{kind}:{id}:{}", record));
+    Ok(Some(serde_json::json!({"record":record,"token":token})))
+}
+
+pub fn restore_deferred(
+    conn: &Connection,
+    id: i64,
+    expected_updated_at: i64,
+) -> DbResult<super::ai::AiProposal> {
+    let tx = super::write_transaction(conn)?;
+    let updated = now_unix().max(expected_updated_at.saturating_add(1));
+    if tx.execute("UPDATE ai_proposals SET deferred_at=NULL,updated_at=?1 WHERE id=?2 AND updated_at=?3 AND status='pending' AND deferred_at IS NOT NULL",params![updated,id,expected_updated_at])?!=1 {
+        return Err(DbError::Migration("建议已变化或已处理，请刷新后再查看".into()));
+    }
+    let proposal = super::ai::ProposalRepo::new(&tx)
+        .get(id)?
+        .ok_or_else(|| DbError::NotFound("proposal".into()))?;
+    tx.commit()?;
+    Ok(proposal)
+}
+
 pub fn entity_location(conn: &Connection, kind: &str, id: i64) -> DbResult<serde_json::Value> {
     let query = match kind {
         "work" => "SELECT id,NULL FROM works WHERE id=?1",
@@ -81,6 +235,180 @@ pub(crate) fn schedule_in_transaction(
 mod tests {
     use super::*;
     use crate::db::{task::TaskRepo, work::WorkRepo, Database};
+
+    #[test]
+    fn continuity_keeps_all_outcomes_and_deferred_suggestions_without_name_matching() {
+        let db = Database::open_in_memory().unwrap();
+        let project = WorkRepo::new(db.conn())
+            .insert("Same title", "active")
+            .unwrap();
+        WorkRepo::new(db.conn())
+            .insert("Same title", "active")
+            .unwrap();
+        let note = capture(
+            db.conn(),
+            "Synthetic follow-up",
+            Some(project.id),
+            Some("work"),
+            Some(project.id),
+        )
+        .unwrap();
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        let repo = crate::db::ai::ProposalRepo::new(db.conn());
+        let mut proposals = Vec::new();
+        for n in 0..3 {
+            proposals.push(
+                repo.upsert_pending(
+                    run.id,
+                    "task",
+                    "create",
+                    None,
+                    Some(project.id),
+                    None,
+                    &format!("continuity-{n}"),
+                    &format!("Follow-up {n}"),
+                    "{}",
+                    "Synthetic",
+                    &serde_json::json!([{"source_type":"inbox","entity_id":note.id}]).to_string(),
+                    None,
+                )
+                .unwrap()
+                .unwrap(),
+            );
+        }
+        let first =
+            crate::ai::apply::confirm_proposal(&db, proposals[0].id, proposals[0].updated_at, None)
+                .unwrap();
+        crate::ai::apply::confirm_proposal(&db, proposals[1].id, proposals[1].updated_at, None)
+            .unwrap();
+        repo.defer(proposals[2].id, proposals[2].updated_at)
+            .unwrap();
+        let state = inbox_continuity(db.conn(), note.id).unwrap();
+        assert_eq!(state["work_id"], project.id);
+        assert_eq!(state["pending_ids"], serde_json::json!([]));
+        assert_eq!(state["deferred_ids"], serde_json::json!([proposals[2].id]));
+        assert_eq!(state["destinations"].as_array().unwrap().len(), 2);
+        TaskRepo::new(db.conn()).delete(first.target_id).unwrap();
+        let state = inbox_continuity(db.conn(), note.id).unwrap();
+        assert!(state["destinations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["entity_id"] == first.target_id && item["available"] == false));
+    }
+
+    #[test]
+    fn restoring_deferred_keeps_original_draft_and_never_starts_analysis() {
+        let db = Database::open_in_memory().unwrap();
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        let repo = crate::db::ai::ProposalRepo::new(db.conn());
+        let proposal = repo
+            .upsert_pending(
+                run.id,
+                "task",
+                "create",
+                None,
+                None,
+                None,
+                "later",
+                "Original",
+                "{}",
+                "Synthetic",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let deferred = repo.defer(proposal.id, proposal.updated_at).unwrap();
+        assert!(restore_deferred(db.conn(), proposal.id, proposal.updated_at).is_err());
+        let restored = restore_deferred(db.conn(), proposal.id, deferred.updated_at).unwrap();
+        assert!(restored.deferred_at.is_none());
+        assert_eq!(restored.id, proposal.id);
+        assert_eq!(restored.payload_json, proposal.payload_json);
+        assert_eq!(restored.status, "pending");
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM analysis_runs", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM ai_jobs", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn current_record_token_detects_changes_even_without_timestamp_changes() {
+        let db = Database::open_in_memory().unwrap();
+        let work = WorkRepo::new(db.conn())
+            .insert("Synthetic", "active")
+            .unwrap();
+        let point = crate::db::work::ResumePointRepo::new(db.conn())
+            .insert(work.id, "Old", "Next", "", "manual")
+            .unwrap();
+        let before = current_record(db.conn(), "resume_point", point.id)
+            .unwrap()
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE resume_points SET current_state='Changed' WHERE id=?1",
+                [point.id],
+            )
+            .unwrap();
+        let after = current_record(db.conn(), "resume_point", point.id)
+            .unwrap()
+            .unwrap();
+        assert_ne!(before["token"], after["token"]);
+        assert_eq!(after["record"]["current_state"], "Changed");
+    }
+
+    #[test]
+    fn continuity_preserves_the_explicit_expert_note_project_without_matching_names() {
+        let db = Database::open_in_memory().unwrap();
+        let project = WorkRepo::new(db.conn())
+            .insert("Same title", "active")
+            .unwrap();
+        WorkRepo::new(db.conn())
+            .insert("Same title", "active")
+            .unwrap();
+        let expert = super::super::kol::save_expert(
+            &db,
+            None,
+            None,
+            "Same name",
+            "Synthetic institution",
+            None,
+            "",
+            &[project.id],
+            false,
+        )
+        .unwrap();
+        let original = super::super::inbox::InboxRepo::new(db.conn())
+            .insert("Synthetic exchange")
+            .unwrap();
+        let note = super::super::kol::capture(
+            &db,
+            expert["id"].as_i64().unwrap(),
+            Some(project.id),
+            Some(original.id),
+            &original.content,
+            1800000000,
+        )
+        .unwrap();
+        let context = inbox_continuity(db.conn(), original.id).unwrap();
+        assert_eq!(context["work_id"], project.id);
+        assert_eq!(context["source"]["entity_kind"], "kol_note");
+        assert_eq!(context["source"]["expert_id"], expert["id"]);
+        assert_eq!(context["destinations"][0]["entity_id"], note["id"]);
+    }
 
     #[test]
     fn capture_keeps_project_context_without_creating_formal_entities() {

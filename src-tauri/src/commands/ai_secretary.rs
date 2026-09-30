@@ -93,8 +93,11 @@ pub(crate) async fn execute_focused_analysis(
     let today_end = today_start.saturating_add(24 * 60 * 60);
     let date = now.format("%Y-%m-%d").to_string();
     let run_id = with_db(state, |db| {
+        let scope = inbox_id.map_or(crate::db::ai::AnalysisRequestScope::Global {}, |inbox_id| {
+            crate::db::ai::AnalysisRequestScope::Inbox { inbox_id }
+        });
         Ok(crate::db::ai::AnalysisRunRepo::new(db.conn())
-            .create(trigger, Some(period_start), Some(period_end))?
+            .create_scoped(trigger, Some(period_start), Some(period_end), &scope)?
             .id)
     })?;
 
@@ -342,9 +345,15 @@ pub fn defer_ai_proposal(
     state: State<AppState>,
     id: i64,
     expected_updated_at: i64,
+    correction_note: Option<String>,
 ) -> Result<crate::db::ai::AiProposal, String> {
     with_db(&state, |db| {
-        crate::db::ai::ProposalRepo::new(db.conn()).defer(id, expected_updated_at)
+        crate::ai::apply::defer_proposal_reviewed(
+            db,
+            id,
+            expected_updated_at,
+            correction_note.as_deref(),
+        )
     })
 }
 
@@ -376,9 +385,18 @@ pub fn confirm_ai_proposal(
     id: i64,
     expected_updated_at: i64,
     edited_payload: Option<Value>,
+    correction_note: Option<String>,
+    current_record_token: Option<String>,
 ) -> Result<crate::ai::apply::ApplyResult, String> {
     with_db(&state, |db| {
-        crate::ai::apply::confirm_proposal(db, id, expected_updated_at, edited_payload)
+        crate::ai::receipts::confirm_single_reviewed(
+            db,
+            id,
+            expected_updated_at,
+            edited_payload,
+            correction_note,
+            current_record_token,
+        )
     })
 }
 
@@ -388,9 +406,16 @@ pub fn reject_ai_proposal(
     id: i64,
     expected_updated_at: i64,
     reason: Option<String>,
+    correction_note: Option<String>,
 ) -> Result<(), String> {
     with_db(&state, |db| {
-        crate::ai::apply::reject_proposal(db, id, expected_updated_at, reason.as_deref())
+        crate::ai::apply::reject_proposal_reviewed(
+            db,
+            id,
+            expected_updated_at,
+            reason.as_deref(),
+            correction_note.as_deref(),
+        )
     })
 }
 
@@ -399,6 +424,15 @@ pub async fn start_workspace_work_draft(
     state: State<'_, AppState>,
     workspace_id: Option<i64>,
     work_id: Option<i64>,
+) -> Result<i64, String> {
+    execute_workspace_work_draft(&state, workspace_id, work_id, "workspace_import").await
+}
+
+async fn execute_workspace_work_draft(
+    state: &State<'_, AppState>,
+    workspace_id: Option<i64>,
+    work_id: Option<i64>,
+    trigger: &str,
 ) -> Result<i64, String> {
     use chrono::Timelike;
 
@@ -427,7 +461,15 @@ pub async fn start_workspace_work_draft(
     let date = now.format("%Y-%m-%d").to_string();
     let run_id = with_db(&state, |db| {
         Ok(crate::db::ai::AnalysisRunRepo::new(db.conn())
-            .create("workspace_import", Some(period_start), Some(period_end))?
+            .create_scoped(
+                trigger,
+                Some(period_start),
+                Some(period_end),
+                &crate::db::ai::AnalysisRequestScope::Workspace {
+                    workspace_id,
+                    work_id,
+                },
+            )?
             .id)
     })?;
 
@@ -592,13 +634,21 @@ pub fn list_analysis_runs(
 
 #[tauri::command]
 pub async fn retry_analysis_run(state: State<'_, AppState>, run_id: i64) -> Result<i64, String> {
-    with_db(&state, |db| {
-        crate::db::ai::AnalysisRunRepo::new(db.conn())
-            .get(run_id)?
-            .ok_or_else(|| crate::db::DbError::NotFound("analysis_run".into()))?;
-        Ok(())
+    let scope = with_db(&state, |db| {
+        crate::db::ai::AnalysisRunRepo::new(db.conn()).retry_request(run_id)
     })?;
-    execute_global_analysis(&state, "retry").await
+    match scope {
+        crate::db::ai::AnalysisRequestScope::Global {} => {
+            execute_global_analysis(&state, "retry").await
+        }
+        crate::db::ai::AnalysisRequestScope::Inbox { inbox_id } => {
+            execute_focused_analysis(&state, "retry", Some(inbox_id)).await
+        }
+        crate::db::ai::AnalysisRequestScope::Workspace {
+            workspace_id,
+            work_id,
+        } => execute_workspace_work_draft(&state, workspace_id, work_id, "retry").await,
+    }
 }
 
 #[tauri::command]
@@ -634,29 +684,15 @@ pub async fn translate_text(
         .ok_or_else(|| "翻译模型未配置 API Key".to_string())?;
     let request = crate::ai::translation::build_request(&resolved.model.model_id, &input, &style)?;
     let direction = crate::ai::translation::detect_direction(&input);
-    let response =
-        crate::ai::provider::complete_model(&resolved.connection, &resolved.model, &key, &request)
-            .await
-            .map_err(|error| error.to_string())?;
-    match crate::ai::translation::parse_output(&input, direction, &response.content) {
-        Ok(value) => Ok(value),
-        Err(first_error) => {
-            let mut repair = request;
-            repair.system.get_or_insert_default().push_str(
-                "<format_repair>The previous response failed validation. Return one msl.translation.v1 JSON object with the complete translation and correct language direction. Do not add conversation or explanation.</format_repair>",
-            );
-            let repaired = crate::ai::provider::complete_model(
-                &resolved.connection,
-                &resolved.model,
-                &key,
-                &repair,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-            crate::ai::translation::parse_output(&input, direction, &repaired.content)
-                .map_err(|_| format!("翻译输出格式无法验证：{first_error}"))
-        }
-    }
+    crate::ai::provider::complete_checked(
+        &resolved.connection,
+        &resolved.model,
+        &key,
+        &request,
+        |content| crate::ai::translation::parse_output(&input, direction, content),
+    )
+    .await
+    .map(|(_, translation)| translation)
 }
 
 #[tauri::command]

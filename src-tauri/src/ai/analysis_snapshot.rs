@@ -93,6 +93,99 @@ fn read_bounded_cache(path: &std::path::Path, chars: usize) -> std::io::Result<S
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// File evidence is optional context. Keep capacity for instructions and formal
+/// work records; unknown capabilities retain the conservative existing budget.
+fn document_budget(db: &Database, task_kind: &str, detailed: bool) -> (usize, usize) {
+    let repo = crate::db::provider::ProviderCatalogRepo::new(db.conn());
+    let credentials = super::router::KeyringCredentialSource;
+    let router = super::router::AiRouter::new(&repo, &credentials);
+    // resolve reads metadata only; it never retrieves a credential or calls AI.
+    let capacity = router.resolve(task_kind).ok().and_then(|resolved| {
+        let c = super::catalog::model_capabilities(&resolved.model);
+        [c.max_context_tokens, c.max_input_tokens]
+            .into_iter()
+            .flatten()
+            .min()
+    });
+    match capacity {
+        Some(limit) => {
+            let chars = ((limit as usize).saturating_sub(8000) / 4).min(160_000);
+            let files = if chars == 0 {
+                0
+            } else {
+                chars.div_ceil(4000).clamp(1, 32)
+            };
+            (chars, files)
+        }
+        None if detailed => (MAX_TOTAL_CHARS, MAX_FILES),
+        None => (12_000, 4),
+    }
+}
+
+fn workspace_query(db: &Database, workspace_id: i64) -> DbResult<String> {
+    let mut query = String::new();
+    for sql in [
+        "SELECT w.title || ' ' || COALESCE(w.summary,'') FROM works w JOIN work_workspace_links l ON l.work_id=w.id WHERE l.workspace_id=?1 ORDER BY w.updated_at DESC LIMIT 8",
+        "SELECT i.content FROM inbox_items i JOIN capture_context c ON c.inbox_id=i.id JOIN work_workspace_links l ON l.work_id=c.work_id WHERE l.workspace_id=?1 ORDER BY i.id DESC LIMIT 8",
+        "SELECT d.note FROM review_decisions d JOIN ai_proposals p ON p.id=d.proposal_id JOIN work_workspace_links l ON l.work_id=p.work_id WHERE l.workspace_id=?1 AND d.note!='' ORDER BY d.id DESC LIMIT 8",
+    ] {
+        let mut stmt = db.conn().prepare(sql)?;
+        for text in stmt.query_map([workspace_id], |r| r.get::<_,String>(0))? {
+            query.push_str(&crate::cognition::bounded(&text?, 1200));
+            query.push('\n');
+        }
+    }
+    Ok(query)
+}
+
+/// Keep these statistics tied to the final scoped snapshot, not the unfiltered
+/// inventory. Paths are relative, and no document body is copied to the run log.
+pub(crate) fn refresh_document_coverage(snapshot: &mut AnalysisSnapshot) {
+    let mut coverage = snapshot.source_counts["unavailable_documents"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let unavailable_count = coverage.len();
+    snapshot.source_counts["documents_unavailable"] = serde_json::json!(unavailable_count);
+    if unavailable_count > 0 {
+        snapshot
+            .truncated
+            .insert("document_unavailable".into(), unavailable_count as u32);
+    } else {
+        snapshot.truncated.remove("document_unavailable");
+    }
+    let mut read = 0usize;
+    let mut excerpts = 0usize;
+    let mut unread = 0usize;
+    for doc in &snapshot.documents {
+        let status = if doc.selected_text.is_some() {
+            read += 1;
+            if doc.truncated {
+                excerpts += 1;
+                "excerpt"
+            } else {
+                "read"
+            }
+        } else if doc.truncated {
+            unread += 1;
+            "unread"
+        } else {
+            "indexed"
+        };
+        coverage.push(serde_json::json!({"path":doc.relative_path,"workspace_id":doc.workspace_id,"status":status}));
+    }
+    snapshot.source_counts["documents_read"] = serde_json::json!(read);
+    snapshot.source_counts["documents_excerpted"] = serde_json::json!(excerpts);
+    snapshot.source_counts["documents_unread"] = serde_json::json!(unread);
+    snapshot.source_counts["documents_metadata_omitted"] = serde_json::json!(snapshot
+        .truncated
+        .get("document_metadata")
+        .copied()
+        .unwrap_or(0));
+    snapshot.source_counts["document_coverage"] = serde_json::json!(coverage);
+    snapshot.source_counts["truncated"] = serde_json::json!(snapshot.truncated);
+}
+
 pub fn build_for_round(
     db: &Database,
     task_kind: &str,
@@ -123,11 +216,21 @@ fn select_documents(
     mut docs: Vec<DocumentIndex>,
     start: i64,
     end: i64,
+    query: &str,
 ) -> (Vec<DocumentIndex>, u32) {
     docs.retain(|doc| doc.extract_status == "ready");
     docs.sort_by(|left, right| {
         (right.modified_at >= start && right.modified_at <= end)
             .cmp(&(left.modified_at >= start && left.modified_at <= end))
+            .then_with(|| {
+                let score = |d: &DocumentIndex| {
+                    crate::cognition::relevance(
+                        query,
+                        &format!("{} {}", d.relative_path, d.summary.as_deref().unwrap_or("")),
+                    )
+                };
+                score(right).cmp(&score(left))
+            })
             .then_with(|| right.summary.is_some().cmp(&left.summary.is_some()))
             .then_with(|| {
                 right
@@ -249,6 +352,7 @@ pub(crate) fn scoped_user_directions(
                     "entity_kind":row.get::<_,Option<String>>(2)?,
                     "entity_id":row.get::<_,Option<i64>>(3)?,
                     "content":crate::cognition::bounded(&content,1200),
+                    "content_truncated":content.chars().count()>1200,
                     "created_at":row.get::<_,i64>(5)?,
                     "processed":row.get::<_,Option<i64>>(6)?.is_some()
                 }))
@@ -271,6 +375,7 @@ pub(crate) fn scoped_user_directions(
                     "proposal_title":row.get::<_,String>(2)?,
                     "reason_code":row.get::<_,String>(3)?,
                     "content":crate::cognition::bounded(&note,1200),
+                    "content_truncated":note.chars().count()>1200,
                     "created_at":row.get::<_,i64>(5)?
                 }))
             })?
@@ -294,6 +399,7 @@ pub(crate) fn scoped_user_directions(
                     "insight_title":row.get::<_,String>(3)?,
                     "status":row.get::<_,String>(4)?,
                     "content":crate::cognition::bounded(&note,1200),
+                    "content_truncated":note.chars().count()>1200,
                     "created_at":row.get::<_,i64>(6)?
                 }))
             })?
@@ -509,6 +615,8 @@ pub fn build_scoped(
     }
     let workspace_ids = crate::db::workspace::WorkspaceRepo::new(db.conn()).list()?;
     let mut queues = Vec::new();
+    let mut queries = std::collections::BTreeMap::new();
+    let mut unavailable = Vec::new();
     for workspace in workspace_ids {
         if !workspace.enabled {
             continue;
@@ -524,14 +632,30 @@ pub fn build_scoped(
             content_hash: None,
             timestamp: None,
         });
-        let (workspace_documents, omitted) = select_documents(
-            DocumentIndexRepo::new(db.conn()).list(workspace.id)?,
-            period_start,
-            period_end,
-        );
+        let inventory = DocumentIndexRepo::new(db.conn()).list(workspace.id)?;
+        for doc in inventory.iter().filter(|doc| doc.extract_status != "ready") {
+            unavailable.push(serde_json::json!({"workspace_id":workspace.id,"path":doc.relative_path,"status":"unavailable"}));
+        }
+        let query = workspace_query(db, workspace.id)?;
+        let (mut workspace_documents, omitted) =
+            select_documents(inventory, period_start, period_end, &query);
         if omitted > 0 {
             *truncated.entry("document_metadata".into()).or_insert(0) += omitted;
         }
+        workspace_documents.sort_by(|a, b| {
+            let changed =
+                |d: &DocumentIndex| d.modified_at >= period_start && d.modified_at <= period_end;
+            changed(b).cmp(&changed(a)).then_with(|| {
+                let score = |d: &DocumentIndex| {
+                    crate::cognition::relevance(
+                        &query,
+                        &format!("{} {}", d.relative_path, d.summary.as_deref().unwrap_or("")),
+                    )
+                };
+                score(b).cmp(&score(a))
+            })
+        });
+        queries.insert(workspace.id, query);
         queues.push(workspace_documents);
     }
     // Interleave projects before consuming either the file or character budget.
@@ -552,16 +676,16 @@ pub fn build_scoped(
         task_kind,
         "work_draft" | "workspace_analysis" | "monthly_report" | "weekly_report"
     );
-    let file_limit = if detailed { MAX_FILES } else { 4 };
+    let (char_limit, file_limit) = document_budget(db, task_kind, detailed);
     let eligible_count = ordered
         .iter()
         .filter(|d| detailed || (d.modified_at >= period_start && d.modified_at <= period_end))
         .count()
         .min(file_limit)
         .max(1);
-    let fair_budget = if detailed { MAX_TOTAL_CHARS } else { 12_000 } / eligible_count;
+    let fair_budget = char_limit / eligible_count;
     for doc in ordered {
-        let remaining = MAX_TOTAL_CHARS.saturating_sub(total_chars);
+        let remaining = char_limit.saturating_sub(total_chars);
         let budget = remaining.min(MAX_FILE_CHARS).min(fair_budget);
         let mut selected_text = None;
         let mut selected_chars = 0;
@@ -571,22 +695,17 @@ pub fn build_scoped(
             "work_draft" | "workspace_analysis" | "monthly_report" | "weekly_report"
         );
         let changed_in_period = doc.modified_at >= period_start && doc.modified_at <= period_end;
-        let file_limit = if detailed { MAX_FILES } else { 4 };
-        let budget = if detailed {
-            budget
-        } else {
-            budget
-                .min(4_000)
-                .min(12_000usize.saturating_sub(total_chars))
-        };
         if (detailed || changed_in_period) && selected_files < file_limit && budget > 0 {
             if let Some(rel) = doc.cache_rel_path.as_deref() {
                 if let Ok(path) = crate::storage::paths::existing_cache_path(rel) {
-                    if let Ok(text) = read_bounded_cache(&path, budget) {
-                        let chars: Vec<char> = text.chars().collect();
-                        let take = chars.len().min(budget);
-                        was_truncated = take < chars.len();
-                        let value: String = chars.into_iter().take(take).collect();
+                    if let Ok(text) = read_bounded_cache(&path, 262_144) {
+                        let query = queries
+                            .get(&doc.workspace_id)
+                            .map(String::as_str)
+                            .unwrap_or("");
+                        let value = crate::cognition::task_excerpt(&text, query, budget);
+                        was_truncated =
+                            text.chars().count() > budget || doc.char_count > budget as i64;
                         selected_chars = value.chars().count();
                         total_chars += selected_chars;
                         selected_files += 1;
@@ -632,7 +751,14 @@ pub fn build_scoped(
         "brief": brief.source_counts.clone(),
         "documents": documents.len(),
         "document_chars": total_chars,
+        "document_char_budget": char_limit,
+        "document_file_budget": file_limit,
+        "documents_unavailable": unavailable.len(),
+        "unavailable_documents": unavailable,
     });
+    if !unavailable.is_empty() {
+        truncated.insert("document_unavailable".into(), unavailable.len() as u32);
+    }
     let classification_memory = if matches!(
         task_kind,
         "global_analysis" | "workspace_analysis" | "work_draft"
@@ -715,6 +841,7 @@ pub fn build_scoped(
         truncated,
         snapshot_hash: String::new(),
     };
+    refresh_document_coverage(&mut snapshot);
     let value = serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}));
     snapshot.snapshot_hash = hash_snapshot(&value);
     Ok(snapshot)
@@ -844,12 +971,22 @@ pub fn focus_work(
         ))
     });
     let mut total = 0usize;
+    let chars_limit = snapshot.source_counts["document_char_budget"]
+        .as_u64()
+        .unwrap_or(MAX_TOTAL_CHARS as u64) as usize;
+    let files_limit = snapshot.source_counts["document_file_budget"]
+        .as_u64()
+        .unwrap_or(MAX_FILES as u64) as usize;
     for (position, doc) in snapshot.documents.iter_mut().enumerate() {
-        if position >= MAX_FILES || total >= MAX_TOTAL_CHARS {
+        if position >= files_limit || total >= chars_limit {
+            if doc.selected_text.take().is_some() {
+                doc.truncated = true;
+            }
+            doc.selected_chars = 0;
             continue;
         }
         if let Some(text) = doc.selected_text.take() {
-            let budget = MAX_FILE_CHARS.min(MAX_TOTAL_CHARS - total);
+            let budget = MAX_FILE_CHARS.min(chars_limit - total);
             doc.truncated |= text.chars().count() > budget;
             let excerpt = crate::cognition::task_excerpt(&text, &query, budget);
             doc.selected_chars = excerpt.chars().count();
@@ -860,6 +997,7 @@ pub fn focus_work(
     snapshot.source_counts["document_chars"] = serde_json::json!(total);
     let entry = crate::cognition::preview(db, "work", Some(id))?;
     snapshot.project_cognition.insert(0,serde_json::json!({"scope":entry.scope_key,"version":entry.version,"fingerprint":entry.fingerprint,"entry":crate::cognition::bounded(&entry.markdown,4000),"entry_truncated":entry.markdown.chars().count()>4000,"documents":entry.document_count,"readable":entry.ready_count,"unavailable_folders":entry.unavailable_folders}));
+    refresh_document_coverage(&mut snapshot);
     snapshot.snapshot_hash.clear();
     snapshot.snapshot_hash = hash_snapshot(&serde_json::to_value(&snapshot).unwrap_or_default());
     Ok(snapshot)
@@ -880,6 +1018,14 @@ pub fn focus_workspace(mut snapshot: AnalysisSnapshot, workspace_id: i64) -> Ana
         .sum::<usize>();
     snapshot.source_counts["documents"] = serde_json::json!(snapshot.documents.len());
     snapshot.source_counts["document_chars"] = serde_json::json!(selected_chars);
+    if let Some(items) = snapshot.source_counts["unavailable_documents"].as_array_mut() {
+        items.retain(|v| v["workspace_id"] == workspace_id);
+    }
+    snapshot.source_counts["documents_unavailable"] = serde_json::json!(snapshot.source_counts
+        ["unavailable_documents"]
+        .as_array()
+        .map_or(0, Vec::len));
+    refresh_document_coverage(&mut snapshot);
     snapshot.snapshot_hash.clear();
     let value = serde_json::to_value(&snapshot).unwrap_or_else(|_| serde_json::json!({}));
     snapshot.snapshot_hash = hash_snapshot(&value);
@@ -888,6 +1034,204 @@ pub fn focus_workspace(mut snapshot: AnalysisSnapshot, workspace_id: i64) -> Ana
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relevant_material_survives_metadata_cap() {
+        let db = Database::open_in_memory().unwrap();
+        let ws = WorkspaceRepo::new(db.conn())
+            .insert("Synthetic", "C:/synthetic")
+            .unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("样本量计算", "active")
+            .unwrap();
+        db.conn().execute("INSERT INTO work_workspace_links(work_id,workspace_id,is_primary,created_at) VALUES(?1,?2,1,1)",rusqlite::params![work.id,ws.id]).unwrap();
+        for n in 0..101 {
+            let name = if n == 100 {
+                "样本量计算.txt".to_owned()
+            } else {
+                format!("{n:03}.txt")
+            };
+            DocumentIndexRepo::new(db.conn())
+                .upsert(
+                    ws.id,
+                    &format!("C:/synthetic/{name}"),
+                    &name,
+                    "txt",
+                    10,
+                    10,
+                    Some("hash"),
+                    "ready",
+                    10,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        db.conn().execute("UPDATE document_index SET summary='unrelated old context' WHERE relative_path!='样本量计算.txt'",[]).unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-30",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(snapshot
+            .documents
+            .iter()
+            .any(|d| d.relative_path == "样本量计算.txt"));
+        assert_eq!(snapshot.source_counts["documents_metadata_omitted"], 1);
+    }
+
+    #[test]
+    fn focused_coverage_does_not_report_unavailable_files_from_other_projects() {
+        let db = Database::open_in_memory().unwrap();
+        let a = WorkspaceRepo::new(db.conn())
+            .insert("A", "C:/synthetic/a")
+            .unwrap();
+        let b = WorkspaceRepo::new(db.conn())
+            .insert("B", "C:/synthetic/b")
+            .unwrap();
+        for ws in [&a, &b] {
+            DocumentIndexRepo::new(db.conn())
+                .upsert(
+                    ws.id,
+                    &format!("{}/scan.pdf", ws.root_path),
+                    "scan.pdf",
+                    "pdf",
+                    10,
+                    10,
+                    Some("hash"),
+                    "unsupported",
+                    0,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let snapshot = focus_workspace(
+            build(&db, "work_draft", "2026-09-30", 0, 100, 0, 100, "zh-CN").unwrap(),
+            a.id,
+        );
+        assert_eq!(snapshot.source_counts["documents_unavailable"], 1);
+        assert_eq!(snapshot.truncated.get("document_unavailable"), Some(&1));
+    }
+
+    #[test]
+    fn changed_document_retrieval_uses_project_direction_beyond_the_opening_pages() {
+        let root =
+            std::env::temp_dir().join(format!("msl-relevant-evidence-{}", uuid::Uuid::new_v4()));
+        let _guard = crate::storage::paths::LocalAppDataTestGuard::set(&root);
+        let db = Database::open_in_memory().unwrap();
+        let ws = crate::db::workspace::WorkspaceRepo::new(db.conn())
+            .insert("synthetic", "C:/synthetic")
+            .unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("研究设计", "active")
+            .unwrap();
+        db.conn().execute("INSERT INTO work_workspace_links(work_id,workspace_id,is_primary,created_at) VALUES(?1,?2,1,1)",rusqlite::params![work.id,ws.id]).unwrap();
+        crate::db::flow::capture(
+            db.conn(),
+            "请核对样本量计算与入组标准",
+            Some(work.id),
+            Some("work"),
+            Some(work.id),
+        )
+        .unwrap();
+        let text = format!(
+            "{}\n样本量计算与入组标准：这是当前需要核对的依据。\n{}",
+            "历史背景。".repeat(5200),
+            "附录。".repeat(2200)
+        );
+        crate::storage::paths::write_cache_atomically("extracted/relevant.txt", text.as_bytes())
+            .unwrap();
+        DocumentIndexRepo::new(db.conn())
+            .upsert(
+                ws.id,
+                "C:/synthetic/relevant.txt",
+                "relevant.txt",
+                "txt",
+                text.len() as i64,
+                10,
+                Some("hash"),
+                "ready",
+                text.chars().count() as i64,
+                Some("extracted/relevant.txt"),
+                None,
+                None,
+            )
+            .unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-30",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert!(
+            snapshot.documents[0]
+                .selected_text
+                .as_deref()
+                .unwrap()
+                .contains("样本量计算与入组标准"),
+            "relevant evidence after the introduction was omitted"
+        );
+        assert!(
+            snapshot.documents[0].truncated,
+            "an excerpt must not pretend to cover the whole document"
+        );
+        drop(_guard);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_material_is_disclosed_in_analysis_coverage() {
+        let db = Database::open_in_memory().unwrap();
+        let ws = crate::db::workspace::WorkspaceRepo::new(db.conn())
+            .insert("synthetic", "C:/synthetic")
+            .unwrap();
+        DocumentIndexRepo::new(db.conn())
+            .upsert(
+                ws.id,
+                "C:/synthetic/scan.pdf",
+                "scan.pdf",
+                "pdf",
+                100,
+                10,
+                Some("hash"),
+                "unsupported",
+                0,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-30",
+            0,
+            100,
+            0,
+            100,
+            "zh-CN",
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.source_counts["documents_unavailable"], 1,
+            "unreadable files disappeared from coverage"
+        );
+        assert_eq!(snapshot.truncated.get("document_unavailable"), Some(&1));
+    }
+
     #[test]
     fn changed_source_precedes_old_summaries_at_metadata_limit() {
         let db = Database::open_in_memory().unwrap();

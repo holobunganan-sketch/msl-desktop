@@ -15,6 +15,8 @@
   import NaturalCapture from './NaturalCapture.svelte';
   import {onMount,tick} from 'svelte';
   import {navigateTo} from '$lib/services/navigation';
+  import {sourceDestination} from '$lib/services/workflowContinuity';
+  import {inboxAction,inboxProjectPrefill,type InboxContinuity} from '$lib/services/inboxContinuity';
   let {focusId=null}:{focusId?:number|null}=$props();
   let showHistory=$state(false);
   onMount(async()=>{await load();if(focusId){showHistory=true;await tick();document.querySelector(`[data-inbox-id="${focusId}"]`)?.scrollIntoView({block:'center'});}});
@@ -28,6 +30,8 @@
   };
 
   let items = $state<InboxItem[]>([]);
+  let continuity=$state<Record<number,InboxContinuity>>({});
+  let loadVersion=0;
   let works = $state<Array<{ id: number; title: string; status: string }>>([]);
   let error = $state("");
   let currentLocale = $derived($locale);
@@ -52,7 +56,12 @@
   let captureBusy=$state(false);
   let queued=$state(false);
   function organizing(id:number){return $aiJobs.some(job=>job.command==="organize_inbox_item"&&job.args.inboxId===id&&job.status==="running");}
-  async function organize(item:InboxItem){error="";queued=true;try{await command("organize_inbox_item",{inboxId:item.id});}catch(e){error=String(e);}}
+  async function organize(item:InboxItem){
+    const action=inboxAction(continuity[item.id],!!item.processed_at);
+    if(action.kind==='review'){navigateTo('proposal',action.proposalId);return;}
+    if(action.kind==='running'||organizing(item.id))return;
+    error="";queued=true;try{await command("organize_inbox_item",{inboxId:item.id});await load();}catch(e){error=String(e);}
+  }
   async function captureAndOrganize(){
     if(!captureText.trim()||captureBusy)return;captureBusy=true;error="";
     try{const item=await createInboxItem(captureText.trim());captureText="";await load();void organize(item);}
@@ -72,8 +81,11 @@
   }
 
   async function load() {
+    const version=++loadVersion;
     try {
-      items = await invoke<InboxItem[]>("list_inbox");
+      const [next,nextContinuity]=await Promise.all([invoke<InboxItem[]>("list_inbox"),command<InboxContinuity[]>('list_inbox_continuity')]);
+      if(version!==loadVersion)return;
+      items=next;continuity=Object.fromEntries(nextContinuity.map(item=>[item.inbox_id,item]));
     } catch (e) {
       error = String(e);
     }
@@ -93,7 +105,7 @@
     selected = item;
     conversion = type;
     formTitle = item.content;
-    formWorkId = null;
+    formWorkId = inboxProjectPrefill(continuity[item.id],works);
     formPriority = "normal";
     formDue = "";
     formWaitingFor = "";
@@ -176,6 +188,8 @@
   $effect(() => {
     $dataRevision.inbox;
     $dataRevision.works;
+    $dataRevision.proposals;
+    $dataRevision.analysis;
     load();
     loadWorks();
   });
@@ -233,22 +247,32 @@
   <NaturalCapture/>
   <label class="history-switch"><input type="checkbox" bind:checked={showHistory}/>{currentLocale==='en-US'?'Include organized notes':'同时查看已整理的原始记录'}</label>
   {#if queued}<p class="organize-note">{currentLocale==="en-US"?"Continue working while this note is organized. Review any proposed changes in Secretary suggestions.":"这条记录已交给秘书，可以继续工作。有新的建议时，到“秘书准备的建议”核对并确认。"}<button onclick={()=>window.dispatchEvent(new CustomEvent("dashboard:navigate",{detail:"review"}))}>{currentLocale==="en-US"?"Review suggestions":"查看待确认建议"}</button></p>{/if}
-  {#if items.some(item=>showHistory||!item.processed_at)}
+  {#if items.some(item=>showHistory||!item.processed_at||inboxAction(continuity[item.id],!!item.processed_at).kind==='review')}
   <ul class="in-list">
-    {#each items.filter(item=>showHistory||!item.processed_at) as item (item.id)}
+    {#each items.filter(item=>showHistory||!item.processed_at||inboxAction(continuity[item.id],!!item.processed_at).kind==='review') as item (item.id)}
+      {@const state=continuity[item.id]}
+      {@const action=inboxAction(state,!!item.processed_at)}
       <li data-inbox-id={item.id} class:focused={focusId===item.id} class:processed={item.processed_at !== null}>
         <span class="content">{item.content}</span>
         <span class="muted">{fmtTime(item.created_at)}</span>
-        {#if item.processed_at}
-          <button onclick={()=>navigateTo(item.converted_to_type??'inbox',item.converted_to_id??undefined)}>{currentLocale==='en-US'?'View organized item':'查看整理后的事项'} ↗</button>
-        {:else}
+        {#if state}<div class="continuity" data-testid={`inbox-continuity-${item.id}`}>
+          {#if action.kind==='review'}<strong>{currentLocale==='en-US'?`${state.pending_ids.length} to review · ${state.deferred_ids.length} for later`:`${state.pending_ids.length} 条待确认 · ${state.deferred_ids.length} 条稍后处理`}</strong>
+          {:else if organizing(item.id)||action.kind==='running'}<strong>{currentLocale==='en-US'?'Organizing in the background':'正在后台整理'}</strong>
+          {:else if state.last_job?.status==='completed'}<strong>{currentLocale==='en-US'?'Organized · no advice waiting':'已整理 · 暂无待确认建议'}</strong>
+          {:else if state.last_job?.status==='failed'||state.last_job?.status==='interrupted'}<details><summary>{currentLocale==='en-US'?'Organizing did not finish — view reason':'上次整理未完成 · 查看原因'}</summary><p>{state.last_job.error}</p></details>{/if}
+          {#if state.work_id}<span>{currentLocale==='en-US'?'Recorded in: ':'记录于：'}{works.find(work=>work.id===state.work_id)?.title??(currentLocale==='en-US'?'Project unavailable':'项目已不可用')}</span>{/if}
+          {#if state.destinations.length}<div class="destinations"><span>{currentLocale==='en-US'?'Saved to':'已形成'}</span>{#each state.destinations as destination,position (`${destination.entity_kind}-${destination.entity_id}-${position}`)}{@const target=sourceDestination(destination)}<button disabled={!target} onclick={()=>{if(target)navigateTo(target);}} title={destination.title}>{destination.title||(currentLocale==='en-US'?'Saved item':'已保存事项')}{destination.available?' ↗':(currentLocale==='en-US'?' · removed':' · 已删除')}</button>{/each}</div>{/if}
+        </div>{/if}
+        {#if action.kind!=='complete'}
           <span class="actions">
-            <button class="project-action" data-testid={`inbox-organize-${item.id}`} disabled={organizing(item.id)} onclick={()=>organize(item)}>{organizing(item.id)?(currentLocale==="en-US"?"Organizing…":"后台整理中…"):(currentLocale==="en-US"?"Organize this note":"整理这条")}</button>
+            <button class="project-action" data-testid={`inbox-organize-${item.id}`} disabled={action.kind!=='review'&&(organizing(item.id)||action.kind==='running')} onclick={()=>organize(item)}>{action.kind==='review'?(currentLocale==='en-US'?'Review existing advice':'查看原建议'):organizing(item.id)||action.kind==='running'?(currentLocale==="en-US"?"Organizing…":"后台整理中…"):(currentLocale==="en-US"?"Organize this note":"整理这条")}</button>
+            {#if !item.processed_at}
             <details class="manual-routing"><summary>{currentLocale==='en-US'?'Arrange myself':'自己安排'}</summary><div><button class="project-action" data-testid={`inbox-project-${item.id}`} onclick={() => openConversion("task",item,true)}>{tt("inbox.toProject")}</button>
             <button data-testid={`inbox-task-${item.id}`} onclick={() => openConversion("task", item)}>{tt("inbox.toTask")}</button>
             <button onclick={() => openConversion("waiting", item)}>{tt("inbox.toWaiting")}</button>
             <button onclick={() => openConversion("calendar", item)}>{tt("inbox.toCalendar")}</button>
             </div></details>
+            {/if}
           </span>
         {/if}
         <button class="delete-record" data-testid={`inbox-delete-${item.id}`} disabled={removeBusy} onclick={()=>requestRemove(item)}>{tt("common.delete")}</button>
@@ -260,6 +284,7 @@
 </div>
 
 <style>
+  .continuity{flex:1 0 100%;display:grid;gap:8px;padding:10px 0;font-size:14px;line-height:1.65;color:var(--color-muted);min-width:0}.continuity strong{color:var(--color-primary);font-weight:550}.continuity details{min-width:0}.continuity p{overflow-wrap:anywhere;white-space:pre-wrap}.destinations{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}.destinations button{max-width:100%;white-space:normal;text-align:left;overflow-wrap:anywhere;font-size:14px;padding:7px 10px}.destinations button:disabled{opacity:.65;cursor:default}
   .remove-preview{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;font-weight:600}
   .delete-record{color:var(--color-danger)}
   .history-switch{display:flex;gap:9px;align-items:center;margin:16px 0;color:var(--color-muted);font-size:14px}.manual-routing summary{padding:8px;cursor:pointer;font-size:14px}.manual-routing>div{display:flex;flex-wrap:wrap;gap:8px;padding:10px 0}.focused{outline:2px solid var(--color-primary);outline-offset:-2px}

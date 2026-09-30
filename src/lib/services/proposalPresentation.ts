@@ -57,3 +57,34 @@ export function actionTimeLabel(timestamp:number,now:number):string{
   const time=`${pad(at.getHours())}:${pad(at.getMinutes())}`;
   return at.toDateString()===today.toDateString()?time:`${pad(at.getMonth()+1)}/${pad(at.getDate())}\n${time}`;
 }
+
+export type ProposalChange={key:string;label:string;before:string;after:string};
+/** Compare only submitted fields. An omitted field is preserved, never cleared. */
+export function proposalChanges(item:Proposal,current:Record<string,unknown>|null,works:Array<{id:number;title:string}>,locale:string):ProposalChange[]{
+  if(item.operation!=='update'||!current)return [];
+  let payload:Record<string,unknown>;
+  try{payload=JSON.parse(item.payload_json);if(!payload||Array.isArray(payload)||typeof payload!=='object')return [];}catch{return [];}
+  if(['task','waiting','calendar','resume_point'].includes(item.kind))payload={...payload,work_id:item.work_id};
+  const en=locale==='en-US';
+  const fields:Array<[string,string,string]>=[['title','标题','Title'],['work_id','所属项目','Project'],['status','状态','Status'],['priority','优先级','Priority'],['category','项目分类','Project category'],['summary','目标','Goal'],['current_state','目前进展','Progress'],['next_step','下一步','Next step'],['remember','提醒','Remember'],['notes','说明','Notes'],['content','原话','Original note'],['waiting_for','等待谁','Waiting for'],['due_at','截止时间','Deadline'],['follow_up_at','跟进时间','Follow-up'],['scheduled_start','安排开始','Start'],['scheduled_end','安排结束','End'],['start_at','日程开始','Event start'],['end_at','日程结束','Event end'],['all_day','全天','All day'],['location','地点','Location'],['observation','观察 / 专家表达','Observation / expert statement'],['implication','可能的意义','Possible significance'],['uncertainty','待核实','Uncertainty'],['next_question','下次追问','Next question'],['categories','洞察分类','Insight categories']];
+  const labels:Record<string,[string,string]>={low:['低','Low'],normal:['普通','Normal'],high:['高','High'],active:['进行中','Active'],paused:['暂缓','Paused'],archived:['已归档','Archived'],next:['待推进','Next'],doing:['推进中','In progress'],scheduled:['已安排','Scheduled'],done:['已完成','Completed'],open:['等待中','Waiting'],resolved:['已结束等待','Resolved'],clinical:['临床研究','Clinical research'],non_clinical:['非临床研究','Non-clinical work'],practice_barrier:['临床实践障碍','Practice barriers'],evidence_need:['证据需求','Evidence needs'],research_opportunity:['研究合作机会','Research opportunities']};
+  const format=(key:string,value:unknown,after:boolean):string=>{
+    if(value===null||value===undefined||value==='')return after?(en?'Clear':'清除'):(en?'Not set':'未设置');
+    if(key==='work_id')return `${works.find(work=>work.id===value)?.title??(en?'Unavailable project':'项目不可用')} · #${value}`;
+    if(proposalTimeFields.includes(key as typeof proposalTimeFields[number])&&typeof value==='number')return new Date(value*1000).toLocaleString(locale,{hour12:false});
+    if(typeof value==='boolean')return value?(en?'Yes':'是'):(en?'No':'否');
+    if(Array.isArray(value))return value.map(v=>labels[String(v)]?.[en?1:0]??String(v)).join('、');
+    if(['status','priority','category'].includes(key))return labels[String(value)]?.[en?1:0]??String(value);
+    return String(value);
+  };
+  return fields.flatMap(([key,zh,english])=>{
+    if(!Object.hasOwn(payload,key))return [];
+    const before=current[key]??null,after=payload[key]??null;
+    // Match application semantics: null text and empty note/goal fallbacks keep
+    // their previous values. Only supported nullable fields actually clear.
+    if(after===null&&!['work_id','category','due_at','follow_up_at','scheduled_start','scheduled_end','end_at'].includes(key))return [];
+    if(['notes','summary','content'].includes(key)&&typeof after==='string'&&!after.trim())return [];
+    if(JSON.stringify(before)===JSON.stringify(after))return [];
+    return [{key,label:en?english:zh,before:format(key,before,false),after:format(key,after,true)}];
+  });
+}

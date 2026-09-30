@@ -18,6 +18,7 @@ pub mod materials;
 pub mod provider_catalog;
 pub mod reports;
 pub mod sync;
+pub mod weixin;
 pub use ai_secretary::{
     confirm_ai_proposal, list_ai_proposals, reject_ai_proposal, update_ai_proposal_draft,
 };
@@ -2141,7 +2142,7 @@ mod validation_tests {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(version, 25);
+        assert_eq!(version, 27);
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let _ = std::fs::remove_dir_all(root);

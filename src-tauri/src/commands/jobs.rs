@@ -158,16 +158,20 @@ pub fn start_ai_job(
         crate::db::jobs::start(db.conn(), command, &value["args"])
     })?;
     if created {
-        let id = job.id;
-        tauri::async_runtime::spawn(async move {
-            let result = request.execute(&app).await;
-            let _ = super::with_db(&app.state::<AppState>(), |db| {
-                crate::db::jobs::finish(db.conn(), id, result)
-            });
-            let _ = app.emit("ai-job-finished", id);
-        });
+        spawn_existing_job(app, job.id, request);
     }
     Ok(job)
+}
+
+/// Start only after the caller has committed the durable job receipt.
+pub(crate) fn spawn_existing_job(app: tauri::AppHandle, id: i64, request: JobRequest) {
+    tauri::async_runtime::spawn(async move {
+        let result = request.execute(&app).await;
+        let _ = super::with_db(&app.state::<AppState>(), |db| {
+            crate::db::jobs::finish(db.conn(), id, result)
+        });
+        let _ = app.emit("ai-job-finished", id);
+    });
 }
 #[tauri::command]
 pub fn list_ai_jobs(state: State<AppState>) -> Result<Vec<AiJob>, String> {

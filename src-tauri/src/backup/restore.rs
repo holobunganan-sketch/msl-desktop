@@ -98,6 +98,7 @@ pub fn confirm(data: &Path, token: &str, name: &str) -> Result<()> {
     )
 }
 fn prepare_database(path: &Path) -> Result<()> {
+    archive::clear_device_transport(path)?;
     let c = rusqlite::Connection::open(path).map_err(err)?;
     c.execute_batch(
         "PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE; BEGIN IMMEDIATE;

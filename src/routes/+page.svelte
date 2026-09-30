@@ -26,6 +26,8 @@
   import Icon, { type IconName } from "$lib/components/ui/Icon.svelte";
   import { locale, setLocale, t, type TranslationKey } from "$lib/i18n";
   import { initializeAppearance } from "$lib/stores/appearance";
+  import { invalidate } from "$lib/stores/dataRevision";
+  import { refreshJobs } from "$lib/stores/aiJobs";
 
   type NavItem = { view: View; label: TranslationKey; icon: IconName; testid: string };
 
@@ -91,9 +93,14 @@
   onMount(()=>{
     const focusCapture=()=>window.dispatchEvent(new Event('dashboard:focus-capture'));
     const listener=listen('quick-capture',focusCapture);
+    const weixinListener=listen('weixin-received',()=>{
+      invalidate('inbox','analysis','proposals');
+      void refreshJobs().catch(()=>{});
+    });
     const shortcut=registerShortcut('CommandOrControl+Shift+Space',event=>{if(event.state==='Pressed')focusCapture();}).then(()=>true,()=>false);
     return ()=>{
       void listener.then(unlisten=>unlisten()).catch(()=>{});
+      void weixinListener.then(unlisten=>unlisten()).catch(()=>{});
       void shortcut.then(registered=>{if(registered)return unregisterShortcut('CommandOrControl+Shift+Space');}).catch(()=>{});
     };
   });

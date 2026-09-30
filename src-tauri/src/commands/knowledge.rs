@@ -177,7 +177,7 @@ async fn model_output(
             .map_err(|e| e.to_string())?
             .ok_or("请在模型设置中填写 API Key")?
     };
-    let mut request = crate::ai::provider::AiTextRequest {
+    let request = crate::ai::provider::AiTextRequest {
         model_id: resolved.model.model_id.clone(),
         system: Some(spec.into()),
         messages: vec![crate::ai::provider::AiMessage {
@@ -189,46 +189,34 @@ async fn model_output(
         output_format: crate::ai::output::OutputFormat::PromptJson,
         budget: Default::default(),
     };
-    for attempt in 0..2 {
-        let response = crate::ai::provider::complete_model(
-            &resolved.connection,
-            &resolved.model,
-            &key,
-            &request,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        let validated = if kol {
-            crate::ai::knowledge_contract::parse_kol(&response.content, pack).and_then(|output| {
-                if input["purpose"] == "prepare" && !output.actions.is_empty() {
-                    return Err("会前准备的 actions 必须为空".into());
-                }
-                if output.actions.iter().filter_map(|a| a.work_id).any(|id| {
-                    !pack
-                        .sources
-                        .iter()
-                        .any(|s| s.kind == "work" && s.entity_id == id)
-                }) {
-                    return Err("后续动作引用了未提供的项目".into());
-                }
-                Ok(())
-            })
-        } else {
-            crate::ai::knowledge_contract::parse_answer(&response.content, pack).map(|_| ())
-        };
-        match validated {
-            Ok(()) => return Ok(response.content),
-            Err(error) if attempt == 0 => {
-                request.system=Some(format!("{spec}\nYour previous response failed this check: {error}. Reconstruct from supplied evidence. Return only valid JSON with real source IDs and exact quotes. Do not reproduce unsupported claims."));
+    let (response, _) = crate::ai::provider::complete_checked(
+        &resolved.connection,
+        &resolved.model,
+        &key,
+        &request,
+        |content| {
+            if kol {
+                crate::ai::knowledge_contract::parse_kol(content, pack).and_then(|output| {
+                    if input["purpose"] == "prepare" && !output.actions.is_empty() {
+                        return Err("会前准备的 actions 必须为空".into());
+                    }
+                    if output.actions.iter().filter_map(|a| a.work_id).any(|id| {
+                        !pack
+                            .sources
+                            .iter()
+                            .any(|s| s.kind == "work" && s.entity_id == id)
+                    }) {
+                        return Err("后续动作引用了未提供的项目".into());
+                    }
+                    Ok(())
+                })
+            } else {
+                crate::ai::knowledge_contract::parse_answer(content, pack).map(|_| ())
             }
-            Err(error) => {
-                return Err(format!(
-                    "来源或结构校验未通过：{error}。已进行一次校正，可修改问题后重试。"
-                ))
-            }
-        }
-    }
-    Err("问答未完成".into())
+        },
+    )
+    .await?;
+    Ok(response.content)
 }
 
 pub async fn ask_workbench(

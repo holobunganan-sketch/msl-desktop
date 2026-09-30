@@ -13,6 +13,7 @@
   import BackupSettings from "$lib/components/BackupSettings.svelte";
   import SyncSettings from "$lib/components/SyncSettings.svelte";
   import AppearanceSettings from "$lib/components/AppearanceSettings.svelte";
+  import WeixinSettings from "$lib/components/WeixinSettings.svelte";
   import { addToast } from "$lib/stores/toast";
 
   let error = $state("");
@@ -41,6 +42,7 @@
       <a href="#appearance"><Icon name="languages" size={15} />{tt("appearance.title")}</a>
       <a href="#routing"><Icon name="review" size={15} />{tt("settings.aiRouting")}</a>
       <a href="#schedule"><Icon name="clock" size={15} />{tt("settings.analysisSchedule")}</a>
+      <a href="#weixin"><Icon name="inbox" size={15} />{currentLocale === 'en-US' ? 'WeChat input' : '微信入口'}</a>
       <a href="#storage"><Icon name="archive" size={15} />{tt("storage.title")}</a>
       <a href="#backup"><Icon name="archive" size={15} />{currentLocale === 'en-US' ? 'Data & sync' : '数据与同步'}</a>
       <a href="#system"><Icon name="settings" size={15} />{tt("settings.system")}</a>
@@ -52,6 +54,7 @@
       <section id="providers" class="settings-section"><ProviderSettings /></section>
       <section id="routing" class="settings-section"><AiRoutingSettings /></section>
       <section id="schedule" class="settings-section"><AnalysisScheduleSettings /></section>
+      <section id="weixin" class="settings-section"><WeixinSettings /></section>
       <section id="storage" class="settings-section"><StorageSettings /></section>
       <section id="backup" class="settings-section data-section">
         <div class="section-heading"><h2>{currentLocale === 'en-US' ? 'Data & sync' : '数据与同步'}</h2><p>{currentLocale === 'en-US' ? 'Keep your devices up to date, with separate snapshots for recovery.' : '日常同步衔接多台电脑，历史备份保留可恢复的时间点。'}</p></div>

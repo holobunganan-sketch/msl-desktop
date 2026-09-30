@@ -766,13 +766,21 @@ pub async fn call(
     api_key: &str,
     snapshot: &BriefSnapshot,
 ) -> Result<String, AiError> {
-    let response = crate::ai::provider::complete_model(
+    let (response, _) = crate::ai::provider::complete_checked(
         connection,
         model,
         api_key,
         &build_ai_request(&model.model_id, snapshot),
+        |content| {
+            if content.trim().is_empty() {
+                Err("简报正文为空".into())
+            } else {
+                Ok(())
+            }
+        },
     )
-    .await?;
+    .await
+    .map_err(AiError::Api)?;
     Ok(normalize_bullet_output(&response.content, &snapshot.locale))
 }
 

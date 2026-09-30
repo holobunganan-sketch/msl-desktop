@@ -21,7 +21,138 @@ const TABLES: &[&str] = &[
     "classification_memories",
     "ai_proposals",
     "ai_proposal_outcomes",
+    "review_decisions",
 ];
+
+#[cfg(test)]
+mod continuity_tests {
+    use super::*;
+    fn draft(db: &Database) -> crate::db::ai::AiProposal {
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "task",
+                "create",
+                None,
+                None,
+                None,
+                "review-note",
+                "Synthetic task",
+                "{}",
+                "Synthetic",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap()
+    }
+    #[test]
+    fn reviewed_confirmation_saves_correction_atomically_and_undo_removes_it() {
+        let db = Database::open_in_memory().unwrap();
+        let p = draft(&db);
+        let saved = confirm_single_reviewed(
+            &db,
+            p.id,
+            p.updated_at,
+            None,
+            Some("  Let headquarters lead; I will follow up.  ".into()),
+            None,
+        )
+        .unwrap();
+        let note: String = db
+            .conn()
+            .query_row(
+                "SELECT note FROM review_decisions WHERE proposal_id=?1",
+                [p.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, "Let headquarters lead; I will follow up.");
+        undo(&db, &saved.receipt_id).unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM review_decisions WHERE proposal_id=?1",
+                    [p.id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert!(crate::db::task::TaskRepo::new(db.conn())
+            .get(saved.target_id)
+            .unwrap()
+            .is_none());
+    }
+    #[test]
+    fn reviewed_update_rejects_changed_source_without_writing_advice_or_correction() {
+        let db = Database::open_in_memory().unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Original", "normal", None, None)
+            .unwrap();
+        let original = crate::db::flow::current_record(db.conn(), "task", task.id)
+            .unwrap()
+            .unwrap();
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "task",
+                "update",
+                Some(task.id),
+                None,
+                None,
+                "review-update",
+                "AI title",
+                "{}",
+                "Synthetic",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        db.conn()
+            .execute("UPDATE tasks SET title='User edit' WHERE id=?1", [task.id])
+            .unwrap();
+        assert!(confirm_single_reviewed(
+            &db,
+            p.id,
+            p.updated_at,
+            None,
+            Some("Correction".into()),
+            Some(original["token"].as_str().unwrap().into())
+        )
+        .is_err());
+        assert_eq!(
+            crate::db::task::TaskRepo::new(db.conn())
+                .get(task.id)
+                .unwrap()
+                .unwrap()
+                .title,
+            "User edit"
+        );
+        assert_eq!(
+            crate::db::ai::ProposalRepo::new(db.conn())
+                .get(p.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM review_decisions", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Change {
     table: String,
@@ -171,13 +302,20 @@ fn finish_capture(conn: &Connection) -> DbResult<Vec<Change>> {
     conn.execute_batch("DROP TABLE _msl_capture;")?;
     Ok(consolidated)
 }
-fn execute(db: &Database, items: &[(i64, i64, Option<Value>)]) -> DbResult<ConfirmationGroup> {
+pub struct ReviewedProposal {
+    pub id: i64,
+    pub expected_updated_at: i64,
+    pub payload: Option<Value>,
+    pub correction_note: Option<String>,
+    pub current_record_token: Option<String>,
+}
+pub fn confirm_reviewed(db: &Database, items: &[ReviewedProposal]) -> DbResult<ConfirmationGroup> {
     if items.is_empty() || items.len() > 20 {
         return Err(DbError::Migration("请选择 1 到 20 条已审阅建议".into()));
     }
     let unique = items
         .iter()
-        .map(|i| i.0)
+        .map(|i| i.id)
         .collect::<std::collections::HashSet<_>>();
     if unique.len() != items.len() {
         return Err(DbError::Migration("选择中有重复建议".into()));
@@ -186,9 +324,36 @@ fn execute(db: &Database, items: &[(i64, i64, Option<Value>)]) -> DbResult<Confi
     start_capture(&tx)?;
     let id = uuid::Uuid::new_v4().to_string();
     let mut results = Vec::new();
-    for (proposal, expected, payload) in items {
-        let mut result =
-            super::apply::confirm_in_transaction(&tx, *proposal, *expected, payload.clone())?;
+    for item in items {
+        let proposal = crate::db::ai::ProposalRepo::new(&tx)
+            .get(item.id)?
+            .ok_or_else(|| DbError::NotFound("proposal".into()))?;
+        if proposal.operation == "update" {
+            if let Some(expected) = item.current_record_token.as_deref() {
+                let actual = crate::db::flow::current_record(
+                    &tx,
+                    &proposal.kind,
+                    proposal
+                        .target_id
+                        .ok_or_else(|| DbError::Migration("更新建议缺少原记录".into()))?,
+                )?;
+                if actual.as_ref().and_then(|value| value["token"].as_str()) != Some(expected) {
+                    return Err(DbError::Migration(
+                        "原记录已被修改，请刷新变更对照后重新确认。未覆盖现有内容。".into(),
+                    ));
+                }
+            }
+        }
+        let correction = super::apply::validated_correction(item.correction_note.as_deref())?;
+        let mut result = super::apply::confirm_in_transaction(
+            &tx,
+            item.id,
+            item.expected_updated_at,
+            item.payload.clone(),
+        )?;
+        if let Some(note) = correction {
+            tx.execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES(?1,'corrected',?2,?3)",params![item.id,note,now_unix()])?;
+        }
         result.receipt_id = id.clone();
         results.push(result);
     }
@@ -201,7 +366,7 @@ fn execute(db: &Database, items: &[(i64, i64, Option<Value>)]) -> DbResult<Confi
     for result in &results {
         super::rounds::release_new_association(&tx, result)?;
     }
-    tx.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES (?1,?2,?3,?4)",params![id,serde_json::json!(items.iter().map(|i|i.0).collect::<Vec<_>>()).to_string(),serde_json::to_string(&changes).map_err(|_|DbError::Migration("撤销凭据写入失败".into()))?,now_unix()])?;
+    tx.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES (?1,?2,?3,?4)",params![id,serde_json::json!(items.iter().map(|i|i.id).collect::<Vec<_>>()).to_string(),serde_json::to_string(&changes).map_err(|_|DbError::Migration("撤销凭据写入失败".into()))?,now_unix()])?;
     tx.commit()?;
     Ok(ConfirmationGroup {
         receipt_id: id,
@@ -209,11 +374,17 @@ fn execute(db: &Database, items: &[(i64, i64, Option<Value>)]) -> DbResult<Confi
     })
 }
 pub fn confirm_batch(db: &Database, items: &[(i64, i64)]) -> DbResult<ConfirmationGroup> {
-    execute(
+    confirm_reviewed(
         db,
         &items
             .iter()
-            .map(|(id, ts)| (*id, *ts, None))
+            .map(|(id, ts)| ReviewedProposal {
+                id: *id,
+                expected_updated_at: *ts,
+                payload: None,
+                correction_note: None,
+                current_record_token: None,
+            })
             .collect::<Vec<_>>(),
     )
 }
@@ -223,7 +394,28 @@ pub fn confirm_single(
     expected: i64,
     payload: Option<Value>,
 ) -> DbResult<super::apply::ApplyResult> {
-    Ok(execute(db, &[(id, expected, payload)])?.results.remove(0))
+    confirm_single_reviewed(db, id, expected, payload, None, None)
+}
+pub fn confirm_single_reviewed(
+    db: &Database,
+    id: i64,
+    expected: i64,
+    payload: Option<Value>,
+    correction_note: Option<String>,
+    current_record_token: Option<String>,
+) -> DbResult<super::apply::ApplyResult> {
+    Ok(confirm_reviewed(
+        db,
+        &[ReviewedProposal {
+            id,
+            expected_updated_at: expected,
+            payload,
+            correction_note,
+            current_record_token,
+        }],
+    )?
+    .results
+    .remove(0))
 }
 fn sql_value(value: &Value) -> rusqlite::types::Value {
     match value {

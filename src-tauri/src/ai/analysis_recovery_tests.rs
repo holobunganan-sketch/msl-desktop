@@ -260,6 +260,25 @@ fn recovery_three_protocols_preserve_full_evidence_and_queue_only_valid_complete
                 .query_row("SELECT title FROM ai_proposals", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(title, "整理长期随访证据");
+            let payload: String = db
+                .conn()
+                .query_row("SELECT payload_json FROM ai_proposals", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let payload: Value = serde_json::from_str(&payload).unwrap();
+            for field in [
+                "due_at",
+                "scheduled_start",
+                "scheduled_end",
+                "start_at",
+                "end_at",
+            ] {
+                assert!(
+                    payload.get(field).is_none_or(Value::is_null),
+                    "{protocol}/{kind} invented {field}"
+                );
+            }
         }
     }
 }
@@ -286,26 +305,28 @@ fn recovery_stops_after_two_truncated_generations_without_partial_proposals() {
 
 #[test]
 fn recovery_invalid_or_untrusted_second_output_never_triggers_a_third_generation() {
-    for second in [
-        "not-json",
-        r#"{"proposals":[{"kind":"task","operation":"create","title":"伪造来源","payload":{},"source_refs":[{"source_type":"inbox","entity_id":999999}]}]}"#,
-    ] {
-        let (db, snapshot, output) = fixture("global_analysis");
-        let server = MockServer::new(vec![
-            (200, response("chat_completions", &output, true)),
-            (200, response("chat_completions", second, false)),
-        ]);
-        let result = tauri::async_runtime::block_on(complete_validated(
-            &connection(&server.base, "custom"),
-            &model("chat_completions", "synthetic", json!({})),
-            "synthetic-test-only",
-            &build_request("synthetic", &snapshot),
-            &snapshot,
-        ));
-        let calls = server.finish();
-        assert!(result.is_err());
-        assert_eq!(calls.len(), 2);
-        assert_eq!(pending_count(&db), 0);
+    for protocol in ["chat_completions", "responses", "anthropic_messages"] {
+        for second in [
+            "not-json",
+            r#"{"proposals":[{"kind":"task","operation":"create","title":"伪造来源","payload":{},"source_refs":[{"source_type":"inbox","entity_id":999999}]}]}"#,
+        ] {
+            let (db, snapshot, output) = fixture("global_analysis");
+            let server = MockServer::new(vec![
+                (200, response(protocol, &output, true)),
+                (200, response(protocol, second, false)),
+            ]);
+            let result = tauri::async_runtime::block_on(complete_validated(
+                &connection(&server.base, "custom"),
+                &model(protocol, "synthetic", json!({})),
+                "synthetic-test-only",
+                &build_request("synthetic", &snapshot),
+                &snapshot,
+            ));
+            let calls = server.finish();
+            assert!(result.is_err());
+            assert_eq!(calls.len(), 2);
+            assert_eq!(pending_count(&db), 0);
+        }
     }
 }
 
@@ -473,4 +494,130 @@ fn recovery_existing_format_repair_remains_available_for_complete_invalid_json()
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0]["messages"][0], calls[1]["messages"][0]);
     assert_eq!(calls[0]["messages"][1], calls[1]["messages"][1]);
+}
+
+#[test]
+fn recovery_brief_honors_model_capacity_across_protocols_without_changing_evidence() {
+    for (protocol, model_id) in [
+        ("chat_completions", "independent-model-a"),
+        ("responses", "independent-model-b"),
+        ("anthropic_messages", "independent-model-c"),
+    ] {
+        let (_db, snapshot, _) = fixture("global_analysis");
+        let server = MockServer::new(vec![
+            (200, response(protocol, "truncated text", true)),
+            (
+                200,
+                response(protocol, "• 合成资料：整理长期随访证据。", false),
+            ),
+        ]);
+        let result = tauri::async_runtime::block_on(crate::ai::brief::call(
+            &connection(&server.base, "custom"),
+            &model(protocol, model_id, json!({"max_output_tokens":3500})),
+            "synthetic-test-only",
+            &snapshot.brief,
+        ));
+        let calls = server.finish();
+        assert!(result.is_ok(), "brief did not recover: {result:?}");
+        assert_eq!(calls.len(), 2);
+        assert_eq!((limit(&calls[0]), limit(&calls[1])), (2000, 3500));
+        assert_eq!(
+            without_limit(calls[0].clone()),
+            without_limit(calls[1].clone())
+        );
+        assert_eq!(calls[1]["model"], model_id);
+    }
+}
+
+#[test]
+fn recovery_report_uses_same_capability_limits_and_full_evidence() {
+    for protocol in ["chat_completions", "responses", "anthropic_messages"] {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("合成项目", "active")
+            .unwrap();
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(Some(work.id), "合成成果", "normal", None, None)
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE tasks SET status='done',completed_at=150,updated_at=150 WHERE id=?1",
+                [task.id],
+            )
+            .unwrap();
+        let snapshot =
+            crate::ai::reports::build_report_snapshot(&db, "weekly", 100, 200, "zh-CN").unwrap();
+        let output = json!({"items":[{"category":"result","project_id":work.id,"headline":"合成成果已完成","change":"已完成合成成果。","impact":"","next_action":"","certainty":"observed","horizon":"period","evidence_refs":[{"source_type":"task_completed","entity_id":task.id}]}]}).to_string();
+        let server = MockServer::new(vec![
+            (200, response(protocol, "{", true)),
+            (200, response(protocol, &output, false)),
+        ]);
+        let request =
+            crate::ai::reports::build_report_request("independent-model", &snapshot).unwrap();
+        let result = tauri::async_runtime::block_on(crate::ai::report_contract::complete_report(
+            &connection(&server.base, "custom"),
+            &model(
+                protocol,
+                "independent-model",
+                json!({"limit":{"output":6000}}),
+            ),
+            "synthetic-test-only",
+            &request,
+            &snapshot,
+        ))
+        .unwrap();
+        let calls = server.finish();
+        assert_eq!(calls.len(), 2);
+        assert_eq!((limit(&calls[0]), limit(&calls[1])), (4000, 6000));
+        assert_eq!(
+            without_limit(calls[0].clone()),
+            without_limit(calls[1].clone())
+        );
+        assert_eq!(result.evidence["sources"][0]["entity_id"], task.id);
+    }
+}
+
+#[test]
+fn recovery_translation_keeps_input_and_requires_complete_schema() {
+    for protocol in ["chat_completions", "responses", "anthropic_messages"] {
+        for valid in [true, false] {
+            let output = if valid {
+                json!({"schema_version":"msl.translation.v1","translated_text":"你好","source_language":"en","target_language":"zh"}).to_string()
+            } else {
+                "你好".into()
+            };
+            let server = MockServer::new(vec![
+                (200, response(protocol, "{", true)),
+                (200, response(protocol, &output, false)),
+            ]);
+            let request =
+                crate::ai::translation::build_request("independent-model", "Hello", "written")
+                    .unwrap();
+            let result = tauri::async_runtime::block_on(crate::ai::provider::complete_checked(
+                &connection(&server.base, "custom"),
+                &model(
+                    protocol,
+                    "independent-model",
+                    json!({"max_output_tokens":5000}),
+                ),
+                "synthetic-test-only",
+                &request,
+                |content| {
+                    crate::ai::translation::parse_output(
+                        "Hello",
+                        crate::ai::translation::TranslationDirection::EnToZh,
+                        content,
+                    )
+                },
+            ));
+            let calls = server.finish();
+            assert_eq!(result.is_ok(), valid, "{protocol}: {result:?}");
+            assert_eq!(calls.len(), 2);
+            assert_eq!((limit(&calls[0]), limit(&calls[1])), (4000, 5000));
+            assert_eq!(
+                without_limit(calls[0].clone()),
+                without_limit(calls[1].clone())
+            );
+        }
+    }
 }

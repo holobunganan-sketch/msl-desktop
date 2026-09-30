@@ -103,7 +103,22 @@ impl<'a, C: CredentialSource> AiRouter<'a, C> {
             .ok_or_else(|| {
                 super::provider::AiError::Config(format!("任务 {task_kind} 未配置 API Key"))
             })?;
-        super::provider::complete_model(&resolved.connection, &resolved.model, &key, request).await
+        super::provider::complete_checked(
+            &resolved.connection,
+            &resolved.model,
+            &key,
+            request,
+            |content| {
+                if content.trim().is_empty() {
+                    Err("模型没有返回正文".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .map(|(response, _)| response)
+        .map_err(super::provider::AiError::Api)
     }
 }
 

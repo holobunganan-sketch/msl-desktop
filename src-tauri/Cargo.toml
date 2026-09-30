@@ -1,6 +1,6 @@
 [package]
 name = "msl-desktop"
-version = "0.3.17"
+version = "0.3.18"
 description = "MSL Desktop workbench"
 authors = ["MSL Desktop contributors"]
 edition = "2021"
@@ -44,3 +44,4 @@ quick-xml = "0.37"
 pdf-extract = "0.7"
 encoding_rs = "0.8"
 chrono = { version = "0.4", features = ["clock"] }
+qrcode = { version = "0.14", default-features = false }

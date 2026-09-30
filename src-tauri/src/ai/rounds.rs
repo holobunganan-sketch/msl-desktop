@@ -891,7 +891,17 @@ pub fn restrict(
                 });
         }
     }
-    snapshot.source_counts = json!({"works":b.works.len(),"tasks":b.tasks_open.len()+b.tasks_completed.len(),"waiting":b.waiting.len(),"calendar":b.calendar.len(),"inbox":b.inbox.len(),"documents":snapshot.documents.len(),"eligible_scopes":allowed});
+    for (key, value) in [
+        ("works", b.works.len()),
+        ("tasks", b.tasks_open.len() + b.tasks_completed.len()),
+        ("waiting", b.waiting.len()),
+        ("calendar", b.calendar.len()),
+        ("inbox", b.inbox.len()),
+        ("documents", snapshot.documents.len()),
+    ] {
+        snapshot.source_counts[key] = json!(value);
+    }
+    snapshot.source_counts["eligible_scopes"] = json!(allowed);
     for t in &tickets {
         if let Some(work) = id(&t.scope, "work:") {
             let key = format!("work-{work}");
@@ -918,6 +928,7 @@ pub fn restrict(
     b.source_counts.activity = b.activity.len() as u32;
     b.source_counts.file_changes = b.file_changes.len() as u32;
     super::lifecycle::filter_active_context(db, &mut snapshot)?;
+    super::analysis_snapshot::refresh_document_coverage(&mut snapshot);
     snapshot.round_tickets = tickets;
     snapshot.snapshot_hash =
         crate::cognition::digest(&serde_json::to_string(&snapshot).unwrap_or_default());

@@ -43,6 +43,18 @@ pub fn list(conn: &Connection) -> DbResult<Vec<AiJob>> {
         .map_err(DbError::from)
 }
 pub fn start(conn: &Connection, command: &str, args: &Value) -> DbResult<(AiJob, bool)> {
+    let tx = crate::db::write_transaction(conn)?;
+    let result = start_in_transaction(&tx, command, args)?;
+    tx.commit()?;
+    Ok(result)
+}
+
+/// Allows external input deduplication and its job receipt to commit atomically.
+pub(crate) fn start_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    command: &str,
+    args: &Value,
+) -> DbResult<(AiJob, bool)> {
     let serialized = args.to_string();
     if serialized.len() > 100_000 {
         return Err(DbError::Migration("后台任务输入过长".into()));
@@ -51,7 +63,6 @@ pub fn start(conn: &Connection, command: &str, args: &Value) -> DbResult<(AiJob,
         "{:x}",
         Sha256::digest(format!("{command}:{serialized}").as_bytes())
     );
-    let tx = crate::db::write_transaction(conn)?;
     if let Some(id) = tx
         .query_row(
             "SELECT id FROM ai_jobs WHERE request_key=?1 AND status='running'",
@@ -60,8 +71,7 @@ pub fn start(conn: &Connection, command: &str, args: &Value) -> DbResult<(AiJob,
         )
         .optional()?
     {
-        let job = get(&tx, id)?;
-        tx.commit()?;
+        let job = get(tx, id)?;
         return Ok((job, false));
     }
     let running: i64 = tx.query_row(
@@ -80,8 +90,7 @@ pub fn start(conn: &Connection, command: &str, args: &Value) -> DbResult<(AiJob,
     )?;
     tx.execute("DELETE FROM ai_jobs WHERE id IN (SELECT id FROM ai_jobs WHERE status!='running' ORDER BY id DESC LIMIT -1 OFFSET 200)",[])?;
     tx.execute("INSERT INTO ai_jobs(command,request_key,args_json,status,created_at) VALUES (?1,?2,?3,'running',?4)",params![command,key,serialized,now_unix()])?;
-    let job = get(&tx, tx.last_insert_rowid())?;
-    tx.commit()?;
+    let job = get(tx, tx.last_insert_rowid())?;
     Ok((job, true))
 }
 pub fn finish(conn: &Connection, id: i64, result: Result<Value, String>) -> DbResult<()> {

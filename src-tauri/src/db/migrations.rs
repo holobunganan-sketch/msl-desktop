@@ -145,6 +145,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "project_categories",
         sql: include_str!("../../migrations/0025_project_categories.sql"),
     },
+    Migration {
+        version: 26,
+        name: "analysis_run_requests",
+        sql: include_str!("../../migrations/0026_analysis_run_requests.sql"),
+    },
+    Migration {
+        version: 27,
+        name: "weixin_bridge",
+        sql: include_str!("../../migrations/0027_weixin_bridge.sql"),
+    },
 ];
 
 /// 执行所有未应用的迁移（幂等、事务化）。

@@ -21,6 +21,7 @@ pub mod scheduler;
 mod single_instance;
 pub mod storage;
 pub mod sync;
+pub mod weixin;
 pub mod workspace;
 
 #[cfg(test)]
@@ -184,6 +185,7 @@ fn run_app() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())
+        .manage(weixin::WeixinRuntime::default())
         .setup(|app| {
             let data=db::resolve_data_directory(std::env::var_os("APPDATA")).map_err(std::io::Error::other)?;
             backup::restore::apply_pending(&data).map_err(std::io::Error::other)?;
@@ -245,6 +247,9 @@ fn run_app() {
             crate::scheduler::spawn(app.handle().clone());
             crate::backup::service::spawn();
             crate::sync::service::spawn();
+            if weixin::start(app.handle().clone()).is_err() {
+                eprintln!("[weixin] connection not started; check Settings > WeChat input");
+            }
 
             setup_tray(app.handle())?;
 
@@ -316,6 +321,9 @@ fn run_app() {
             commands::flow::get_project_cognition,
             commands::flow::capture_work_note,
             commands::flow::get_entity_location,
+            commands::flow::list_inbox_continuity,
+            commands::flow::get_proposal_current_record,
+            commands::flow::restore_deferred_proposal,
             commands::flow::schedule_work_task,
             commands::flow::list_classification_memories,
             commands::flow::edit_classification_memory,
@@ -454,6 +462,12 @@ fn run_app() {
             commands::check_reminders_now,
             commands::app_settings_get,
             commands::app_settings_set,
+            commands::weixin::get_weixin_status,
+            commands::weixin::begin_weixin_login,
+            commands::weixin::poll_weixin_login,
+            commands::weixin::submit_weixin_verifycode,
+            commands::weixin::set_weixin_enabled,
+            commands::weixin::unlink_weixin,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -467,6 +481,9 @@ fn run_app() {
                 .map(|s| s.quit_requested())
                 .unwrap_or(false);
             if should_quit {
+                if let Some(runtime) = app_handle.try_state::<weixin::WeixinRuntime>() {
+                    runtime.stop();
+                }
                 // graceful shutdown：WAL checkpoint 后关闭数据库（指南 §23）
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     if let Some(db) = state.take_database() {

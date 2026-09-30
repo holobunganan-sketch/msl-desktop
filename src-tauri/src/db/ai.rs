@@ -1,7 +1,220 @@
 //! Persistence for analysis runs, schedules and confirmation proposals.
 
+#[cfg(test)]
+mod retry_request_tests {
+    #[test]
+    fn retry_request_metadata_is_available_without_changing_legacy_runs() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let legacy = super::AnalysisRunRepo::new(db.conn())
+            .create("workspace_import", Some(1), Some(2))
+            .unwrap();
+        let available: bool = db
+            .conn()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='analysis_run_requests')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            available,
+            "analysis retry needs durable original task and scope metadata"
+        );
+        assert_eq!(
+            super::AnalysisRunRepo::new(db.conn())
+                .get(legacy.id)
+                .unwrap()
+                .unwrap()
+                .trigger,
+            "workspace_import"
+        );
+    }
+
+    #[test]
+    fn retry_request_roundtrips_each_scope_and_rejects_legacy_or_active_runs() {
+        use super::{AnalysisRequestScope as Scope, AnalysisRunRepo};
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        let workspace = crate::db::workspace::WorkspaceRepo::new(db.conn())
+            .insert("Synthetic", "C:/synthetic-only")
+            .unwrap();
+        let inbox = crate::db::inbox::InboxRepo::new(db.conn())
+            .insert("Synthetic note")
+            .unwrap();
+        let repo = AnalysisRunRepo::new(db.conn());
+        for scope in [
+            Scope::Global {},
+            Scope::Inbox { inbox_id: inbox.id },
+            Scope::Workspace {
+                workspace_id: None,
+                work_id: Some(work.id),
+            },
+            Scope::Workspace {
+                workspace_id: Some(workspace.id),
+                work_id: None,
+            },
+            Scope::Workspace {
+                workspace_id: Some(workspace.id),
+                work_id: Some(work.id),
+            },
+        ] {
+            let run = repo.create_scoped("synthetic", None, None, &scope).unwrap();
+            assert!(
+                repo.retry_request(run.id).is_err(),
+                "running analysis cannot be replayed"
+            );
+            repo.finish(run.id, "failed", None, Some(("synthetic", "failure")))
+                .unwrap();
+            assert_eq!(repo.retry_request(run.id).unwrap(), scope);
+            let kind: String = db
+                .conn()
+                .query_row(
+                    "SELECT task_kind FROM analysis_run_requests WHERE run_id=?1",
+                    [run.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(kind, scope.task_kind());
+        }
+        let legacy = repo.create("workspace_import", None, None).unwrap();
+        repo.finish(legacy.id, "failed", None, None).unwrap();
+        assert!(repo
+            .retry_request(legacy.id)
+            .unwrap_err()
+            .to_string()
+            .contains("原始范围"));
+    }
+
+    #[test]
+    fn retry_request_rejects_changed_or_corrupt_targets_instead_of_broadening_scope() {
+        use super::{AnalysisRequestScope as Scope, AnalysisRunRepo};
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Synthetic project", "active")
+            .unwrap();
+        let inbox = crate::db::inbox::InboxRepo::new(db.conn())
+            .insert("Synthetic note")
+            .unwrap();
+        let repo = AnalysisRunRepo::new(db.conn());
+        let project_run = repo
+            .create_scoped(
+                "workspace_import",
+                None,
+                None,
+                &Scope::Workspace {
+                    workspace_id: None,
+                    work_id: Some(work.id),
+                },
+            )
+            .unwrap();
+        let inbox_run = repo
+            .create_scoped(
+                "inbox_capture",
+                None,
+                None,
+                &Scope::Inbox { inbox_id: inbox.id },
+            )
+            .unwrap();
+        for run in [project_run.id, inbox_run.id] {
+            repo.finish(run, "failed", None, None).unwrap();
+        }
+        db.conn()
+            .execute("UPDATE works SET status='archived' WHERE id=?1", [work.id])
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE inbox_items SET processed_at=1 WHERE id=?1",
+                [inbox.id],
+            )
+            .unwrap();
+        assert!(repo.retry_request(project_run.id).is_err());
+        assert!(repo.retry_request(inbox_run.id).is_err());
+        let global = repo
+            .create_scoped("manual", None, None, &Scope::Global {})
+            .unwrap();
+        repo.finish(global.id, "failed", None, None).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE analysis_run_requests SET task_kind='work_draft' WHERE run_id=?1",
+                [global.id],
+            )
+            .unwrap();
+        assert!(repo.retry_request(global.id).is_err());
+        let corrupt = serde_json::json!({"scope":"global","extra":true}).to_string();
+        db.conn().execute("UPDATE analysis_run_requests SET task_kind='global_analysis',scope_json=?1 WHERE run_id=?2", rusqlite::params![corrupt,global.id]).unwrap();
+        assert!(repo.retry_request(global.id).is_err());
+    }
+}
+
 use super::{now_unix, DbError, DbResult};
 use rusqlite::{params, Connection, OptionalExtension, Row};
+
+/// Original user-selected scope. Retrying rebuilds current evidence in this
+/// scope through the ordinary execution path, without retaining a frozen prompt.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AnalysisRequestScope {
+    Global {},
+    Inbox {
+        inbox_id: i64,
+    },
+    Workspace {
+        workspace_id: Option<i64>,
+        work_id: Option<i64>,
+    },
+}
+
+impl AnalysisRequestScope {
+    pub fn task_kind(&self) -> &'static str {
+        match self {
+            Self::Workspace { .. } => "work_draft",
+            _ => "global_analysis",
+        }
+    }
+
+    fn validate(&self, conn: &Connection) -> DbResult<()> {
+        let invalid = |message: &str| super::DbError::Migration(message.into());
+        match self {
+            Self::Global {} => Ok(()),
+            Self::Inbox { inbox_id } => {
+                let item = super::inbox::InboxRepo::new(conn)
+                    .get(*inbox_id)?
+                    .ok_or_else(|| invalid("原收件箱记录已不存在，请从当前事项重新整理"))?;
+                if item.processed_at.is_some() {
+                    return Err(invalid("原收件箱记录已处理，请查看已有事项"));
+                }
+                Ok(())
+            }
+            Self::Workspace {
+                workspace_id,
+                work_id,
+            } => {
+                if workspace_id.is_none() && work_id.is_none() {
+                    return Err(invalid("原项目整理范围为空，请重新选择项目或目录"));
+                }
+                if let Some(id) = workspace_id {
+                    let workspace = super::workspace::WorkspaceRepo::new(conn)
+                        .get(*id)?
+                        .ok_or_else(|| invalid("原工作目录已不存在，请从当前项目重新整理"))?;
+                    if !workspace.enabled {
+                        return Err(invalid("原工作目录已停用，请核对后重新整理"));
+                    }
+                }
+                if let Some(id) = work_id {
+                    let work = super::work::WorkRepo::new(conn)
+                        .get(*id)?
+                        .ok_or_else(|| invalid("原项目已不存在，请重新选择项目"))?;
+                    if work.status == "archived" {
+                        return Err(invalid("原项目已归档，请核对后重新整理"));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AnalysisRun {
@@ -62,6 +275,55 @@ impl<'a> AnalysisRunRepo<'a> {
     }
     pub fn get(&self, id: i64) -> DbResult<Option<AnalysisRun>> {
         self.conn.query_row("SELECT id,trigger,status,period_start,period_end,provider_model_id,started_at,finished_at,source_counts_json,snapshot_hash,summary,brief_id,error_code,error_message,created_at FROM analysis_runs WHERE id=?1",[id],row_run).optional().map_err(DbError::from)
+    }
+    pub fn create_scoped(
+        &self,
+        trigger: &str,
+        period_start: Option<i64>,
+        period_end: Option<i64>,
+        scope: &AnalysisRequestScope,
+    ) -> DbResult<AnalysisRun> {
+        let tx = super::write_transaction(self.conn)?;
+        scope.validate(&tx)?;
+        let run = AnalysisRunRepo::new(&tx).create(trigger, period_start, period_end)?;
+        let serialized =
+            serde_json::to_string(scope).map_err(|error| DbError::Migration(error.to_string()))?;
+        tx.execute("INSERT INTO analysis_run_requests(run_id,task_kind,scope_json,created_at) VALUES(?1,?2,?3,?4)", params![run.id, scope.task_kind(), serialized, now_unix()])?;
+        tx.commit()?;
+        Ok(run)
+    }
+
+    pub fn retry_request(&self, id: i64) -> DbResult<AnalysisRequestScope> {
+        let run = self
+            .get(id)?
+            .ok_or_else(|| DbError::NotFound("analysis_run".into()))?;
+        if run.status != "failed" {
+            return Err(DbError::Migration(
+                "此分析仍在进行或已有结果，请先查看已有建议".into(),
+            ));
+        }
+        let metadata: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT task_kind,scope_json FROM analysis_run_requests WHERE run_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (kind, raw) = metadata.ok_or_else(|| {
+            DbError::Migration(
+                "旧分析未保存可恢复的原始范围，请回到原项目、目录或收件箱重新整理".into(),
+            )
+        })?;
+        let scope: AnalysisRequestScope = serde_json::from_str(&raw)
+            .map_err(|_| DbError::Migration("原分析范围无法验证，请重新选择整理范围".into()))?;
+        if kind != scope.task_kind() {
+            return Err(DbError::Migration(
+                "原分析任务与范围不一致，请重新选择整理范围".into(),
+            ));
+        }
+        scope.validate(self.conn)?;
+        Ok(scope)
     }
     pub fn finish(
         &self,

@@ -516,6 +516,41 @@ pub fn reject_proposal(
     expected_updated_at: i64,
     reason: Option<&str>,
 ) -> DbResult<()> {
+    reject_proposal_reviewed(db, id, expected_updated_at, reason, None)
+}
+
+pub(crate) fn validated_correction(note: Option<&str>) -> DbResult<Option<&str>> {
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    if note.is_some_and(|note| note.chars().count() > 2000) {
+        return Err(DbError::Migration("补充意见请控制在 2000 字以内".into()));
+    }
+    Ok(note)
+}
+
+pub fn defer_proposal_reviewed(
+    db: &Database,
+    id: i64,
+    expected_updated_at: i64,
+    correction_note: Option<&str>,
+) -> DbResult<crate::db::ai::AiProposal> {
+    let note = validated_correction(correction_note)?;
+    let tx = crate::db::write_transaction(db.conn())?;
+    let proposal = crate::db::ai::ProposalRepo::new(&tx).defer(id, expected_updated_at)?;
+    if let Some(note) = note {
+        tx.execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES(?1,'not_now',?2,?3)",rusqlite::params![id,note,now_unix()])?;
+    }
+    tx.commit()?;
+    Ok(proposal)
+}
+
+pub fn reject_proposal_reviewed(
+    db: &Database,
+    id: i64,
+    expected_updated_at: i64,
+    reason: Option<&str>,
+    correction_note: Option<&str>,
+) -> DbResult<()> {
+    let correction = validated_correction(correction_note)?;
     let proposal = crate::db::ai::ProposalRepo::new(db.conn())
         .get(id)?
         .ok_or_else(|| DbError::NotFound("proposal".into()))?;
@@ -549,7 +584,7 @@ pub fn reject_proposal(
     } else {
         "unspecified"
     };
-    tx.execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES (?1,?2,?3,?4)",rusqlite::params![id,code,if code==value {""}else{value},now])?;
+    tx.execute("INSERT INTO review_decisions(proposal_id,reason_code,note,created_at) VALUES (?1,?2,?3,?4)",rusqlite::params![id,code,correction.unwrap_or(if code==value {""}else{value}),now])?;
     if matches!(code, "wrong_category" | "misunderstood") {
         crate::db::memory::record_feedback(
             &tx,

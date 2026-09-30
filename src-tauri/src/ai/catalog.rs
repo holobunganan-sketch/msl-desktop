@@ -2,6 +2,75 @@
 
 use crate::db::provider::{ProviderCatalogRepo, ProviderConnection};
 
+/// Declared model capacities are local metadata, never extra wire parameters.
+/// Unknown capacities remain unknown; conflicting declarations use the lower bound.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    pub max_context_tokens: Option<u32>,
+    pub max_input_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+}
+
+pub fn model_capabilities(model: &crate::db::provider::ProviderModel) -> ModelCapabilities {
+    let value: serde_json::Value =
+        serde_json::from_str(&model.capabilities_json).unwrap_or_default();
+    let capacity = |paths: &[&str]| {
+        paths
+            .iter()
+            .filter_map(|path| value.pointer(path).and_then(serde_json::Value::as_u64))
+            .filter(|limit| *limit > 0)
+            .min()
+            .map(|limit| limit.min(u64::from(u32::MAX)) as u32)
+    };
+    ModelCapabilities {
+        max_context_tokens: capacity(&[
+            "/context_window",
+            "/max_context_tokens",
+            "/limit/context",
+            "/limits/context_window",
+        ]),
+        max_input_tokens: capacity(&[
+            "/max_input_tokens",
+            "/limit/input",
+            "/limits/max_input_tokens",
+        ]),
+        max_output_tokens: capacity(&[
+            "/max_output_tokens",
+            "/limit/output",
+            "/limits/max_output_tokens",
+        ]),
+    }
+}
+
+/// Compatibility defaults belong to the provider catalog, shared by every task.
+/// A model name on a custom gateway does not establish that gateway's capacity.
+pub fn output_limits(
+    connection: &ProviderConnection,
+    model: &crate::db::provider::ProviderModel,
+    requested: Option<u32>,
+) -> (u32, u32) {
+    let reasoning_default = connection.template_kind == "deepseek"
+        && (model.model_id.starts_with("deepseek-v4-")
+            || model.model_id == "deepseek-flash"
+            || model.model_id.starts_with("deepseek-flash-"));
+    let requested = requested.unwrap_or(8000).max(1);
+    let initial = if reasoning_default {
+        requested.max(65536)
+    } else {
+        requested
+    };
+    let safety_cap = if reasoning_default {
+        131072
+    } else {
+        requested.max(32768)
+    };
+    let cap = model_capabilities(model)
+        .max_output_tokens
+        .unwrap_or(safety_cap)
+        .min(safety_cap);
+    (initial.min(cap), cap)
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelSeed {
     pub model_id: &'static str,
@@ -325,26 +394,36 @@ pub fn apply_remote_ids(
     let mut unknown = 0;
     for id in ids {
         if let Some(seed) = known_model(&connection.template_kind, id) {
+            let capabilities = existing
+                .iter()
+                .find(|model| model.model_id == *id)
+                .map_or("{}", |model| model.capabilities_json.as_str());
             repo.upsert_model(
                 connection.id,
                 id,
                 id,
                 seed.protocol,
                 seed.endpoint_path,
-                "{}",
+                capabilities,
                 "remote",
                 true,
                 true,
             )?;
             available += 1;
         } else if let Some(model) = existing.iter().find(|model| model.model_id == *id) {
+            let mut capabilities =
+                serde_json::from_str::<serde_json::Value>(&model.capabilities_json)
+                    .ok()
+                    .and_then(|value| value.as_object().cloned())
+                    .unwrap_or_default();
+            capabilities.insert("needs_protocol".into(), serde_json::Value::Bool(true));
             repo.upsert_model(
                 connection.id,
                 id,
                 &model.display_name,
                 &model.protocol,
                 &model.endpoint_path,
-                r#"{"needs_protocol":true}"#,
+                &serde_json::Value::Object(capabilities).to_string(),
                 "remote",
                 false,
                 true,
@@ -387,6 +466,49 @@ pub fn apply_remote_ids(
 mod tests {
     use super::*;
     use crate::db::{provider::ProviderCatalogRepo, Database};
+
+    #[test]
+    fn catalog_refresh_preserves_declared_capacity_for_existing_models() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        let provider = repo
+            .insert_connection(
+                "Synthetic",
+                "custom",
+                "http://127.0.0.1",
+                "",
+                "deepseek",
+                "bearer",
+                None,
+                true,
+            )
+            .unwrap();
+        let capabilities = serde_json::json!({"context_window":64000,"max_output_tokens":12000});
+        for id in ["deepseek-v4-flash", "independent-model"] {
+            repo.upsert_model(
+                provider.id,
+                id,
+                id,
+                "chat_completions",
+                "/chat/completions",
+                &capabilities.to_string(),
+                "manual",
+                true,
+                true,
+            )
+            .unwrap();
+        }
+        apply_remote_ids(
+            &repo,
+            &provider,
+            &["deepseek-v4-flash".into(), "independent-model".into()],
+        )
+        .unwrap();
+        for model in repo.list_models(Some(provider.id)).unwrap() {
+            assert_eq!(model_capabilities(&model).max_context_tokens, Some(64000));
+            assert_eq!(model_capabilities(&model).max_output_tokens, Some(12000));
+        }
+    }
 
     #[test]
     fn fixed_templates_match_locked_snapshot() {

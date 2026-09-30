@@ -1,5 +1,6 @@
 <script lang="ts">
   import {aiText} from '$lib/services/aiText';
+ import {inboxProjectPrefill,type InboxContinuity} from '$lib/services/inboxContinuity';
  import '$lib/styles/knowledge.css';
  import {onMount,tick} from 'svelte';
  import {writeExpertDraft,readExpertDraft,clearSavedExpertDraft,expertFocus} from '$lib/services/workflowContinuity';
@@ -20,6 +21,8 @@
  let en=$derived($locale==='en-US');
  let materials=$state<Material[]>([]);
  let experts=$state<Expert[]>([]),projects=$state<Project[]>([]),notes=$state<Note[]>([]),drafts=$state<KolDraft[]>([]),insights=$state<InsightRecord[]>([]),followups=$state<Followup[]>([]),inbox=$state<{id:number;content:string}[]>([]);
+ let inboxContexts=$state<Record<number,InboxContinuity>>({});
+ async function selectInbox(){const selected=inboxId;content=inbox.find(item=>item.id===selected)?.content??'';if(selected===null)return;try{const contexts=await command<InboxContinuity[]>('list_inbox_continuity');if(inboxId!==selected)return;inboxContexts=Object.fromEntries(contexts.map(context=>[context.inbox_id,context]));workId=inboxProjectPrefill(inboxContexts[selected],projects.map(project=>({...project,status:project.status??'active'})));}catch(cause){error=normalizeError(cause);}}
  let canAnalyze=$derived(notes.length>0||materials.some(m=>m.status==='ready'||m.status==='partial'));
  let expertId=$state<number|null>(null),draftId=$state<number|null>(null),tab=$state('record'),search=$state(''),category=$state(''),error=$state(''),notice=$state(''),busy=$state(false);
  let deleteTarget=$state<Expert|null>(null),deleteOpen=$state(false),deleteBusy=$state(false),deleteError=$state(''),errorOpen=$state(false);
@@ -55,7 +58,7 @@
   </section>
   {#if tab==='record'}
    {#if expert&&!expert.archived}<section class="k-card k-stack"><h2>{en?'What stood out in the conversation?':'这次交流，有什么值得留意？'}</h2><p class="muted">{en?'A few natural sentences are enough. Keep names anonymous for any patient information.':'用几句自然的话记下来即可。如涉及患者信息，请先去除身份细节。'}</p>
-   <details><summary>{en?'Use an existing inbox note':'从收件箱带入已有记录'}</summary><select aria-label={en?'Inbox note':'选择收件箱记录'} bind:value={inboxId} onchange={()=>content=inbox.find(i=>i.id===inboxId)?.content??''}><option value={null}>{en?'Write a new note':'填写新交流'}</option>{#each inbox as i(i.id)}<option value={i.id}>{i.content.slice(0,80)}</option>{/each}</select><p class="muted">{en?'Original inbox text is preserved and linked.':'保存时关联收件箱原文，收件箱原记录保留。'}</p></details>
+   <details><summary>{en?'Use an existing inbox note':'从收件箱带入已有记录'}</summary><select aria-label={en?'Inbox note':'选择收件箱记录'} bind:value={inboxId} onchange={selectInbox}><option value={null}>{en?'Write a new note':'填写新交流'}</option>{#each inbox as i(i.id)}<option value={i.id}>{i.content.slice(0,80)}</option>{/each}</select><p class="muted">{en?'Keeps the original note and its explicit project link. Check the expert and project before saving.':'保留原话并带入已明确的项目归属。保存前核对当前专家与项目即可。'}</p></details>
    <textarea data-testid="kol-note" bind:value={content} disabled={inboxId!==null} rows="5" maxlength="20000" placeholder={en?'What did the expert ask, observe or need? Any promise to follow up?':'专家提到了什么、有什么疑问？有什么需要后续兑现的承诺？'}></textarea><div class="k-fields"><label>{en?'When':'交流时间'}<input type="datetime-local" bind:value={at}/></label><label>{en?'Project (optional)':'归属项目（可暂不选）'}<select bind:value={workId}><option value={null}>{en?'Independent / to clarify':'临时事务 / 待明确'}</option>{#each projects as p(p.id)}<option value={p.id}>{p.title}</option>{/each}</select></label></div><div class="k-actions"><button class="primary" data-testid="kol-save-analyze" disabled={busy||running||!content.trim()||!at} onclick={()=>capture(true)}>{en?'Save & let AI organize':'保存并让 AI 整理'}</button><button data-testid="kol-save-note" disabled={busy||!content.trim()||!at} onclick={()=>capture(false)}>{en?'Just save for now':'先记下来'}</button>{#if notes.length}<button disabled={busy||running} onclick={()=>analyze('organize')}>{en?'Organize saved interactions':'整理已有交流'}</button>{/if}</div></section>
    {:else if !expert}<div class="k-card k-empty"><h2>{en?'Pick an expert, then record naturally':'选择专家，随手记下交流'}</h2><p>{en?'Shared insights appear in Drafts after across-expert analysis.':'跨专家分析完成后，可在“整理草稿”查看共性洞察。'}</p></div>{/if}
    <section class="k-card k-stack"><h2>{en?'Original interactions':'交流原话'}</h2>{#each notes as note(note.id)}<article class="k-rule" data-testid={'kol-note-'+note.id} style:background={note.id===noteId?'var(--color-primary-soft)':undefined}><strong>{[note.name,note.institution,note.department].filter(Boolean).join(' · ')}</strong><p class="muted">{new Date(note.occurred_at*1000).toLocaleString($locale)}{note.project_title?' · '+note.project_title:''}</p><p class="original">{note.content}</p></article>{:else}<p class="muted">{en?'No interactions recorded yet.':'还没有交流记录。'}</p>{/each}</section>

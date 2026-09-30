@@ -240,6 +240,29 @@ pub fn unpack(path: &Path, destination: &Path) -> Result<()> {
     }
     result
 }
+pub(crate) fn clear_device_transport(path: &Path) -> Result<()> {
+    let mut conn = Connection::open(path).map_err(err)?;
+    conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA secure_delete=ON;")
+        .map_err(err)?;
+    let tx = conn.transaction().map_err(err)?;
+    for table in ["weixin_receipts", "weixin_binding"] {
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |r| r.get(0),
+            )
+            .map_err(err)?;
+        if exists {
+            tx.execute(&format!("DELETE FROM {table}"), [])
+                .map_err(err)?;
+        }
+    }
+    tx.commit().map_err(err)?;
+    conn.execute_batch("VACUUM;").map_err(err)?;
+    Ok(())
+}
+
 pub fn create_snapshot(data: &Path, destination: &Path, owner: &str) -> Result<PathBuf> {
     crate::storage::paths::reject_link_components(data)?;
     let _guard = crate::materials::FILE_IO
@@ -259,6 +282,9 @@ pub fn create_snapshot(data: &Path, destination: &Path, owner: &str) -> Result<P
                 [stage.join(DB_FILE_NAME).to_string_lossy().as_ref()],
             )
             .map_err(err)?;
+        // Edit the disposable database copy only. Device-bound transport state
+        // cannot be resumed safely on another machine or from an old snapshot.
+        clear_device_transport(&stage.join(DB_FILE_NAME))?;
         let snapshot = read_db(&stage.join(DB_FILE_NAME))?;
         let version = schema(&snapshot)?;
         let mut names = vec![DB_FILE_NAME.to_string()];
