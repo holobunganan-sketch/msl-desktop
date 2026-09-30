@@ -4,8 +4,8 @@
     {
       "version": "0.3.19",
       "date": "2026-09-30",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "全局默认模型与紧凑布局",
       "summary": "未单独指定模型的任务统一使用全局默认，收紧首页及模型设置中的空白。",
       "changes": [
@@ -14,7 +14,13 @@
         "统一秘书、问答、专家、翻译和报告的模型选择规则，周报和月报无需再单独绑定。",
         "减少首页主要卡片与值得留意之间的空白，保留完成后恢复及错误提示。",
         "调整模型设置区的标题、状态提示和选择框布局，兼顾窄窗口和较大字号。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.19",
+        "label": "发布记录",
+        "publishedAt": "2026-09-30T14:19:53Z",
+        "commit": "76fefe2b383ebbce724e4e3335fcb63ee23e3393"
+      }
     },
     {
       "version": "0.3.18",
