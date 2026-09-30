@@ -4,8 +4,8 @@
     {
       "version": "0.3.16",
       "date": "2026-09-30",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "从一句话到专家洞察与项目调整",
       "summary": "一句话记录可用于准备专家洞察和项目的新增、修改建议，确认后再写入。首页整理入口和官网排版同步调整。",
       "changes": [
@@ -14,7 +14,13 @@
         "保留未修改的字段和来源；发现记录已经变化时，阻止旧建议覆盖新内容。",
         "全局整理入口移至首页右上方，整理每日简报按钮放入简报卡片。统一单条、项目和全局整理的操作提示。",
         "修复官网中文标题字体不齐的问题，完善更新记录和完整页面的本地预览。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.16",
+        "label": "发布记录",
+        "publishedAt": "2026-09-30T08:38:07Z",
+        "commit": "c7d61800257ad4ee46539f1bd455da5dd8b9e50a"
+      }
     },
     {
       "version": "0.3.15",
