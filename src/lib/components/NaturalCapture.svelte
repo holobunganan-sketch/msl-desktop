@@ -11,8 +11,8 @@
   const en=$derived($locale==='en-US');
   const examplesHidden=$derived(!!text || savedId!==null);
   const feedback=$derived(error || (savedId ? requestedOrganization
-    ? (en?'Saved. Organizing results will appear in suggestions.':'已记下，整理结果会出现在建议中。')
-    : (en?'Saved in To organize. Ask the secretary when you are ready.':'已记下，留在待整理；需要时再交给秘书。') : ''));
+    ? (en?'Original note saved. Review the draft in Secretary suggestions before it changes your records.':'原话已记下。请到“秘书准备的建议”查看，确认后才更新记录。')
+    : (en?'Original note saved in To organize. It has not been sent for analysis.':'原话已记下，留在“待整理”；本次未提交分析。') : ''));
   async function save(organize:boolean){
     if(busy||!text.trim())return;busy=true;error='';
     const submittedKey=key;
@@ -23,12 +23,12 @@
 <form class="natural-capture" data-testid="natural-capture" onsubmit={event=>{event.preventDefault();void save(true);}}>
   <label><strong>{label||(en?'What happened at work?':'有什么新进展？')}</strong><textarea data-testid="natural-capture-text" value={text} oninput={event=>{text=event.currentTarget.value;writeDraft(key,text);}} disabled={busy} rows="2" placeholder={placeholder||(en?'A reply arrived, a next step became clear, or something needs following up…':'例如：已收到反馈，等对方补充材料。直接说发生了什么，无需先分类。')}></textarea></label>
   <div class="capture-examples" class:reserved={examplesHidden} inert={examplesHidden} aria-hidden={examplesHidden} aria-label={en?'Draft starters':'不知道怎么写？从这里开始'}>{#each (en?['Progress: ','Schedule: ','Waiting for: ']:['新进展：','安排时间：','等待反馈：']) as example}<button type="button" data-testid="capture-example" onclick={()=>{text=example;writeDraft(key,text);}}>{example.replace(/[:：] ?$/,'')}</button>{/each}<small>{en?'Examples only fill the draft.':'点选只填入草稿，不会保存或发送。'}</small></div>
-  <div class="capture-actions"><small>{en?'Saved first. The secretary drafts changes for your confirmation.':'先保存原话，秘书在后台整理，您确认后才更新项目与事项。'}</small><button type="button" disabled={busy||!text.trim()} onclick={()=>save(false)}>{en?'Just save':'先记下来'}</button><button class="primary" data-testid="natural-capture-submit" type="submit" disabled={busy||!text.trim()}>{en?'Save & organize':'记下并整理'}</button></div>
+  <div class="capture-actions"><small>{en?'Save note keeps your words. Save & organize prepares changes for your confirmation.':'“记下”保存原话；“记下并整理”生成建议，确认后才更新记录。'}</small><button type="button" disabled={busy||!text.trim()} onclick={()=>save(false)}>{en?'Save note':'记下'}</button><button class="primary" data-testid="natural-capture-submit" type="submit" disabled={busy||!text.trim()}>{en?'Save & organize':'记下并整理'}</button></div>
   <div class="capture-feedback" data-testid="natural-capture-feedback">
     <StatusLine message={feedback} error={!!error}/>
     <div class="capture-receipt-actions" data-testid="capture-receipt-actions" class:reserved={!savedId} aria-hidden={!savedId} inert={!savedId}>
       <button type="button" data-testid="capture-view-note" disabled={!savedId} onclick={()=>savedId&&navigateTo('inbox',savedId,context.workId)}>{en?'View note':'查看记录'}</button>
-      <button type="button" data-testid="capture-view-suggestions" class:reserved={!requestedOrganization} aria-hidden={!requestedOrganization} disabled={!savedId||!requestedOrganization} onclick={()=>navigateTo('review',undefined,context.workId)}>{en?'View suggestions':'查看建议'}</button>
+      <button type="button" data-testid="capture-view-suggestions" class:reserved={!requestedOrganization} aria-hidden={!requestedOrganization} disabled={!savedId||!requestedOrganization} onclick={()=>navigateTo('review',undefined,context.workId)}>{en?'Review suggestions':'查看待确认建议'}</button>
     </div>
   </div>
 </form>

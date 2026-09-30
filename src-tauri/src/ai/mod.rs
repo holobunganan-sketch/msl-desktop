@@ -8,6 +8,7 @@ pub mod brief;
 pub mod catalog;
 pub mod efficiency;
 pub mod field_evidence;
+pub mod insight_proposals;
 pub mod knowledge_contract;
 pub mod lifecycle;
 pub mod output;
@@ -20,3 +21,6 @@ pub mod rounds;
 pub mod router;
 pub mod schema;
 pub mod translation;
+
+#[cfg(test)]
+mod capture_tests;

@@ -61,7 +61,7 @@ try{
   const saved=JSON.parse(fs.readFileSync(path.join(artifacts,'persistence.json'),'utf8'));
   await route({view:'today'});
   await page.getByTestId('dashboard-brief-hero').waitFor();
-  await page.locator('.brief-details > summary').click();
+  await page.getByTestId('toggle-daily-brief').click();
   await page.getByTestId('dashboard-brief-highlights').locator('li').first().waitFor();
   assert.deepEqual(await page.getByTestId('dashboard-brief-highlights').locator('li').allTextContents(),['项目动态摘要','高优先级行动项','核对 演示项目 的资料。']);
   await page.screenshot({path:path.join(artifacts,'today-default.png')});
@@ -87,7 +87,7 @@ try{
   await route({view:'works',id:w.id});
   await route({view:'today'});
   await page.getByTestId('dashboard-brief-hero').waitFor();
-  await page.locator('.brief-details > summary').click();
+  await page.getByTestId('toggle-daily-brief').click();
   await page.getByTestId('dashboard-brief-highlights').locator('li').first().waitFor();
   assert.equal(await page.getByTestId('dashboard-brief-highlights').locator('li').count(),3);
   await page.locator('.brief-full > summary').click();

@@ -44,6 +44,10 @@ pub struct AnalysisSnapshot {
     pub round_history: Vec<serde_json::Value>,
     #[serde(default)]
     pub expert_context: Vec<serde_json::Value>,
+    /// Identity and existing-target orientation, not a permission to restart
+    /// an expert's held analysis. Changes still require eligible user evidence.
+    #[serde(default)]
+    pub expert_catalog: Vec<serde_json::Value>,
     /// Explicit user statements and corrections; old processed captures are
     /// guidance, not a request to recreate completed actions.
     #[serde(default)]
@@ -688,6 +692,7 @@ pub fn build_scoped(
         round_tickets: Vec::new(),
         round_history: Vec::new(),
         expert_context,
+        expert_catalog: super::insight_proposals::catalog(db)?,
         user_directions: user_directions(db)?,
         project_catalog: project_catalog(db)?,
         capture_contexts: {

@@ -26,6 +26,7 @@ fn needs_evidence(field: &str, value: &Value, proposal: &ProposalContract) -> bo
         "priority" => value != "normal",
         "summary" | "objective" | "notes" | "current_state" | "next_step" | "remember"
         | "waiting_for" | "location" | "category" | "clinical_work_id" => true,
+        "observation" | "implication" | "uncertainty" | "next_question" => true,
         _ => false,
     }
 }
@@ -286,6 +287,14 @@ pub fn validate_and_normalize(
         .retain(|_, value| !value.is_null());
     let input = serde_json::to_value(snapshot).map_err(|_| "读取字段依据失败")?;
     if proposal.operation == "update" {
+        if proposal.kind == "work"
+            && proposal
+                .target_id
+                .and_then(|id| target_record(&input, "work", id))
+                .is_none()
+        {
+            return Err("要修改的项目未出现在本次资料中，请先核对项目，不可猜测编号".into());
+        }
         if let Some(record) = proposal
             .target_id
             .and_then(|id| target_record(&input, &proposal.kind, id))
@@ -293,7 +302,7 @@ pub fn validate_and_normalize(
             if proposal.work_id.is_none() && !matches!(proposal.kind.as_str(), "work" | "inbox") {
                 proposal.work_id = record["work_id"].as_i64();
             }
-            if proposal.payload.get("category").is_some() {
+            if proposal.kind == "work" {
                 proposal.payload["project_revision"] = record["revision"].clone();
             }
             if proposal.payload.get("clinical_work_id").is_some() {

@@ -12,7 +12,7 @@
   function change(value:string){
     projectMode=value==="project";
     onkindchange(projectMode?"resume_point":value);
-    if(value==="work"||value==="inbox")onworkchange(null);
+    if(value==="work"||value==="inbox"||value==='kol_insight')onworkchange(null);
   }
 </script>
 
@@ -24,6 +24,7 @@
       <option value="task">{tx("proposal.kind.task")}</option>
       <option value="waiting">{tx("proposal.kind.waiting")}</option>
       <option value="calendar">{tx("proposal.kind.calendar")}</option>
+      <option value="kol_insight">{tx("proposal.kind.kol_insight")}</option>
       <option value="inbox">{tx("scope.keepInbox")}</option>
     </select>
   </label>
@@ -32,10 +33,10 @@
       <option value="resume_point">{tx("scope.progress")}</option><option value="task">{tx("proposal.kind.task")}</option><option value="waiting">{tx("proposal.kind.waiting")}</option><option value="calendar">{tx("proposal.kind.calendar")}</option>
     </select></label>
   {/if}
-  {#if ["task","waiting","calendar","resume_point"].includes(kind)}
-    <ProjectScope {works} value={workId} required={destination==="project"} {disabled} id={scopeId} onchange={onworkchange}/>
+  {#if ["task","waiting","calendar","resume_point","kol_insight"].includes(kind)}
+    <ProjectScope {works} value={workId} required={destination==="project"} {disabled} id={scopeId} onchange={onworkchange} label={kind==='kol_insight'?($locale==='en-US'?'Link expert to project (optional)':'关联专家与项目（可选）'):undefined} emptyLabel={kind==='kol_insight'?($locale==='en-US'?'Do not add a project link':'不新增项目关联'):undefined}/>
   {/if}
-  <p>{tx(kind==="work"?"scope.newHint":kind==="inbox"?"scope.inboxHint":"scope.itemHint")}</p>
+  <p>{kind==='kol_insight'?($locale==='en-US'?'Save to the selected expert after your confirmation.':'核对专家归属和洞察内容，确认后写入该专家的洞察。'):tx(kind==="work"?"scope.newHint":kind==="inbox"?"scope.inboxHint":"scope.itemHint")}</p>
 </div>
 
 <style>

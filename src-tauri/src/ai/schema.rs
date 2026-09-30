@@ -19,6 +19,7 @@ pub const PROPOSAL_KINDS: &[&str] = &[
     "calendar",
     "inbox",
     "resume_point",
+    "kol_insight",
 ];
 pub const SAFE_OPERATIONS: &[&str] = &["create", "update"];
 
@@ -27,6 +28,9 @@ pub const SAFE_OPERATIONS: &[&str] = &["create", "update"];
 pub fn validate_payload_fields(kind: &str, payload: &serde_json::Value) -> Result<(), String> {
     if !payload.is_object() {
         return Err("建议内容必须是对象".into());
+    }
+    if kind == "kol_insight" {
+        super::insight_proposals::validate_payload(payload)?;
     }
     if let Some(category) = payload.get("category") {
         if kind != "work"

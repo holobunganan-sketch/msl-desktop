@@ -9,8 +9,8 @@
   let open=$state(false);let busy=$state(false);let error=$state("");
   let cards=$state<Card[]>([]);let receipts=$state<Receipt[]>([]);let works=$state<{id:number;title:string}[]>([]);
   let tab=$state<"memory"|"undo">("memory");let en=$derived($locale==="en-US");
-  const kinds=["work","task","waiting","calendar","inbox","resume_point"];
-  function kindLabel(kind:string){return ({work:["工作","Work"],task:["任务计划","Task"],waiting:["等待事项","Waiting"],calendar:["日历","Calendar"],inbox:["收件箱","Inbox"],resume_point:["工作进展","Progress"]}[kind]??[kind,kind])[en?1:0];}
+  const kinds=["work","task","waiting","calendar","inbox","resume_point","kol_insight"];
+  function kindLabel(kind:string){return ({work:["项目","Project"],task:["任务计划","Task"],waiting:["等待事项","Waiting"],calendar:["日历","Calendar"],inbox:["收件箱","Inbox"],resume_point:["项目进展","Progress"],kol_insight:["专家洞察","Expert insight"]}[kind]??[kind,kind])[en?1:0];}
   async function load(){busy=true;error="";try{[cards,receipts,works]=await Promise.all([command<Card[]>("list_classification_memories"),command<Receipt[]>("list_confirmation_receipts"),command<{id:number;title:string}[]>("list_works",{status:null})]);}catch(e){error=String(e);}finally{busy=false;}}
   async function edit(card:Card,forget=false){busy=true;error="";try{await command("edit_classification_memory",{id:card.id,expectedUpdatedAt:card.updated_at,preferredKind:forget?null:(card.preferred_kind||card.suggested_kind),workId:card.preferred_work_id});await load();onchange();}catch(e){error=String(e);}finally{busy=false;}}
   async function undo(receipt:Receipt){busy=true;error="";try{await command("undo_ai_confirmation",{receiptId:receipt.id});invalidate("analysis","proposals","works","brief");await load();onchange();}catch(e){error=String(e);}finally{busy=false;}}

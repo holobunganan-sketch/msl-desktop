@@ -56,6 +56,12 @@ if(!empty){
 }
 const experts=empty?[]:[1,2].map(id=>({id,revision:1,name:id===1?'演示专家 · 项目关联':'演示专家 · 独立交流',institution:'示例医疗机构',department:'临床研究科室',specialty:'长期随访',summary:'演示：关注实践与证据需求。',archived:0,project_ids_json:id===1?'[1]':'[]',note_count:0,last_contact:null,...base}));
 const notes=[],sessions=[],turns=[],receipts=[];
+// Synthetic insight proposals exercise the same review UI without native data or AI calls.
+const insightFixtures=[];
+if(params.has('insight-proposal')&&!empty){
+  const payload={expert_id:1,expert_revision:1,categories:['evidence_need'],observation:'演示专家询问两年随访资料。',implication:'可能需要在下次交流前准备随访证据。',uncertainty:'具体人群尚待核对。',next_question:'希望优先了解哪类人群的随访结果？'};
+  proposals.unshift({...proposals[0],id:21,kind:'kol_insight',work_id:1,title:'长期随访证据需求',payload_json:JSON.stringify(payload),reason:'根据您刚刚记下的专家交流原话，准备一条洞察，等待确认。'});
+}
 let nextReceipt=1,deleteConflict=params.has('delete-conflict');
 const source={id:'task:1',kind:'task',entity_id:1,title:tasks[0]?.title??'演示任务',text:'保留专家原话',timestamp:now,trust:'user',hash:'synthetic',location:{entity_kind:'task',entity_id:1,work_id:1,available:true}};
 const reports=empty?[]:[1,2].map(id=>({
@@ -104,6 +110,7 @@ async function dispatch(name,args={}) {
     rows.splice(rows.indexOf(row),1);return null;
   }
   if(name==='list_kol_experts')return experts;
+  if(name==='list_kol_insights')return insightFixtures.filter(item=>args.expertId==null||item.expert_id===args.expertId);
   if(name==='list_kol_notes')return notes.filter(n=>args.expertId==null||n.expert_id===args.expertId);
   if(name==='capture_kol_note'){
     const expert=find(experts,args.expertId);if(!args.content?.trim())throw new Error('请输入交流原话');
@@ -168,7 +175,13 @@ async function dispatch(name,args={}) {
   if(['list_latest_analysis_proposals','list_ai_proposals','list_recent_ai_proposals'].includes(name))return scoped(proposals,args).filter(p=>args.runId==null||p.analysis_run_id===args.runId);
   if(['reject_ai_proposal','defer_ai_proposal','update_ai_proposal_draft','update_ai_proposal_classification','confirm_ai_proposal'].includes(name)){
     const row=find(proposals,args.id);if(row.updated_at!==args.expectedUpdatedAt||row.status!=='pending')throw new Error('建议已经变化');
-    if(name==='confirm_ai_proposal')throw new Error('合成预览未实现建议确认，请使用手动新增事项');
+    if(name==='confirm_ai_proposal'){
+      if(row.kind!=='kol_insight')throw new Error('合成预览仅实现专家洞察的确认演示');
+      const payload=JSON.parse(row.payload_json);const id=insightFixtures.length+1;
+      insightFixtures.push({...payload,id,name:experts.find(expert=>expert.id===payload.expert_id)?.name,title:row.title,categories_json:JSON.stringify(payload.categories),citations_json:'[]',status:'hypothesis',review_note:'',draft_id:0,...base});
+      row.status='confirmed';row.updated_at++;row.applied_kind='kol_insight';row.applied_id=id;
+      return {proposal_id:row.id,kind:'kol_insight',target_id:id,receipt_id:`synthetic-${id}`};
+    }
     if(name==='reject_ai_proposal'){row.status='rejected';row.reason=args.reason??row.reason;}
     else if(name==='defer_ai_proposal')row.status='deferred';
     else {row.title=args.title;row.payload_json=JSON.stringify(args.payload);if(name==='update_ai_proposal_classification'){row.kind=args.kind;row.work_id=args.workId;}}

@@ -3,7 +3,7 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("assets/noto-serif-sc-headings.ttf") format("truetype");
+  src: url("assets/noto-serif-sc-regular-e8a27ef386c4.woff2") format("woff2");
 }
 :root {
   --paper: #f7f8fa;

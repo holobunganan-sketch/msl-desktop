@@ -317,6 +317,7 @@ impl<'a> ProposalRepo<'a> {
             "calendar",
             "inbox",
             "resume_point",
+            "kol_insight",
         ]
         .contains(&kind)
         {

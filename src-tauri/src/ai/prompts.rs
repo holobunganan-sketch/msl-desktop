@@ -1,4 +1,4 @@
-pub const PROMPT_VERSION: &str = "msl-secretary-v10-field-evidence";
+pub const PROMPT_VERSION: &str = "msl-secretary-v11-capture-insight";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecretaryStage {

@@ -27,7 +27,7 @@
       if(readDraft(submittedKey)===submittedText)clearDraft(submittedKey);
       if(key===submittedKey&&text===submittedText){savedId=note.id;text="";}
       if(organize)organizeCapture(note.id);
-      addToast(organize?(currentLocale==='en-US'?'Saved. Look for results in Secretary suggestions.':'已记下，整理结果会出现在“秘书准备的建议”中。'):(currentLocale==='en-US'?'Saved in Matters → To organize.':'已记在“事项 → 待整理”，需要时再交给秘书。'), "success");
+      addToast(organize?(currentLocale==='en-US'?'Original note saved. Review the draft in Matters → Secretary suggestions before it changes your records.':'原话已记下。整理建议会出现在“事项 → 秘书准备的建议”，确认后才更新记录。'):(currentLocale==='en-US'?'Original note saved in Matters → To organize. It has not been sent for analysis.':'原话已记在“事项 → 待整理”，本次未提交分析。'), "success");
       invalidate("inbox", "brief");
     } catch (error) {
       addToast(t("feedback.captureFailed", { error: error instanceof Error ? error.message : String(error) }, currentLocale), "error");
@@ -57,7 +57,7 @@
 <div class="capture-control" class:prominent>
 {#if prominent}
   <div class="capture-heading-row"><label class="capture-heading" for="homepage-quick-capture">{currentLocale==='en-US'?'Capture a thought':'随手记一句'}</label><span id="homepage-capture-hint" class="capture-hint">{currentLocale==='en-US'?'Enter to save · Shift + Enter for a new line':'Enter 记下 · Shift + Enter 换行'}</span></div>
-  <textarea id="homepage-quick-capture" data-testid="quick-capture" bind:this={inputEl} value={text} disabled={busy} oninput={onInput} onkeydown={onKeydown} rows="2" class="quick-capture" placeholder={currentLocale==='en-US'?'A thought, a conversation, or a change of plan…':'一个想法、一次交流、进展或调整，直接写在这里…'} aria-describedby="homepage-capture-hint"></textarea>
+  <textarea id="homepage-quick-capture" data-testid="quick-capture" bind:this={inputEl} value={text} disabled={busy} oninput={onInput} onkeydown={onKeydown} rows="2" class="quick-capture" placeholder={currentLocale==='en-US'?'A thought, an expert insight, or a project update. Include the name and what should change…':'一个想法、专家洞察或项目调整，写清对象和希望怎样改…'} aria-describedby="homepage-capture-hint" title={currentLocale==='en-US'?'Save note keeps your words. Save & organize prepares changes for your confirmation.':'“记下”保存原话；“记下并整理”生成建议，确认后才更新记录。'}></textarea>
 {:else}
 <input
   data-testid="quick-capture"
@@ -68,7 +68,7 @@
   class="quick-capture"
   title={currentLocale==='en-US'?'Enter saves only. Save & organize asks the secretary.':'按 Enter 只保存原话；点“记下并整理”交给秘书。'}
   aria-label={currentLocale==='en-US'?'Capture a note':'记一件事'}
-  placeholder={workId?(currentLocale==='en-US'?'Record something for this project…':'记一下这个项目的新进展…'):(currentLocale==='en-US'?'Capture a note · Enter to save':'先记一下 · Enter 保存原话')}
+  placeholder={workId?(currentLocale==='en-US'?'A project update or a change you want to make…':'这个项目有什么新进展，或希望怎样调整…'):(currentLocale==='en-US'?'Capture a note · Enter to save':'随手记一句 · Enter 保存原话')}
   onkeydown={onKeydown}
 />
 {/if}

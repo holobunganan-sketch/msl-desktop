@@ -163,7 +163,11 @@ pub fn drafts(db: &Database, expert_id: Option<i64>) -> DbResult<Vec<Value>> {
     knowledge::rows(db.conn(),"SELECT d.*,e.name FROM kol_drafts d LEFT JOIN kol_experts e ON e.id=d.expert_id WHERE ?1 IS NULL OR d.expert_id=?1 ORDER BY (d.status='pending') DESC,d.id DESC",&[&expert_id])
 }
 pub fn insights(db: &Database, expert_id: Option<i64>) -> DbResult<Vec<Value>> {
-    knowledge::rows(db.conn(),"SELECT i.*,e.name FROM kol_insights i LEFT JOIN kol_experts e ON e.id=i.expert_id WHERE ?1 IS NULL OR i.expert_id=?1 ORDER BY i.updated_at DESC,i.id DESC",&[&expert_id])
+    let mut items = knowledge::rows(db.conn(),"SELECT i.*,e.name FROM kol_insights i LEFT JOIN kol_experts e ON e.id=i.expert_id WHERE ?1 IS NULL OR i.expert_id=?1 ORDER BY i.updated_at DESC,i.id DESC",&[&expert_id])?;
+    for item in &mut items {
+        item["insight_revision"] = json!(crate::ai::insight_proposals::revision(item));
+    }
+    Ok(items)
 }
 pub fn secretary_context(db: &Database, workspace_filter: Option<&[i64]>) -> DbResult<Vec<Value>> {
     secretary_context_inner(db, workspace_filter, true)

@@ -1,6 +1,6 @@
 {
   "name": "msl-desktop",
-  "version": "0.3.15",
+  "version": "0.3.16",
   "description": "",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
+    "preview:website": "node scripts/preview-website.mjs",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri"
@@ -33,6 +34,7 @@
     "@sveltejs/kit": "^2.9.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tauri-apps/cli": "2.11.4",
+    "fontkit": "2.0.4",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "~5.6.2",

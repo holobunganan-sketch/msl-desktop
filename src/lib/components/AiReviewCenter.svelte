@@ -4,6 +4,9 @@
   import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import ProposalPreview from './ProposalPreview.svelte';
+  import ProposalInsightFields from './ProposalInsightFields.svelte';
+  import {sourceDestination} from '$lib/services/workflowContinuity';
+  import type {ProposalExpert} from '$lib/services/proposalPresentation';
   import {navigateTo} from '$lib/services/navigation';
   import {proposalPresentation,needsTimeConfirmation} from '$lib/services/proposalPresentation';
   import {listAiProposals} from '$lib/services/api';
@@ -11,7 +14,8 @@
   let focusConsumed=false;
   let adjusting=$state(false);
   let showDecline=$state(false);
-  let receipt=$state<{receipt_id:string;kind:string;target_id:number;workId:number|null;message:string}|null>(null);
+  let receipt=$state<{receipt_id:string;kind:string;target_id:number;workId:number|null;expertId?:number;message:string}|null>(null);
+  function openReceipt(){if(!receipt)return;const destination=sourceDestination({entity_kind:receipt.kind,entity_id:receipt.target_id,work_id:receipt.workId,expert_id:receipt.expertId,available:true});if(destination)navigateTo(destination);}
   async function later(){const item=items[index];if(!item||busy)return;busy=true;try{await deferAiProposal(item.id,item.updated_at);invalidate('proposals','brief');await load();}catch(e){error=friendlyError(e);}finally{busy=false;}}
   async function undo(){if(!receipt||busy)return;busy=true;try{await command('undo_ai_confirmation',{receiptId:receipt.receipt_id});receipt=null;invalidate('works','tasks','waiting','calendar','inbox','proposals','brief');await load();}catch(e){error=friendlyError(e);}finally{busy=false;}}
   import ReviewTools from "$lib/components/ReviewTools.svelte";
@@ -34,9 +38,12 @@
   let allItems = $state<AiProposal[]>([]);
   let analysisRuns = $state<AnalysisRun[]>([]);
   let works = $state<Work[]>([]);
+  let experts=$state<ProposalExpert[]>([]);
+  let insights=$state<Array<{id:number;expert_id:number;title:string;insight_revision?:string}>>([]);
   let memory = $state<ClassificationMemoryStats>({ pattern_count: 0, feedback_count: 0, accepted_count: 0, corrected_count: 0, rejected_count: 0, updated_at: null });
   let index = $state(0);
   let payloadText = $state("{}");
+  const visiblePayload=$derived.by(()=>{try{const value=JSON.parse(payloadText);return value&&typeof value==='object'&&!Array.isArray(value)?value:{};}catch{return {};}});
   let acceptedTimePayload=$state<string|null>(null);
   const suggestedTimeAccepted=$derived(acceptedTimePayload===payloadText);
   const tentativeTime=$derived.by(()=>{try{return needsTimeConfirmation(JSON.parse(payloadText));}catch{return false;}});
@@ -156,7 +163,7 @@
     item.operation=saved?.kind===value?saved.operation:"create";
     item.target_id=saved?.kind===value?saved.target_id:null;
     item.kind=value;
-    if(value==="work"||value==="inbox")item.work_id=null;
+    if(value==="work"||value==="inbox"||value==='kol_insight')item.work_id=null;
     item.payload_json=JSON.stringify(payload);
     preparePayload(item);error="";
   }
@@ -164,8 +171,8 @@
     const editing = preserveDraft ? items[index] : null;
     const editingPayload = payloadText;
     try {
-      [allItems, works, analysisRuns, memory] = await Promise.all([
-        Promise.all([listRecentAiProposals(Math.floor(Date.now() / 1000) - 7 * 86400, null, 500),listAiProposals('pending',500)]).then(([recent,pending])=>[...recent,...pending.filter(p=>!recent.some(r=>r.id===p.id))]), listWorks(null), listAnalysisRuns(20), getClassificationMemoryStats()
+      [allItems, works, analysisRuns, memory,experts,insights] = await Promise.all([
+        Promise.all([listRecentAiProposals(Math.floor(Date.now() / 1000) - 7 * 86400, null, 500),listAiProposals('pending',500)]).then(([recent,pending])=>[...recent,...pending.filter(p=>!recent.some(r=>r.id===p.id))]), listWorks(null), listAnalysisRuns(20), getClassificationMemoryStats(),command<ProposalExpert[]>('list_kol_experts'),command<Array<{id:number;expert_id:number;title:string;insight_revision?:string}>>('list_kol_insights',{expertId:null})
       ]);
       for(const item of allItems)savedRoutes.set(item.id,{kind:item.kind,operation:item.operation,target_id:item.target_id});
       if(focusId&&!focusConsumed){const found=allItems.find(p=>p.id===focusId);if(found){statusFilter=displayStatus(found);index=items.findIndex(p=>p.id===focusId);}focusConsumed=true;}
@@ -213,11 +220,11 @@
     let candidate:Record<string,unknown>;
     try {candidate=parsePayload();}catch{error=tt('aiReview.invalidJson');return;}
     const validationPayload=adoptedTime?{...candidate,time_basis:'explicit'}:candidate;
-    if(item&&proposalPresentation({...item,payload_json:JSON.stringify(validationPayload)},works,currentLocale).needsAttention){adjusting=true;error=tentativeTime&&!adoptedTime?(currentLocale==='en-US'?'Confirm the proposed time separately, or remove it before accepting.':'请单独勾选确认建议时间，或清除时间后再采用。'):(currentLocale==='en-US'?'Please confirm the project and missing information.':'请先核对项目归属及缺少的信息。审阅内容仍保留。');return;}
+    if(item&&proposalPresentation({...item,payload_json:JSON.stringify(validationPayload)},works,currentLocale,experts).needsAttention){adjusting=true;error=tentativeTime&&!adoptedTime?(currentLocale==='en-US'?'Confirm the proposed time separately, or remove it before accepting.':'请单独勾选确认建议时间，或清除时间后再确认。'):(currentLocale==='en-US'?'Check the project or expert and any missing information. Your edits are kept.':'请核对项目或专家归属及缺少的信息。审阅内容仍保留。');return;}
     const edited = await saveDraft();
     if (!edited) return;
     busy = true;
-    try { const result=await confirmAiProposal(edited.id, edited.updated_at, confirmationPayload(parsePayload(),adoptedTime));const preview=proposalPresentation(edited,works,currentLocale);receipt={...result,workId:edited.work_id,message:`${preview.action} · ${preview.scope}`};adjusting=false; invalidate("works","tasks","waiting","calendar","inbox","proposals","brief"); await load(); }
+    try { const confirmedPayload=parsePayload();const result=await confirmAiProposal(edited.id, edited.updated_at, confirmationPayload(confirmedPayload,adoptedTime));const preview=proposalPresentation(edited,works,currentLocale,experts);receipt={...result,workId:edited.work_id,expertId:typeof confirmedPayload.expert_id==='number'?confirmedPayload.expert_id:undefined,message:`${preview.action} · ${preview.scope}`};adjusting=false; invalidate("works","tasks","waiting","calendar","inbox","proposals","brief"); await load(); }
     catch (cause) { error = friendlyError(cause); }
     finally { busy = false; }
   }
@@ -235,7 +242,7 @@
     if(selectedIds.includes(currentId) && !(await saveDraft())) return;
     const selected=allItems.filter(item=>selectedIds.includes(item.id)&&item.status==="pending");
     if(!selected.length)return;
-    if(selected.some(item=>proposalPresentation(item,works,currentLocale).needsAttention)){
+    if(selected.some(item=>proposalPresentation(item,works,currentLocale,experts).needsAttention)){
       error=currentLocale==='en-US'?'Review missing details and confirm tentative times individually before accepting this group.':'请先逐条核对缺少的信息；建议时间需要单独确认，不能批量采用。';return;
     }
     busy=true;error="";
@@ -258,7 +265,7 @@
 
 <div class="review-page">
   <div class="page-head">
-    <div><h1>{currentLocale==='en-US'?'Arrangements for your decision':'秘书准备好了这些安排'}</h1><p>{currentLocale==='en-US'?'Recent 7 days, plus anything still awaiting your decision.':'最近7天的记录，以及仍未处理的建议。采用后才会更新项目与事项。'}</p>{#if workId!==null}<p data-testid="review-project-scope">{currentLocale==='en-US'?'Suggestions for this project':'当前项目的建议'}{works.find(w=>w.id===workId)?.title?' · '+works.find(w=>w.id===workId)!.title:''} <button onclick={()=>navigateTo({view:'matters',section:'review'})}>{currentLocale==='en-US'?'All projects':'查看全部项目'}</button></p>{/if}</div>
+    <div><h1>{currentLocale==='en-US'?'Suggestions for your decision':'秘书准备的建议'}</h1><p>{currentLocale==='en-US'?'Recent 7 days and pending suggestions. Review the destination and changes; confirm to save.':'最近7天的记录，以及仍待处理的建议。先核对去向与变更，确认后才更新项目、事项或专家洞察。'}</p>{#if workId!==null}<p data-testid="review-project-scope">{currentLocale==='en-US'?'Suggestions for this project':'当前项目的建议'}{works.find(w=>w.id===workId)?.title?' · '+works.find(w=>w.id===workId)!.title:''} <button onclick={()=>navigateTo({view:'matters',section:'review'})}>{currentLocale==='en-US'?'All projects':'查看全部项目'}</button></p>{/if}</div>
     <details class="filter-options"><summary>{currentLocale==='en-US'?'Filter & history':'筛选与历史'}</summary><div class="review-filters">
       <label>{tt("common.status")}<select bind:value={statusFilter} onchange={resetFilter}><option value="all">{tt("aiReview.filterAll")}</option><option value="pending">{tt("aiReview.statusPending")}</option><option value="deferred">{tt("aiReview.statusDeferred")}</option><option value="confirmed">{tt("aiReview.statusConfirmed")}</option><option value="resolved">{currentLocale==='en-US'?'Resolved':'已解决'}</option><option value="completed">{currentLocale==='en-US'?'Round completed':'本轮已完成'}</option><option value="rejected">{tt("aiReview.statusRejected")}</option><option value="superseded">{tt("aiReview.statusSuperseded")}</option></select></label>
       <label>{tt("aiReview.filterRun")}<select bind:value={runFilter} onchange={resetFilter}><option value="all">{tt("aiReview.allRuns")}</option>{#each runIds as runId}<option value={String(runId)}>#{runId}</option>{/each}</select></label>
@@ -280,7 +287,7 @@
   </details><AppButton testid="review-run-analysis" loading={analysisBusy || latestRun?.status === "running"} onclick={analyzeNow}>{latestRun ? tt("aiReview.runAnalysis") : tt("aiReview.startAnalysis")}</AppButton></div>
   <div class="error stable-feedback"><StatusLine message={error} onclear={()=>error=""}/></div>
 
-  {#if receipt}<div class="receipt" role="status"><span>{currentLocale==='en-US'?'Saved: ':'已完成：'}{receipt.message}</span><button data-testid="review-receipt-view" onclick={()=>navigateTo(receipt!.kind,receipt!.target_id,receipt!.workId)}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button data-testid="review-receipt-undo" disabled={busy} onclick={undo}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}
+  {#if receipt}<div class="receipt" role="status"><span>{currentLocale==='en-US'?'Saved: ':'已保存：'}{receipt.message}</span><button data-testid="review-receipt-view" onclick={openReceipt}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button data-testid="review-receipt-undo" disabled={busy} onclick={undo}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}
   {#if items.length}
     {#if items.filter(item=>item.status==="pending").length>1}
       <details class="group-confirm" data-testid="group-review"><summary>{currentLocale==="en-US"?"Review related suggestions together":"一起处理相关建议"}</summary>
@@ -303,10 +310,11 @@
         <div class="review-meta"><span>{statusText(item)}</span>{#if item.decided_at}<span>{fmtTime(item.decided_at)}</span>{/if}</div>
         {#if item.status==='resolved'}<p class="resolved-notice" data-testid="review-resolved-notice">{currentLocale==='en-US'?'Resolved and kept for your records. The secretary will no longer follow up this insight.':'已解决，留作历史记录。秘书不再跟进这条洞察。'}</p>{/if}
         {#if item.status==='resolved'}
-          <details class="resolved-snapshot"><summary>{currentLocale==='en-US'?'Original arrangement (history)':'查看当时采用的安排'}</summary><ProposalPreview {item} {works}/></details>
-        {:else}<ProposalPreview {item} {works}/>{/if}
-        {#if item.status==='pending'&&tentativeTime}<label class="suggested-time-confirm" data-testid="suggested-time-confirm"><input type="checkbox" checked={suggestedTimeAccepted} disabled={busy} onchange={event=>{acceptedTimePayload=event.currentTarget.checked?payloadText:null;}}/><span>{currentLocale==='en-US'?'I confirm the proposed time shown above.':'我确认采用上面列出的建议时间。'}<small>{currentLocale==='en-US'?'Optional: adjust or clear it first. Other fields still need acceptance.':'可以先调整或清除时间。勾选后，仍需点“采用安排”保存。'}</small></span></label>{/if}
-        <div class="safety-note"><Icon name="check" size={15} /><span>{item.status === "pending" ? (currentLocale==='en-US'?'Accept to save these changes. You can undo them afterward.':'采用后保存以上变更，完成后可以撤销。') : tt("aiReview.readOnly")}</span></div>
+          <details class="resolved-snapshot"><summary>{currentLocale==='en-US'?'Original changes (history)':'查看当时确认的内容'}</summary><ProposalPreview {item} {works} {experts}/></details>
+        {:else}<ProposalPreview {item} {works} {experts}/>{/if}
+        {#if item.kind==='kol_insight'&&item.operation==='update'}{@const target=insights.find(insight=>insight.id===item.target_id)}<p class="insight-target" data-testid="review-insight-target">{currentLocale==='en-US'?'Updating insight: ':'将修改的洞察：'}{target?.title??(currentLocale==='en-US'?'Source unavailable — refresh before confirming':'原洞察不可用，请刷新后再确认')}{#if target}<button onclick={()=>{const destination=sourceDestination({entity_kind:'kol_insight',entity_id:target.id,expert_id:target.expert_id,available:true});if(destination)navigateTo(destination);}}>{currentLocale==='en-US'?'View original':'查看原内容'}</button>{/if}</p>{/if}
+        {#if item.status==='pending'&&tentativeTime}<label class="suggested-time-confirm" data-testid="suggested-time-confirm"><input type="checkbox" checked={suggestedTimeAccepted} disabled={busy} onchange={event=>{acceptedTimePayload=event.currentTarget.checked?payloadText:null;}}/><span>{currentLocale==='en-US'?'I confirm the proposed time shown above.':'我确认采用上面列出的建议时间。'}<small>{currentLocale==='en-US'?'Optional: adjust or clear it first. Other fields still need confirmation.':'可以先调整或清除时间。勾选后，仍需点击确认按钮保存。'}</small></span></label>{/if}
+        <div class="safety-note"><Icon name="check" size={15} /><span>{item.status === "pending" ? (currentLocale==='en-US'?'These are proposed changes. Confirm to save; you can undo afterward.':'以上是待确认的变更，确认后才保存，也可以撤销。') : tt("aiReview.readOnly")}</span></div>
         {#if adjusting}<div class="editor-scroll">
           <div class="form-grid">
             <label>{tt("aiReview.titleField")}<input value={item.title} oninput={(event) => updateTitle(item, event.currentTarget.value)} disabled={item.status !== "pending"} /></label>
@@ -318,7 +326,9 @@
             {#if repairedStatus}<p class="repair-note" role="status">{tt("scope.statusRepair")}</p>{/if}
             <div class="detail-head"><div><strong>{tt("aiReview.details")}</strong><small>{tt(`aiReview.detailsHint.${item.kind}` as Parameters<typeof t>[0])}</small></div><span>{tt(`proposal.kind.${item.kind}` as Parameters<typeof t>[0])}</span></div>
             <div class="detail-grid">
-              {#if item.kind === "work"}
+              {#if item.kind==='kol_insight'}
+                <ProposalInsightFields payload={visiblePayload} {experts} updating={item.operation==='update'} disabled={busy||item.status!=='pending'} onchange={setPayloadField}/>
+              {:else if item.kind === "work"}
                 <ProposalStatus kind="work" value={payloadString("status")} onchange={value=>setPayloadField("status",value)} disabled={busy||item.status!=="pending"}/>
                 <label>{currentLocale==='en-US'?'Project category':'项目分类'}<select data-testid="review-project-category" value={optionalSelection('category')} onchange={event=>setOptionalSelection('category',event.currentTarget.value)} disabled={busy||item.status!=='pending'}><option value="__keep">{currentLocale==='en-US'?'Not specified (keep existing)':'未指定（保留已有分类）'}</option><option value="clinical">{currentLocale==='en-US'?'Clinical research':'临床研究'}</option><option value="non_clinical">{currentLocale==='en-US'?'Non-clinical work':'非临床研究'}</option><option value="__none">{currentLocale==='en-US'?'Clear category':'清除分类'}</option></select></label>
                 <label>{tt("aiReview.currentState")}<textarea value={payloadString("current_state")} oninput={(event) => setPayloadField("current_state", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
@@ -365,7 +375,7 @@
           {#if adjusting}<AppButton variant="ghost" loading={busy} onclick={saveDraft}>{tt('aiReview.saveDraft')}</AppButton>{/if}
           <button data-testid="review-adjust" class="plain-action" onclick={()=>adjusting=!adjusting}>{adjusting?(currentLocale==='en-US'?'Back to preview':'收起调整'):(currentLocale==='en-US'?'Adjust':'调整')}</button>
           <button data-testid="review-defer" class="plain-action" disabled={busy} onclick={later}>{currentLocale==='en-US'?'Later':'稍后'}</button>
-          <AppButton testid="review-confirm" loading={busy} onclick={confirm}>{currentLocale==='en-US'?'Accept arrangement':'采用安排'}</AppButton>
+          <AppButton testid="review-confirm" loading={busy} onclick={confirm}>{item.operation==='update'?(currentLocale==='en-US'?'Confirm update':'确认更新'):(currentLocale==='en-US'?'Confirm and save':'确认写入')}</AppButton>
         </div>
         <details class="decline-options" bind:open={showDecline}><summary>{currentLocale==='en-US'?'Do not use this suggestion':'这条建议不需要采用'}</summary><label class="rejection-choice">{currentLocale==='en-US'?'Reason (optional)':'原因（可选）'}<select data-testid="rejection-reason" bind:value={rejectionCode}><option value="unspecified">{currentLocale==='en-US'?'No reason':'暂不说明'}</option><option value="wrong_category">{currentLocale==='en-US'?'Wrong category':'分类不对'}</option><option value="duplicate">{currentLocale==='en-US'?'Already handled':'已经处理过'}</option></select></label><AppButton variant="danger" loading={busy} onclick={reject}>{currentLocale==='en-US'?'Decline suggestion':'不采用这条建议'}</AppButton></details>
         {:else}<button class="plain-action" onclick={()=>adjusting=!adjusting}>{currentLocale==='en-US'?'View details':'查看详情'}</button>{/if}
@@ -395,6 +405,7 @@
 <ProposalLifecycleDialog item={lifecycle?.item??null} action={lifecycle?.action??'delete'} onclose={()=>lifecycle=null} oncomplete={lifecycleCompleted} onbusychange={value=>busy=value}/>
 
 <style>
+  .insight-target{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px;background:var(--color-surface-muted);border-radius:9px;overflow-wrap:anywhere;font-size:1rem}.insight-target button{font:inherit;color:var(--color-primary);background:transparent;border:0;padding:4px}
   .suggested-time-confirm{display:flex;align-items:flex-start;gap:10px;padding:14px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-primary-soft);font-size:14px;line-height:1.65}.suggested-time-confirm input{width:18px;height:18px;flex-shrink:0;margin-top:3px}.suggested-time-confirm span{min-width:0;overflow-wrap:anywhere}.suggested-time-confirm small{display:block;color:var(--color-muted);font-size:13px}
   .record-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:18px;padding-top:14px;border-top:1px solid var(--color-border);min-width:0}
   .record-actions small{flex:1 1 260px;color:var(--color-muted);font-size:.9rem;line-height:1.65;overflow-wrap:anywhere}

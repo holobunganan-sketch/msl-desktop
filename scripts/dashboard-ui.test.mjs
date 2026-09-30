@@ -12,12 +12,15 @@ const { default: ProposalPreview } = await server.ssrLoadModule('/src/lib/compon
 const { default: Overview } = await server.ssrLoadModule('/src/lib/components/DashboardOverview.svelte');
 const { default: Matters } = await server.ssrLoadModule('/src/lib/components/MattersView.svelte');
 
-test('daily brief can be started from the visible header without opening a disclosure', () => {
+test('daily brief is reachable in its own card even when the brief is collapsed', () => {
   const { body } = render(Page);
-  const hero = body.slice(body.indexOf('data-testid="dashboard-brief-hero"'), body.indexOf('aria-label="工作概览"'));
-  assert.match(hero, /<button[^>]*data-testid="generate-daily-brief"[^>]*>/);
-  assert.match(hero, /整理每日简报/);
-  assert.doesNotMatch(hero.slice(0,hero.indexOf('data-testid="generate-daily-brief"')),/<details/);
+  const hero = body.slice(body.indexOf('data-testid="dashboard-brief-hero"'), body.indexOf('data-testid="quick-capture"'));
+  assert.doesNotMatch(hero, /data-testid="generate-daily-brief"/);
+  const brief = body.slice(body.indexOf('data-testid="daily-brief-card"'), body.indexOf('aria-label="工作概览"'));
+  assert.match(brief, /<button[^>]*data-testid="generate-daily-brief"[^>]*>/);
+  assert.match(brief, /整理每日简报/);
+  assert.match(brief, /data-testid="toggle-daily-brief"[^>]*aria-expanded="false"/);
+  assert.doesNotMatch(brief.slice(0,brief.indexOf('data-testid="generate-daily-brief"')),/<details|\shidden/);
 });
 
 test('matter stages keep navigation and actions without an extra instruction banner', () => {
@@ -72,8 +75,19 @@ test('dashboard keeps both work and decision actions available', () => {
   const { body } = render(Page);
   assert.match(body, /继续推进/);
   assert.match(body, /需要您决定/);
-  assert.match(body, /让秘书整理一次/);
+  assert.match(body, /全局交给秘书整理一遍/);
+  assert.equal((body.match(/data-testid="organize-workspace"/g)||[]).length,1);
+  assert.doesNotMatch(body, />让秘书整理一次<|>现在整理</);
   assert.match(body, /data-testid="dashboard-secretary-card"/);
+});
+
+test('global organizing is outside the capture copy and has a stable named action region', () => {
+  const {body}=render(Page);
+  const action=body.indexOf('data-testid="organize-workspace"');
+  const region=body.indexOf('data-testid="global-secretary-actions"');
+  const capture=body.indexOf('data-testid="quick-capture"');
+  assert.ok(region>0&&action>region&&action<capture);
+  assert.match(body.slice(region,action),/aria-label="全局整理"/);
 });
 
 test('shell renders the shared loop logo with the exact product name', () => {

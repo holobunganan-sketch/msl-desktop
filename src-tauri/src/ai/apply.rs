@@ -188,17 +188,17 @@ pub(crate) fn confirm_in_transaction(
     crate::db::work::validate_project_scope(tx, &proposal.kind, proposal.work_id)?;
     if proposal.kind == "work"
         && proposal.operation == "update"
-        && payload.get("category").is_some()
+        && (payload.get("project_revision").is_some() || payload.get("category").is_some())
     {
         let target = proposal
             .target_id
-            .ok_or_else(|| DbError::Migration("分类更新缺少项目".into()))?;
+            .ok_or_else(|| DbError::Migration("更新建议缺少项目".into()))?;
         let current = crate::db::work::WorkRepo::new(tx)
             .get(target)?
             .ok_or_else(|| DbError::NotFound("work".into()))?;
         if payload["project_revision"].as_i64() != Some(current.revision) {
             return Err(DbError::Migration(
-                "项目已变化，请刷新后重新确认分类".into(),
+                "项目已变化，请刷新后重新审阅，未覆盖现有内容".into(),
             ));
         }
     }
@@ -212,6 +212,9 @@ pub(crate) fn confirm_in_transaction(
     }
     let now = now_unix();
     let target_id = match (proposal.kind.as_str(), proposal.operation.as_str()) {
+        ("kol_insight", "create" | "update") => {
+            super::insight_proposals::confirm(tx, &proposal, &payload)?
+        }
         ("work", "create") => {
             let title = proposal.title.trim();
             let status = text(&payload, "status").unwrap_or_else(|| "active".into());

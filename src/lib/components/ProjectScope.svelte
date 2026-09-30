@@ -1,15 +1,15 @@
 <script lang="ts">
   import { locale, t, translateStatus } from "$lib/i18n";
-  let { works, value = $bindable<number | null>(null), required = false, disabled = false, id = "project-scope", onchange }: {
+  let { works, value = $bindable<number | null>(null), required = false, disabled = false, id = "project-scope", label, emptyLabel, onchange }: {
     works: Array<{id:number;title:string;status:string}>; value?: number | null;
-    required?: boolean; disabled?: boolean; id?: string; onchange?: (value:number|null)=>void;
+    required?: boolean; disabled?: boolean; id?: string; label?:string; emptyLabel?:string; onchange?: (value:number|null)=>void;
   } = $props();
 </script>
 
 <label class="project-scope" for={id}>
-  <span>{t("scope.label",{},$locale)}{required ? " *" : ""}</span>
+  <span>{label??t("scope.label",{},$locale)}{required ? " *" : ""}</span>
   <select {id} data-testid={id} {disabled} {required} value={value??""} onchange={event=>{value=event.currentTarget.value===""?null:Number(event.currentTarget.value);onchange?.(value);}}>
-    <option value="" disabled={required}>{t(required?"scope.choose":"scope.independent",{},$locale)}</option>
+    <option value="" disabled={required}>{emptyLabel??t(required?"scope.choose":"scope.independent",{},$locale)}</option>
     {#each works.filter(work=>work.status!=="archived"||work.id===value) as work(work.id)}
       <option value={work.id} disabled={work.status==="archived"}>{work.title}{work.status==="archived"?` · ${translateStatus(work.status,$locale)}`:""}</option>
     {/each}

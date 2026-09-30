@@ -133,3 +133,19 @@ test('repeated builds are deterministic and clear obsolete output files', async 
   assert.equal(await readFile(path.join(root, 'website-dist/index.html'), 'utf8'), before);
   await assert.rejects(access(path.join(root, 'website-dist/obsolete.js')));
 });
+
+test('stylesheet URL changes with CSS content even when the app version stays the same', async () => {
+  const root = await fixture();
+  const template = path.join(root, 'website/index.html');
+  await writeFile(template, (await readFile(template, 'utf8')).replace('</head>', '<link rel="stylesheet" href="style.css?v={{STYLE_HASH}}"></head>'));
+  assert.equal(build(root).status, 0);
+  const before = await readFile(path.join(root, 'website-dist/index.html'), 'utf8');
+  const oldUrl = before.match(/href="(style\.css\?v=[^"]+)"/)[1];
+  await writeFile(path.join(root, 'website/style.css'), 'body { color: teal; }');
+  assert.equal(build(root).status, 0);
+  const after = await readFile(path.join(root, 'website-dist/index.html'), 'utf8');
+  const newUrl = after.match(/href="(style\.css\?v=[^"]+)"/)[1];
+  assert.notEqual(oldUrl, newUrl, 'New typography must not reuse a stylesheet URL cached with old fonts.');
+  assert.doesNotMatch(after, /\{\{/);
+  assert.match(after, /content="0\.3\.15"/);
+});

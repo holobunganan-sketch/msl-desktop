@@ -198,15 +198,15 @@
     {#snippet footer()}<AppButton variant="secondary" testid="inbox-delete-cancel" onclick={closeRemove} disabled={removeBusy}>{tt("common.cancel")}</AppButton><AppButton variant="danger" testid="inbox-delete-confirm" onclick={confirmRemove} loading={removeBusy}>{tt("common.delete")}</AppButton>{/snippet}
   </Modal>
 
-  <Modal open={conversion !== null} title={projectMode?tt("inbox.toProject"):tt("inbox.convertTitle", { type: conversion === "task" ? tt("inbox.toTask") : conversion === "waiting" ? tt("inbox.toWaiting") : tt("inbox.toCalendar") })} onclose={closeConversion}>
+  <Modal open={conversion !== null} title={projectMode?tt("inbox.toProject"):tt("inbox.convertTitle", { type: conversion === "task" ? tt("proposal.kind.task") : conversion === "waiting" ? tt("proposal.kind.waiting") : tt("proposal.kind.calendar") })} onclose={closeConversion}>
     <form class="modal-form" onsubmit={(event) => { event.preventDefault(); convert(); }}>
-      {#if projectMode}<p class="project-hint">{tt("inbox.projectHint")}</p><label for="project-item-kind">{tt("inbox.projectType")}</label><select id="project-item-kind" bind:value={conversion}><option value="task">{tt("inbox.toTask")}</option><option value="waiting">{tt("inbox.toWaiting")}</option><option value="calendar">{tt("inbox.toCalendar")}</option><option value="resume_point">{tt("inbox.progress")}</option></select>{/if}
-      <label for="inbox-title">{tt("common.create")} *</label>
+      {#if projectMode}<p class="project-hint">{tt("inbox.projectHint")}</p><label for="project-item-kind">{tt("inbox.projectType")}</label><select id="project-item-kind" bind:value={conversion}><option value="task">{tt("proposal.kind.task")}</option><option value="waiting">{tt("proposal.kind.waiting")}</option><option value="calendar">{tt("proposal.kind.calendar")}</option><option value="resume_point">{tt("inbox.progress")}</option></select>{/if}
+      <label for="inbox-title">{conversion==='resume_point'?tt("aiReview.currentState"):tt("aiReview.titleField")} *</label>
       <textarea id="inbox-title" rows="3" bind:value={formTitle}></textarea>
       <ProjectScope {works} bind:value={formWorkId} id="inbox-work" required={projectMode||conversion==="resume_point"}/>
       <p class="project-hint">{tt("scope.itemHint")}</p>
       {#if conversion === "task"}
-        <label for="inbox-priority">{tt("task.priority.normal")}</label>
+        <label for="inbox-priority">{tt("aiReview.priority")}</label>
         <select id="inbox-priority" bind:value={formPriority}>
           <option value="low">{tt("task.priority.low")}</option>
           <option value="normal">{tt("task.priority.normal")}</option>
@@ -217,14 +217,14 @@
         <label for="inbox-who">{tt("waiting.for")}</label><input id="inbox-who" bind:value={formWaitingFor} />
         <label for="inbox-follow">{tt("waiting.followUp")}</label><input id="inbox-follow" type="datetime-local" bind:value={formFollowUp} />
       {:else if conversion === "calendar"}
-        <label for="inbox-kind">{tt("calendar.title")}</label>
+        <label for="inbox-kind">{tt("aiReview.eventKind")}</label>
         <select id="inbox-kind" bind:value={formKind}>{#each ["meeting", "kol_visit", "deadline", "travel", "work_block", "other"] as kind}<option value={kind}>{translateKind(kind, currentLocale)}</option>{/each}</select>
         <label for="inbox-start">{tt("calendar.start")}</label><input id="inbox-start" type="datetime-local" bind:value={formStart} />
         <label for="inbox-end">{tt("calendar.endPlaceholder")}</label><input id="inbox-end" type="datetime-local" bind:value={formEnd} />
       {/if}
       <div class="modal-actions">
         <button type="button" onclick={closeConversion}>{tt("common.cancel")}</button>
-        <AppButton type="submit" loading={saving} label={tt("common.save")} />
+        <AppButton type="submit" loading={saving} label={currentLocale==='en-US'?'Confirm & save':'确认写入'} />
       </div>
       <div class="status error stable-feedback"><StatusLine message={error}/></div>
     </form>
@@ -232,7 +232,7 @@
 
   <NaturalCapture/>
   <label class="history-switch"><input type="checkbox" bind:checked={showHistory}/>{currentLocale==='en-US'?'Include organized notes':'同时查看已整理的原始记录'}</label>
-  {#if queued}<p class="organize-note">{currentLocale==="en-US"?"You can keep working. Suggestions appear in AI Review when ready.":"可以继续工作。整理完成后，建议会出现在 AI 审阅中。"}<button onclick={()=>window.dispatchEvent(new CustomEvent("dashboard:navigate",{detail:"review"}))}>{currentLocale==="en-US"?"Open review":"查看审阅"}</button></p>{/if}
+  {#if queued}<p class="organize-note">{currentLocale==="en-US"?"Continue working while this note is organized. Review any proposed changes in Secretary suggestions.":"这条记录已交给秘书，可以继续工作。有新的建议时，到“秘书准备的建议”核对并确认。"}<button onclick={()=>window.dispatchEvent(new CustomEvent("dashboard:navigate",{detail:"review"}))}>{currentLocale==="en-US"?"Review suggestions":"查看待确认建议"}</button></p>{/if}
   {#if items.some(item=>showHistory||!item.processed_at)}
   <ul class="in-list">
     {#each items.filter(item=>showHistory||!item.processed_at) as item (item.id)}
@@ -243,7 +243,7 @@
           <button onclick={()=>navigateTo(item.converted_to_type??'inbox',item.converted_to_id??undefined)}>{currentLocale==='en-US'?'View organized item':'查看整理后的事项'} ↗</button>
         {:else}
           <span class="actions">
-            <button class="project-action" data-testid={`inbox-organize-${item.id}`} disabled={organizing(item.id)} onclick={()=>organize(item)}>{organizing(item.id)?(currentLocale==="en-US"?"Organizing…":"后台整理中…"):(currentLocale==="en-US"?"AI organize":"交给 AI 整理")}</button>
+            <button class="project-action" data-testid={`inbox-organize-${item.id}`} disabled={organizing(item.id)} onclick={()=>organize(item)}>{organizing(item.id)?(currentLocale==="en-US"?"Organizing…":"后台整理中…"):(currentLocale==="en-US"?"Organize this note":"整理这条")}</button>
             <details class="manual-routing"><summary>{currentLocale==='en-US'?'Arrange myself':'自己安排'}</summary><div><button class="project-action" data-testid={`inbox-project-${item.id}`} onclick={() => openConversion("task",item,true)}>{tt("inbox.toProject")}</button>
             <button data-testid={`inbox-task-${item.id}`} onclick={() => openConversion("task", item)}>{tt("inbox.toTask")}</button>
             <button onclick={() => openConversion("waiting", item)}>{tt("inbox.toWaiting")}</button>

@@ -93,6 +93,9 @@ pub fn parse_output(
         .collect::<Vec<_>>();
     let mut parsed = validate(task_kind, output, &allowed)?;
     for proposal in &mut parsed.proposals {
+        if proposal.kind == "kol_insight" {
+            super::insight_proposals::validate_generated(proposal, snapshot)?;
+        }
         super::field_evidence::validate_and_normalize(proposal, snapshot)?;
     }
     if let Some(inbox) = snapshot.focused_inbox.as_ref() {
@@ -180,7 +183,10 @@ pub fn parse_output(
             {
                 return Err("项目细项缺少正确的 work_id".into());
             }
-            if p.operation == "update" && p.kind != "work" {
+            if p.kind == "kol_insight" && p.work_id != id {
+                return Err("专家洞察建议需保留当前项目关联".into());
+            }
+            if p.operation == "update" && !matches!(p.kind.as_str(), "work" | "kol_insight") {
                 let list = match p.kind.as_str() {
                     "task" => "tasks",
                     "waiting" => "waiting",
@@ -325,6 +331,7 @@ fn proposal_dedupe_key(proposal: &ProposalContract) -> String {
         "target_id": proposal.target_id,
         "work_id": proposal.work_id,
         "workspace_id": proposal.workspace_id,
+        "expert_id": proposal.payload["expert_id"],
         "title": proposal.title.trim().to_lowercase(),
     });
     let mut hasher = Sha256::new();

@@ -27,6 +27,7 @@ export function decisionPayload(item: Draft, kind: string): Record<string, unkno
   }
   let converted:Record<string,unknown>;
   if(kind==='work')converted={title,status:'active',summary:current.summary??current.notes??current.content??item.reason};
+  else if(kind==='kol_insight')converted={title,observation:current.observation??current.content??current.notes??'',categories:[],implication:'',uncertainty:'',next_question:''};
   else if(kind==='task')converted={title,priority:current.priority??'normal',due_at:current.due_at??null,notes:current.notes??item.reason};
   else if(kind==='waiting')converted={title,waiting_for:current.waiting_for??'',follow_up_at:current.follow_up_at??null,notes:current.notes??item.reason};
   else if(kind==='calendar')converted={title,start_at:current.start_at??null,end_at:current.end_at??null,all_day:current.all_day??false,kind:'other',notes:current.notes??item.reason};

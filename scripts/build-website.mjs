@@ -56,10 +56,10 @@ function renderHistory(history) {
   const current = history.releases.filter(entry => entry.status !== 'local');
   const local = history.releases.filter(entry => entry.status === 'local');
   return `<section id="updates" class="updates wrap" aria-labelledby="updates-title">
-      <div class="section-heading"><div><p class="eyebrow">持续打磨日常工作</p><h2 id="updates-title">每一步更新，都有记录。</h2></div><p>看看这次有什么变化，<br>也可以回顾一路以来的改进。</p></div>
-      <div class="updates-layout"><div class="updates-aside"><span class="index">RELEASE NOTES</span><p>从记录到跟进，<br>让每一步更顺手。</p><a class="text-link" href="#download">下载当前版本 <span aria-hidden="true">↓</span></a></div><div class="updates-list">
+      <div class="section-heading"><div><p class="eyebrow">版本与日期</p><h2 id="updates-title">更新记录</h2></div><p>按版本查看新增功能和修复。<br>早期本地版本单独列在下方。</p></div>
+      <div class="updates-layout"><div class="updates-aside"><span class="index">RELEASE NOTES</span><p>当前版本<br>v${history.releases[0].version}</p><a class="text-link" href="#download">下载当前版本 <span aria-hidden="true">↓</span></a></div><div class="updates-list">
         ${current.map((entry, index) => renderEntry(entry, index === 0)).join('\n        ')}
-        ${local.length ? `<details class="history-archive"><summary>更早的本地更新记录 <span>${local.length} 个版本</span></summary><p class="history-note">以下日期依据本地构建或提交记录，未对应公开发布记录。</p>${local.map(entry => renderEntry(entry)).join('\n')}</details>` : ''}
+        ${local.length ? `<details class="history-archive"><summary>早期本地版本 <span>${local.length} 个版本</span></summary><p class="history-note">日期来自本地构建或提交记录，不代表 GitHub 发布日期。</p>${local.map(entry => renderEntry(entry)).join('\n')}</details>` : ''}
       </div></div>
     </section>`;
 }
@@ -86,7 +86,11 @@ async function main() {
   const source = path.join(root, 'website');
   const template = await readFile(path.join(source, 'index.html'), 'utf8');
   if (!template.includes('<!-- RELEASE_HISTORY -->') || !template.includes('{{RELEASE_VERSION}}')) throw new Error('Website template is missing a release placeholder.');
-  const html = template.replaceAll('{{RELEASE_VERSION}}', pkg.version).replace('<!-- RELEASE_HISTORY -->', renderHistory(history));
+  const stylesheet = await readFile(path.join(source, 'style.css'));
+  const styleHash = createHash('sha256').update(stylesheet).digest('hex').slice(0, 16);
+  const html = template.replaceAll('{{RELEASE_VERSION}}', pkg.version)
+    .replaceAll('{{STYLE_HASH}}', styleHash)
+    .replace('<!-- RELEASE_HISTORY -->', renderHistory(history));
   const assets = await publicAssets(path.join(source, 'assets'));
   // Resolve and read the exact current installer before touching the previous build.
   let installerBytes;
