@@ -49,7 +49,7 @@ fn canonical_payload(proposal: &crate::db::ai::AiProposal, value: Value) -> DbRe
 }
 
 fn work_summary(payload: &Value) -> Option<String> {
-    if let Some(summary) = first_text(payload, &["summary", "notes", "content"]) {
+    if let Some(summary) = first_text(payload, &["summary", "objective", "notes", "content"]) {
         return Some(summary);
     }
     match (
@@ -162,13 +162,46 @@ pub(crate) fn confirm_in_transaction(
             "proposal is stale or no longer pending".into(),
         ));
     }
+    let time_confirmed = edited_payload
+        .as_ref()
+        .is_some_and(|value| value["time_confirmation"] == "user_confirmed");
+    let original: Value = serde_json::from_str(&proposal.payload_json).unwrap_or_default();
     let payload = edited_payload.unwrap_or_else(|| {
         serde_json::from_str(&proposal.payload_json).unwrap_or(Value::Object(Default::default()))
     });
-    let payload = canonical_payload(&proposal, payload)?;
+    let mut payload = canonical_payload(&proposal, payload)?;
+    let inferred = original["time_basis"] == "inferred" || payload["time_basis"] == "inferred";
+    let dated = super::field_evidence::DATE_FIELDS
+        .iter()
+        .any(|key| payload.get(key).is_some_and(|value| !value.is_null()));
+    if inferred && dated && !time_confirmed {
+        return Err(DbError::Migration(
+            "此建议含推算时间，请在调整中单独确认时间，或移除时间后再采纳".into(),
+        ));
+    }
+    payload.as_object_mut().unwrap().remove("time_confirmation");
+    if inferred && dated && time_confirmed {
+        payload["time_basis"] = Value::String("explicit".into());
+    }
     crate::ai::schema::validate_payload_fields(&proposal.kind, &payload)
         .map_err(DbError::Migration)?;
     crate::db::work::validate_project_scope(tx, &proposal.kind, proposal.work_id)?;
+    if proposal.kind == "work"
+        && proposal.operation == "update"
+        && payload.get("category").is_some()
+    {
+        let target = proposal
+            .target_id
+            .ok_or_else(|| DbError::Migration("分类更新缺少项目".into()))?;
+        let current = crate::db::work::WorkRepo::new(tx)
+            .get(target)?
+            .ok_or_else(|| DbError::NotFound("work".into()))?;
+        if payload["project_revision"].as_i64() != Some(current.revision) {
+            return Err(DbError::Migration(
+                "项目已变化，请刷新后重新确认分类".into(),
+            ));
+        }
+    }
     if let (Some(start), Some(end)) = (
         i64_value(&payload, "start_at"),
         i64_value(&payload, "end_at"),
@@ -243,7 +276,11 @@ pub(crate) fn confirm_in_transaction(
                         .optional()?
                         .ok_or_else(|| DbError::NotFound("work target".into()))?;
                     let status = text(&payload, "status").unwrap_or(current.0);
-                    let summary = work_summary(&payload).or(current.1);
+                    // A partial progress patch must not replace the project's
+                    // objective with its next action or current state.
+                    let summary =
+                        first_text(&payload, &["summary", "objective", "notes", "content"])
+                            .or(current.1);
                     tx.execute(
                         "UPDATE works SET title=?1,status=?2,summary=?3,updated_at=?4 WHERE id=?5",
                         rusqlite::params![proposal.title.trim(), status, summary, now, target],
@@ -362,7 +399,65 @@ pub(crate) fn confirm_in_transaction(
         crate::db::flow::schedule_in_transaction(&tx, target_id, start, end)?;
     }
     if proposal.kind == "work" {
+        if let Some(category) = payload.get("category") {
+            let work = crate::db::work::WorkRepo::new(tx)
+                .get(target_id)?
+                .ok_or_else(|| DbError::NotFound("work".into()))?;
+            crate::db::project_relations::set_category(
+                tx,
+                target_id,
+                category.as_str(),
+                work.revision,
+            )?;
+        }
         link_work_evidence(&tx, &proposal, target_id, now)?;
+        if ["current_state", "next_step", "remember"]
+            .iter()
+            .any(|field| payload.get(field).is_some())
+        {
+            let old = crate::db::work::ResumePointRepo::new(tx).latest_for_work(target_id)?;
+            let current = text(&payload, "current_state").unwrap_or_else(|| {
+                old.as_ref()
+                    .map(|r| r.current_state.clone())
+                    .unwrap_or_default()
+            });
+            let next = text(&payload, "next_step").unwrap_or_else(|| {
+                old.as_ref()
+                    .map(|r| r.next_step.clone())
+                    .unwrap_or_default()
+            });
+            let remember = text(&payload, "remember")
+                .unwrap_or_else(|| old.as_ref().map(|r| r.remember.clone()).unwrap_or_default());
+            if old.as_ref().is_none_or(|r| {
+                r.current_state != current || r.next_step != next || r.remember != remember
+            }) {
+                crate::db::work::ResumePointRepo::new(tx).insert(
+                    target_id,
+                    &current,
+                    &next,
+                    &remember,
+                    "ai_draft_confirmed",
+                )?;
+            }
+        }
+    }
+    if let Some(clinical) = payload.get("clinical_work_id") {
+        let revision = if proposal.operation == "create" {
+            0
+        } else {
+            payload["clinical_relation_revision"]
+                .as_i64()
+                .ok_or_else(|| {
+                    DbError::Migration("关联信息已过期，请刷新后重新选择临床研究".into())
+                })?
+        };
+        crate::db::project_relations::set(
+            tx,
+            &proposal.kind,
+            target_id,
+            clinical.as_i64(),
+            revision,
+        )?;
     }
     if let Some(status) = text(&payload, "status") {
         match proposal.kind.as_str() {
@@ -470,6 +565,217 @@ pub fn reject_proposal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accuracy_confirmed_category_and_clinical_link_preserve_owner_and_reject_stale_link() {
+        let db = Database::open_in_memory().unwrap();
+        let work = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Study A", "active")
+            .unwrap();
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "work",
+                "update",
+                Some(work.id),
+                Some(work.id),
+                None,
+                "category-approval",
+                "Study A",
+                &serde_json::json!({"category":"clinical","project_revision":work.revision})
+                    .to_string(),
+                "User category",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        confirm_proposal(&db, p.id, p.updated_at, None).unwrap();
+        assert_eq!(
+            crate::db::work::WorkRepo::new(db.conn())
+                .get(work.id)
+                .unwrap()
+                .unwrap()
+                .category
+                .as_deref(),
+            Some("clinical")
+        );
+        let independent = crate::db::task::TaskRepo::new(db.conn())
+            .insert(None, "Expert meeting", "normal", None, None)
+            .unwrap();
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "task",
+                "update",
+                Some(independent.id),
+                None,
+                None,
+                "link-approval",
+                "Expert meeting",
+                &serde_json::json!({"clinical_work_id":work.id,"clinical_relation_revision":0})
+                    .to_string(),
+                "User link",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        confirm_proposal(&db, p.id, p.updated_at, None).unwrap();
+        assert_eq!(
+            crate::db::project_relations::get(db.conn(), "task", independent.id)
+                .unwrap()
+                .unwrap()
+                .clinical_work_id,
+            Some(work.id)
+        );
+        assert_eq!(
+            crate::db::task::TaskRepo::new(db.conn())
+                .get(independent.id)
+                .unwrap()
+                .unwrap()
+                .work_id,
+            None
+        );
+        let stale = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "task",
+                "update",
+                Some(independent.id),
+                None,
+                None,
+                "stale-link",
+                "Changed title",
+                r#"{"clinical_work_id":null,"clinical_relation_revision":0}"#,
+                "Stale edit",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(confirm_proposal(&db, stale.id, stale.updated_at, None).is_err());
+        assert_eq!(
+            crate::db::task::TaskRepo::new(db.conn())
+                .get(independent.id)
+                .unwrap()
+                .unwrap()
+                .title,
+            "Expert meeting"
+        );
+    }
+
+    #[test]
+    fn accuracy_confirmed_work_keeps_structured_progress_without_erasing_omitted_fields() {
+        let db = Database::open_in_memory().unwrap();
+        let w = crate::db::work::WorkRepo::new(db.conn())
+            .insert("Study A", "active")
+            .unwrap();
+        crate::db::work::WorkRepo::new(db.conn())
+            .update(w.id, "Study A", "active", Some("User-confirmed objective"))
+            .unwrap();
+        crate::db::work::ResumePointRepo::new(db.conn())
+            .insert(
+                w.id,
+                "Protocol in review",
+                "Wait for comments",
+                "Keep endpoint",
+                "manual",
+            )
+            .unwrap();
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "work",
+                "update",
+                Some(w.id),
+                Some(w.id),
+                None,
+                "work-progress-rich",
+                "Study A",
+                r#"{"next_step":"Review revised protocol"}"#,
+                "User correction",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        confirm_proposal(&db, p.id, p.updated_at, None).unwrap();
+        let resume = crate::db::work::ResumePointRepo::new(db.conn())
+            .latest_for_work(w.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resume.current_state, "Protocol in review");
+        assert_eq!(resume.next_step, "Review revised protocol");
+        assert_eq!(resume.remember, "Keep endpoint");
+        assert_eq!(
+            crate::db::work::WorkRepo::new(db.conn())
+                .get(w.id)
+                .unwrap()
+                .unwrap()
+                .summary
+                .as_deref(),
+            Some("User-confirmed objective")
+        );
+    }
+
+    #[test]
+    fn accuracy_inferred_schedule_requires_a_separate_explicit_adoption() {
+        let db = Database::open_in_memory().unwrap();
+        let run = crate::db::ai::AnalysisRunRepo::new(db.conn())
+            .create("manual", None, None)
+            .unwrap();
+        let payload = serde_json::json!({"scheduled_start":1790812800,"time_basis":"inferred","time_reason":"Suggested preparation slot"});
+        let p = crate::db::ai::ProposalRepo::new(db.conn())
+            .upsert_pending(
+                run.id,
+                "task",
+                "create",
+                None,
+                None,
+                None,
+                "inferred-approval",
+                "Review protocol",
+                &payload.to_string(),
+                "Proposal",
+                "[]",
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            confirm_proposal(&db, p.id, p.updated_at, None).is_err(),
+            "Generic confirm must not silently commit an estimated appointment"
+        );
+        assert!(crate::db::task::TaskRepo::new(db.conn())
+            .list(None, None)
+            .unwrap()
+            .is_empty());
+        let mut explicit = payload;
+        explicit["time_confirmation"] = serde_json::json!("user_confirmed");
+        let result = confirm_proposal(&db, p.id, p.updated_at, Some(explicit)).unwrap();
+        assert_eq!(
+            crate::db::task::TaskRepo::new(db.conn())
+                .get(result.target_id)
+                .unwrap()
+                .unwrap()
+                .scheduled_start,
+            Some(1790812800)
+        );
+        let saved = crate::db::ai::ProposalRepo::new(db.conn())
+            .get(p.id)
+            .unwrap()
+            .unwrap();
+        let value: Value = serde_json::from_str(&saved.payload_json).unwrap();
+        assert_eq!(value["time_basis"], "explicit");
+        assert!(value.get("time_confirmation").is_none());
+    }
 
     #[test]
     fn confirmed_task_schedule_is_the_same_entity_and_undo_restores_time() {
@@ -839,9 +1145,15 @@ mod tests {
         let updated = WorkRepo::new(db.conn()).get(work.id).unwrap().unwrap();
         assert_eq!(updated.title, "更新后的工作标题");
         assert_eq!(
-            updated.summary.as_deref(),
-            Some("进展待确认\n下一步：补充当前状态")
+            updated.summary, None,
+            "Progress must not silently become the project objective"
         );
+        let point = crate::db::work::ResumePointRepo::new(db.conn())
+            .latest_for_work(work.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(point.current_state, "进展待确认");
+        assert_eq!(point.next_step, "补充当前状态");
     }
 
     #[test]

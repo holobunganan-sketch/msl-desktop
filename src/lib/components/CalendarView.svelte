@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ClinicalProjectLink from './ClinicalProjectLink.svelte';
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -56,7 +57,7 @@
   let formLocation = $state("");
   let formNotes = $state("");
   let saving = $state(false);
-  let works = $state<Array<{ id: number; title: string; status: string }>>([]);
+  let works = $state<Array<{ id: number; title: string; status: string; category?:'clinical'|'non_clinical'|null }>>([]);
 
   function pad(n: number) {
     return String(n).padStart(2, "0");
@@ -301,6 +302,7 @@
         <AppButton testid="calendar-save" type="submit" loading={saving} label={editing ? tt("common.save") : tt("common.add")} />
       </div>
     </form>
+    {#if editing&&works.find(work=>work.id===editing?.work_id)?.category!=='clinical'}<ClinicalProjectLink entityKind="calendar" entityId={editing.id}/>{/if}
   </Modal>
 
   {#if mode === "week"}

@@ -7,6 +7,7 @@ pub mod apply;
 pub mod brief;
 pub mod catalog;
 pub mod efficiency;
+pub mod field_evidence;
 pub mod knowledge_contract;
 pub mod lifecycle;
 pub mod output;

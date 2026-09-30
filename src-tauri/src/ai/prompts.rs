@@ -1,4 +1,4 @@
-pub const PROMPT_VERSION: &str = "msl-secretary-v9-user-direction-linking";
+pub const PROMPT_VERSION: &str = "msl-secretary-v10-field-evidence";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecretaryStage {

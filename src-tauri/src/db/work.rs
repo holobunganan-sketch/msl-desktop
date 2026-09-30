@@ -13,6 +13,7 @@ pub struct Work {
     pub revision: i64,
     pub status: String, // active|paused|waiting|done|archived
     pub summary: Option<String>,
+    pub category: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub archived_at: Option<i64>,
@@ -25,6 +26,7 @@ fn row_to_work(row: &Row) -> rusqlite::Result<Work> {
         revision: row.get(7)?,
         status: row.get(2)?,
         summary: row.get(3)?,
+        category: row.get(8)?,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
         archived_at: row.get(6)?,
@@ -77,7 +79,7 @@ impl<'a> WorkRepo<'a> {
     pub fn get(&self, id: i64) -> DbResult<Option<Work>> {
         self.conn
             .query_row(
-                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
+                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision, category
                  FROM works WHERE id = ?1",
                 [id],
                 row_to_work,
@@ -90,12 +92,12 @@ impl<'a> WorkRepo<'a> {
     pub fn list(&self, status: Option<&str>) -> DbResult<Vec<Work>> {
         let (sql, params): (&str, Vec<Box<dyn rusqlite::ToSql>>) = match status {
             Some(s) => (
-                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
+                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision, category
                  FROM works WHERE status = ?1 ORDER BY updated_at DESC",
                 vec![Box::new(s.to_string())],
             ),
             None => (
-                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
+                "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision, category
                  FROM works ORDER BY updated_at DESC",
                 vec![],
             ),
@@ -204,7 +206,7 @@ impl<'a> WorkRepo<'a> {
     /// 按标题/摘要模糊搜索。
     pub fn search(&self, like: &str, limit: usize) -> DbResult<Vec<Work>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision
+            "SELECT id, title, status, summary, created_at, updated_at, archived_at, revision, category
              FROM works
              WHERE title LIKE ?1 ESCAPE '\\' OR (summary IS NOT NULL AND summary LIKE ?1 ESCAPE '\\')
              ORDER BY updated_at DESC LIMIT ?2",

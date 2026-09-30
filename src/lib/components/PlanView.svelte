@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ClinicalProjectLink from './ClinicalProjectLink.svelte';
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -59,7 +60,7 @@
   let showForm = $state(false);
   let editingId = $state<number | null>(null);
   let saving = $state(false);
-  let works = $state<Array<{ id: number; title: string; status: string }>>([]);
+  let works = $state<Array<{ id: number; title: string; status: string; category?:'clinical'|'non_clinical'|null }>>([]);
   let currentLocale = $derived($locale);
   const tt = (key: Parameters<typeof t>[0], params: Record<string, string | number> = {}) => t(key, params, currentLocale);
 
@@ -254,6 +255,7 @@
           <button onclick={() => openEdit(t)}>{tt("common.edit")}</button>
           <button onclick={() => remove(t)}>{tt("common.delete")}</button>
         </span>
+        {#if works.find(work=>work.id===t.work_id)?.category!=='clinical'}<ClinicalProjectLink entityKind="task" entityId={t.id}/>{/if}
       </li>
     {/each}
   </ul>
@@ -263,6 +265,7 @@
 </div>
 
 <style>
+  .task-list :global(.clinical-link){grid-column:2/-1;}
   .plan h1 {
     font-size: 18px;
     margin: 0;

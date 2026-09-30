@@ -1,6 +1,7 @@
+import {aiText} from './aiText';
 export function reportBlocks(content:string|null):Array<{headline:string;body:string}> {
   const blocks:Array<{headline:string;body:string}>=[];
-  for(const raw of (content??'').split(/\r?\n/)){
+  for(const raw of aiText(content).split(/\r?\n/)){
     const line=raw.trim();if(!line)continue;
     if(/^\d+[.)、]\s+/.test(line)||!blocks.length){
       blocks.push({headline:line.replace(/^\d+[.)、]\s+/,''),body:''});

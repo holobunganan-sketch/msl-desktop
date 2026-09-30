@@ -1,6 +1,8 @@
 <script lang="ts">
   import "$lib/styles/app.css";
   import { onMount, tick } from "svelte";
+  import { listen } from '@tauri-apps/api/event';
+  import { register as registerShortcut, unregister as unregisterShortcut } from '@tauri-apps/plugin-global-shortcut';
   import QuickCapture from "$lib/components/QuickCapture.svelte";
   import BackgroundJobs from "$lib/components/BackgroundJobs.svelte";
   import PlanView from "$lib/components/PlanView.svelte";
@@ -85,6 +87,16 @@
     window.addEventListener('dashboard:back',back);
     return () => {window.removeEventListener("dashboard:navigate", handler);window.removeEventListener('dashboard:back',back);};
   });
+
+  onMount(()=>{
+    const focusCapture=()=>window.dispatchEvent(new Event('dashboard:focus-capture'));
+    const listener=listen('quick-capture',focusCapture);
+    const shortcut=registerShortcut('CommandOrControl+Shift+Space',event=>{if(event.state==='Pressed')focusCapture();}).then(()=>true,()=>false);
+    return ()=>{
+      void listener.then(unlisten=>unlisten()).catch(()=>{});
+      void shortcut.then(registered=>{if(registered)return unregisterShortcut('CommandOrControl+Shift+Space');}).catch(()=>{});
+    };
+  });
 </script>
 
 <div class="app-shell">
@@ -123,9 +135,9 @@
   </aside>
 
   <main class="main-content">
-    <header class="topbar">
+    <header class="topbar" class:home-topbar={view==='today'}>
       <div class="topbar-title">{#if history.length}<button class="icon-button navigation-back" data-testid="navigation-back" onclick={back} aria-label={currentLocale==='en-US'?'Back':'返回上一页'}>←</button>{/if}<div class="topbar-copy"><strong>{viewTitle(view)}</strong><span>{formattedDate}</span></div></div>
-      <div class="capture-wrap"><Icon name="capture" size={15} /><QuickCapture workId={view==='works'?destination.id??null:null}/></div>
+      {#if view!=='today'}<div class="capture-wrap"><Icon name="capture" size={15} /><QuickCapture workId={view==='works'?destination.id??null:null}/></div>{/if}
       <div class="topbar-actions">
         <button class="icon-button search-button" type="button" onclick={() => (searchOpen = true)} aria-label={tt("common.openSearch")} title={tt("common.openSearch")}>
           <Icon name="search" size={17} /><span class="shortcut">Ctrl K</span>
@@ -174,6 +186,7 @@
   .nav-icon{width:20px;display:grid;place-items:center;flex-shrink:0;color:var(--color-muted)}.nav-item.active .nav-icon{color:var(--color-primary)}.nav-label{min-width:0;overflow-wrap:anywhere}
   .main-content{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;background:var(--color-content)}
   .topbar{min-height:74px;flex-shrink:0;display:grid;grid-template-columns:minmax(125px,.7fr) minmax(260px,1.3fr) auto;align-items:center;gap:16px;padding:14px 28px;background:var(--color-surface);border-bottom:1px solid var(--color-border)}
+  .topbar.home-topbar{grid-template-columns:minmax(0,1fr) auto}
   .topbar-title{display:flex;gap:10px;align-items:center;min-width:0}.topbar-copy{display:grid;gap:3px;min-width:0}.topbar-title strong{font-size:17px;font-weight:650}.topbar-title span{font-size:12px;color:var(--color-muted);line-height:1.5}.topbar-title .navigation-back{flex:0 0 32px;width:32px;height:32px;min-width:32px;min-height:32px;padding:0}
   .capture-wrap{display:flex;align-items:center;gap:9px;min-width:0;min-height:40px;padding:0 5px 0 12px;border:1px solid var(--color-border);border-radius:8px;color:var(--color-muted);background:var(--color-surface-muted)}
   .capture-wrap :global(.quick-capture){min-width:0;height:38px;padding-left:0;border:0;background:transparent;box-shadow:none;font-size:13px}

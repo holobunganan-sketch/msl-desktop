@@ -69,9 +69,8 @@ fn walk(slots: &mut Vec<Slot>, column: &str, pointer: &str, value: &Value) {
             for (key, item) in object {
                 let p = format!("{pointer}/{}", escape(key));
                 let table = match key.as_str() {
-                    "work_id" | "project_id" | "suggested_work_id" | "preferred_work_id" => {
-                        Some("works")
-                    }
+                    "work_id" | "project_id" | "suggested_work_id" | "preferred_work_id"
+                    | "clinical_work_id" => Some("works"),
                     "expert_id" => Some("kol_experts"),
                     "inbox_id" => Some("inbox_items"),
                     "material_id" => Some("kol_materials"),

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import {aiText} from '$lib/services/aiText';
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import AppButton from "$lib/components/ui/AppButton.svelte";
   import Icon from "$lib/components/ui/Icon.svelte";
@@ -23,7 +24,7 @@
   onDestroy(()=>{translationDraft.source=source;translationDraft.result=result;translationDraft.style=style;});
   $effect(()=>{const job=$aiJobs.find(j=>j.command==="translate_text");if(job && job.args.input===source && job.args.style===style){if(job.status==="completed" && typeof job.result==="string")result=job.result;else if(job.error)error=job.error;}});
   function clear() { source = ""; result = ""; error = ""; }
-  async function copy() { try { await navigator.clipboard.writeText(result); } catch { error = tt("translation.copyFailed"); } }
+  async function copy() { try { await navigator.clipboard.writeText(aiText(result)); } catch { error = tt("translation.copyFailed"); } }
 </script>
 
 <div class="translation-page">

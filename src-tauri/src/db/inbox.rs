@@ -87,12 +87,26 @@ impl<'a> InboxRepo<'a> {
         converted_to_type: &str,
         converted_to_id: i64,
     ) -> DbResult<()> {
+        let tx = if self.conn.is_autocommit() {
+            Some(super::write_transaction(self.conn)?)
+        } else {
+            None
+        };
         let affected = self.conn.execute(
             "UPDATE inbox_items SET processed_at = ?1, converted_to_type = ?2, converted_to_id = ?3 WHERE id = ?4",
             params![now_unix(), converted_to_type, converted_to_id, id],
         )?;
         if affected == 0 {
             return Err(DbError::NotFound("inbox_item".into()));
+        }
+        super::project_relations::inherit_from_inbox(
+            self.conn,
+            id,
+            converted_to_type,
+            converted_to_id,
+        )?;
+        if let Some(tx) = tx {
+            tx.commit()?;
         }
         Ok(())
     }

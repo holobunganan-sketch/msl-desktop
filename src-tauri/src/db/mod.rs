@@ -16,6 +16,7 @@ pub mod jobs;
 pub mod knowledge;
 pub mod kol;
 pub mod memory;
+pub mod project_relations;
 pub mod provider;
 pub mod qa;
 pub mod recovery;
@@ -225,7 +226,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
 
         // 业务表包含 Provider catalog、文档智能、AI secretary 与周期报告。
         let table_count: i64 = db
@@ -236,7 +237,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(table_count, 68); // Includes durable manual completion receipts.
+        assert_eq!(table_count, 69); // Includes clinical project associations.
 
         // WAL 已启用
         let journal: String = db
@@ -303,13 +304,13 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         // Each registered migration is recorded exactly once.
         let count: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 24);
+        assert_eq!(count, 25);
     }
 
     #[test]
@@ -326,7 +327,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 24);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 25);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM provider_settings", [], |r| r
                 .get::<_, i64>(0))
@@ -383,7 +384,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 24);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 25);
         assert_eq!(
             conn.query_row(
                 "SELECT template_kind FROM provider_settings WHERE id = 1",
@@ -465,7 +466,7 @@ mod tests {
              INSERT INTO works (title, status, created_at, updated_at) VALUES ('work', 'active', 0, 0);",
         ).unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 24);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 25);
         for table in ["work_workspace_links", "document_index", "cache_entries"] {
             assert_eq!(
                 conn.query_row(
@@ -512,7 +513,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0); INSERT INTO daily_briefs (brief_date,generated_at,content) VALUES ('2026-08-14',0,'kept brief');").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 24);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 25);
         let schedule: (i64, i64, i64, i64) = conn.query_row("SELECT enabled, interval_minutes, daily_hour, daily_minute FROM analysis_schedule_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(schedule, (1, 180, 6, 0));
         assert_eq!(
@@ -542,7 +543,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            24
+            25
         );
     }
 
@@ -567,7 +568,7 @@ mod tests {
             .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0),(5,'ai_secretary',0); INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES ('cache_limit_bytes','123',1);").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 24);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 25);
         assert_eq!(
             conn.query_row(
                 "SELECT value FROM app_settings WHERE key='cache_limit_bytes'",
@@ -608,7 +609,7 @@ mod tests {
 
         migrations::run(&mut conn).unwrap();
 
-        assert_eq!(migrations::current_version(&conn).unwrap(), 24);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 25);
         assert_eq!(
             conn.query_row(
                 "SELECT kind || '|' || suggested_kind FROM ai_proposals WHERE dedupe_key='kept-proposal'",
@@ -757,7 +758,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            24
+            25
         );
         let violations: i64 = conn
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
@@ -810,7 +811,7 @@ mod tests {
         });
         drop(before);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 24);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 25);
         let counts_after = [
             "works",
             "tasks",
@@ -837,7 +838,7 @@ mod tests {
             .is_empty());
         drop(db);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 24);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 25);
         for table in ["reports", "report_schedule_state"] {
             assert_eq!(
                 db.conn()

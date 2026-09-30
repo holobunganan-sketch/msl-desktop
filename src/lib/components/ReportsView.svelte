@@ -1,4 +1,5 @@
 <script lang="ts">
+  import {aiText} from '$lib/services/aiText';
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { onMount } from "svelte";
   import {reportBlocks} from "$lib/services/reportReading";
@@ -147,11 +148,11 @@
                     {:else}<span>{currentLocale==='en-US'?'Independent work':'独立事项'}</span>{/if}
                     <span>{horizonLabel(item)}</span>
                   </div>
-                  <strong>{item.headline}</strong>
+                  <strong>{aiText(item.headline)}</strong>
                   {#if item.certainty!=='observed'}<span class="certainty">{item.certainty==='inferred'?(currentLocale==='en-US'?'Inference · verify':'推测 · 待核实'):(currentLocale==='en-US'?'Insufficient evidence':'资料不足')}</span>{/if}
-                  <p>{item.change}</p>
-                  {#if item.impact}<p><span class="detail-label">{currentLocale==='en-US'?'Impact':'工作影响'}</span>{item.impact}</p>{/if}
-                  {#if item.next_action}<p><span class="detail-label">{currentLocale==='en-US'?'Next step':'下一步'}</span>{item.next_action}</p>{/if}
+                  <p>{aiText(item.change)}</p>
+                  {#if item.impact}<p><span class="detail-label">{currentLocale==='en-US'?'Impact':'工作影响'}</span>{aiText(item.impact)}</p>{/if}
+                  {#if item.next_action}<p><span class="detail-label">{currentLocale==='en-US'?'Next step':'下一步'}</span>{aiText(item.next_action)}</p>{/if}
                   <div class="entry-actions">
                     {#if item.sources.length}
                       <details class="report-sources" data-testid="report-sources"><summary>{currentLocale==='en-US'?'View evidence':'查看依据'} · {item.sources.length}</summary>

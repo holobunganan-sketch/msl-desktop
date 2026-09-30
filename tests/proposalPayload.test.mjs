@@ -1,7 +1,10 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { decisionPayload } from '../src/lib/services/proposalPayload.ts';
-const review=await import('../src/lib/services/proposalPayload.ts');
+import { createServer } from 'vite';
+const server=await createServer({server:{middlewareMode:true,hmr:false},logLevel:'error'});
+after(()=>server.close());
+const review=await server.ssrLoadModule('/src/lib/services/proposalPayload.ts');
+const {decisionPayload}=review;
 const draft=(kind,payload)=>({kind,title:'Synthetic',payload_json:JSON.stringify(payload),reason:'Evidence'});
 test('home confirmation preserves partial updates and completion states',()=>{
   assert.deepEqual(decisionPayload(draft('task',{status:'done'}),'task'),{title:'Synthetic',status:'done'});

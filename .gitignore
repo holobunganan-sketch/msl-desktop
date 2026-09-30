@@ -47,3 +47,10 @@ last-restore.json
 .backup-*/
 .restore-*/
 .retention-*/
+
+# Generated website delivery and installers stay outside source control.
+/website-dist/
+/website/downloads/
+/website/release/
+/website/**/*.exe
+/website/**/*.msi

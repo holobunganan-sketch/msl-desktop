@@ -28,6 +28,23 @@ pub fn validate_payload_fields(kind: &str, payload: &serde_json::Value) -> Resul
     if !payload.is_object() {
         return Err("建议内容必须是对象".into());
     }
+    if let Some(category) = payload.get("category") {
+        if kind != "work"
+            || (!category.is_null()
+                && !category
+                    .as_str()
+                    .is_some_and(|v| matches!(v, "clinical" | "non_clinical")))
+        {
+            return Err("分类只适用于项目，值应为临床研究或非临床研究".into());
+        }
+    }
+    if let Some(clinical) = payload.get("clinical_work_id") {
+        if !matches!(kind, "task" | "waiting" | "calendar" | "inbox")
+            || (!clinical.is_null() && !clinical.as_i64().is_some_and(|id| id > 0))
+        {
+            return Err("临床研究关联应选择有效的项目".into());
+        }
+    }
     if let Some(basis) = payload.get("time_basis").filter(|v| !v.is_null()) {
         if !basis
             .as_str()

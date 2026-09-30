@@ -17,7 +17,7 @@ const server=http.createServer(async(req,res)=>{
   const input=JSON.parse(body.messages.find(m=>m.role==='user').content);
   if(input.date&&input.tasks_open&&!input.round_tickets){
    briefRequests++;
-   const bullets=Array.from({length:11},(_,i)=>`• 合成简报第 ${i+1} 条：仅供布局测试。`).join('\n');
+   const bullets=['• 项目动态摘要**','**高优先级行动项**','- 核对 **演示项目** 的资料。',...Array.from({length:8},(_,i)=>`• 合成简报第 ${i+4} 条：仅供布局测试。`)].join('\n');
    res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{message:{role:'assistant',content:bullets},finish_reason:'stop'}]}));
    return;
   }
@@ -32,7 +32,10 @@ const server=http.createServer(async(req,res)=>{
   const work=input.focused_work?.work?.id??input.round_tickets.find(t=>t.scope.startsWith('work:'))?.scope.split(':')[1];
   if(currentProject)assert.equal(Number(work),currentProject,'Only eligible project sent to model');
   const refs=input.focused_inbox?[input.source_refs.find(r=>r.source_type==='inbox'&&r.entity_id===input.focused_inbox.id)]:[];
-  const output={summary:'已核对演示项目进展。',proposals:empty?[]:[{kind:'task',operation:'create',work_id:Number(work),title:`演示安排 · 第 ${n} 轮`,payload:{notes:'合成证据，无真实工作内容'},reason:'根据本轮合成信息整理',source_refs:refs,confidence:.9}]};
+  const directionIndex=input.user_directions.findIndex(direction=>typeof direction.content==='string'&&direction.content.length>0);
+  const quote=directionIndex>=0?input.user_directions[directionIndex].content.slice(0,200):null;
+  const payload=quote?{notes:quote,field_evidence:{notes:{snapshot_path:`/user_directions/${directionIndex}/content`,quote,basis:'explicit'}}}:{};
+  const output={summary:'已核对演示项目进展。',proposals:empty?[]:[{kind:'task',operation:'create',work_id:Number(work),title:`演示安排 · 第 ${n} 轮`,payload,reason:'根据本轮合成信息整理',source_refs:refs,confidence:.9}]};
   await new Promise(r=>setTimeout(r,delay));
   res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({choices:[{message:{role:'assistant',content:JSON.stringify(output)},finish_reason:'stop'}]}));
  }catch(e){res.writeHead(500);res.end(JSON.stringify({error:'Synthetic mock contract failure'}));console.error(e.message);}
@@ -58,6 +61,9 @@ try{
   const saved=JSON.parse(fs.readFileSync(path.join(artifacts,'persistence.json'),'utf8'));
   await route({view:'today'});
   await page.getByTestId('dashboard-brief-hero').waitFor();
+  await page.locator('.brief-details > summary').click();
+  await page.getByTestId('dashboard-brief-highlights').locator('li').first().waitFor();
+  assert.deepEqual(await page.getByTestId('dashboard-brief-highlights').locator('li').allTextContents(),['项目动态摘要','高优先级行动项','核对 演示项目 的资料。']);
   await page.screenshot({path:path.join(artifacts,'today-default.png')});
   assert.deepEqual(await call('list_works',{status:null}),saved.works);
   assert.deepEqual(await call('list_ai_proposals',{status:null,limit:200}),saved.proposals);
@@ -86,6 +92,8 @@ try{
   assert.equal(await page.getByTestId('dashboard-brief-highlights').locator('li').count(),3);
   await page.locator('.brief-full > summary').click();
   assert.equal(await page.getByTestId('dashboard-brief-summary').locator('li').count(),11);
+  assert.deepEqual(await page.getByTestId('dashboard-brief-highlights').locator('li').allTextContents(),['项目动态摘要','高优先级行动项','核对 演示项目 的资料。']);
+  assert.doesNotMatch(await page.getByTestId('dashboard-brief-summary').innerText(),/\*\*/);
   for(const [width,height] of [[1440,900],[1024,768]]){
    const cdp=await page.context().newCDPSession(page);await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
    const geometry=await page.getByTestId('dashboard-brief-hero').evaluate(el=>({client:el.clientWidth,scroll:el.scrollWidth,visible:[...el.querySelectorAll('.today-focus-row')].every(row=>{const r=row.getBoundingClientRect();return r.right<=innerWidth+1&&r.left>=0})}));

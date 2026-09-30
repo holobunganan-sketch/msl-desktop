@@ -517,6 +517,17 @@ fn table_rows(conn: &Connection, spec: TableSpec) -> SyncResult<Vec<(String, Val
             let ids:String=conn.query_row("SELECT json_group_array(work_id) FROM (SELECT work_id FROM kol_projects WHERE expert_id=?1 ORDER BY work_id)",[value.get("id").and_then(Value::as_i64)],|r|r.get(0)).map_err(|e|SyncError::new("SYNC_DB_READ",e.to_string()))?;
             value.insert("linked_projects_json".into(), Value::String(ids));
         }
+        // The relationship travels as a field of its original item, so two
+        // devices editing the same link merge/conflict on one stable item UID.
+        if let Some(kind) = crate::db::project_relations::kind_for_table(spec.name) {
+            let link =
+                crate::db::project_relations::get(conn, kind, value["id"].as_i64().unwrap_or(0))
+                    .map_err(|e| SyncError::new("SYNC_DB_READ", e.to_string()))?;
+            value.insert(
+                "clinical_work_id".into(),
+                serde_json::json!(link.and_then(|r| r.clinical_work_id)),
+            );
+        }
         let key = match value.get(spec.key) {
             Some(Value::Number(number)) => number.to_string(),
             Some(Value::String(text)) if !text.is_empty() => text.clone(),
@@ -788,6 +799,14 @@ pub(crate) fn install_capture(conn: &Connection) -> crate::db::DbResult<()> {
     ] {
         conn.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS sync_capture_kol_projects_{event}_{prefix} AFTER {event} ON kol_projects WHEN (SELECT dataset_id<>'' AND suppress_capture=0 FROM sync_local_state WHERE id=1) BEGIN UPDATE sync_local_state SET next_seq=next_seq+1 WHERE id=1; INSERT INTO sync_pending_edits(seq,table_name,row_key,before_json,after_json,occurred_at_ms) SELECT next_seq,'kol_experts',CAST({prefix}.expert_id AS TEXT),NULL,json_object('linked_projects_json',(SELECT json_group_array(work_id) FROM (SELECT work_id FROM kol_projects WHERE expert_id={prefix}.expert_id ORDER BY work_id))),CAST(unixepoch('subsec')*1000 AS INTEGER) FROM sync_local_state WHERE id=1; END;"))?;
     }
+    for (event, prefix) in [("INSERT", "NEW"), ("UPDATE", "NEW"), ("DELETE", "OLD")] {
+        let clinical = if event == "DELETE" {
+            "NULL".to_owned()
+        } else {
+            format!("{prefix}.clinical_work_id")
+        };
+        conn.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS sync_capture_project_relations_{event} AFTER {event} ON project_relations WHEN (SELECT dataset_id<>'' AND suppress_capture=0 FROM sync_local_state WHERE id=1) BEGIN UPDATE sync_local_state SET next_seq=next_seq+1 WHERE id=1; INSERT INTO sync_pending_edits(seq,table_name,row_key,before_json,after_json,occurred_at_ms) SELECT next_seq,CASE {prefix}.entity_kind WHEN 'task' THEN 'tasks' WHEN 'waiting' THEN 'waiting_items' WHEN 'calendar' THEN 'calendar_events' WHEN 'inbox' THEN 'inbox_items' END,CAST({prefix}.entity_id AS TEXT),NULL,json_object('clinical_work_id',{clinical}),CAST(unixepoch('subsec')*1000 AS INTEGER) FROM sync_local_state WHERE id=1; END;"))?;
+    }
     Ok(())
 }
 
@@ -1038,6 +1057,30 @@ fn prune_owned_states(
 }
 
 fn apply_row(conn: &Connection, spec: TableSpec, row: &Value) -> SyncResult<()> {
+    if let Some(kind) = crate::db::project_relations::kind_for_table(spec.name) {
+        if let Some(clinical) = row.get("clinical_work_id") {
+            let mut base = row.clone();
+            base.as_object_mut().unwrap().remove("clinical_work_id");
+            apply_row(conn, spec, &base)?;
+            let id = base["id"]
+                .as_i64()
+                .ok_or_else(|| SyncError::new("SYNC_ROW_KEY", "事项编号无效"))?;
+            if !clinical.is_null() && !clinical.is_i64() {
+                return Err(SyncError::new(
+                    "SYNC_REFERENCE_INVALID",
+                    "临床研究关联格式无效",
+                ));
+            }
+            let target = clinical.as_i64();
+            let current = crate::db::project_relations::get(conn, kind, id)
+                .map_err(|e| SyncError::new("SYNC_DB_READ", e.to_string()))?;
+            if current.as_ref().and_then(|v| v.clinical_work_id) != target {
+                // Historical links to archived projects remain valid on another device.
+                conn.execute("INSERT INTO project_relations(entity_kind,entity_id,clinical_work_id,created_at,updated_at) VALUES(?1,?2,?3,strftime('%s','now'),strftime('%s','now')) ON CONFLICT(entity_kind,entity_id) DO UPDATE SET clinical_work_id=excluded.clinical_work_id,updated_at=MAX(project_relations.updated_at+1,excluded.updated_at)",params![kind,id,target]).map_err(|e|SyncError::new("SYNC_DB_WRITE",e.to_string()))?;
+            }
+            return Ok(());
+        }
+    }
     if spec.name == "kol_experts" && row.get("linked_projects_json").is_some() {
         let ids: Vec<i64> = serde_json::from_str(
             row["linked_projects_json"]

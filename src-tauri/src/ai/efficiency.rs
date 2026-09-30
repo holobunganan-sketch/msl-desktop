@@ -2,7 +2,7 @@
 use crate::ai::analysis_snapshot::AnalysisSnapshot;
 use serde_json::Value;
 
-pub const INPUT_CONTRACT: &str = "Input uses compact JSON. An omitted optional field means null/unknown, including work_id=null for independent items. All non-null values are retained. This rule applies to INPUT facts only; preserve explicit null in OUTPUT patches that intentionally clear a field.";
+pub const INPUT_CONTRACT: &str = "Input uses compact JSON. An omitted optional field means null/unknown, including work_id=null for independent items. All non-null values are retained. In model-generated OUTPUT, unknown fields must be omitted and null never authorizes clearing an existing value. Only the user's subsequent editor may explicitly clear a field.";
 pub fn compact_json(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(

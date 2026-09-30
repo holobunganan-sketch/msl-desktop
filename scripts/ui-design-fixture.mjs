@@ -7,6 +7,8 @@ const works = empty ? [] : [
   {id:2,title:'演示 · 区域学术沟通计划',status:'active',summary:'围绕专家的证据需求，安排资料准备与持续跟进。',...base,archived_at:null},
   {id:3,title:'演示 · 真实世界研究讨论',status:'paused',summary:'等待协作方核对数据可用性。',...base,archived_at:null}
 ];
+for(const work of works){work.revision=1;work.category=work.id===2?'non_clinical':work.id===3?'clinical':null;}
+const clinicalLinks=[];
 const tasks = empty ? [] : [
   {id:1,work_id:1,title:'整理随访中断的常见障碍',status:'next',priority:'high',due_at:now+7200,scheduled_start:null,scheduled_end:null,notes:'演示：先汇总交流原话，再确认待核实的问题。',...base,completed_at:null},
   {id:2,work_id:2,title:'准备下次专家交流的证据资料',status:'next',priority:'normal',due_at:now+86400,scheduled_start:null,scheduled_end:null,notes:'演示：明确研究人群与终点的适用范围。',...base,completed_at:null},
@@ -151,7 +153,16 @@ async function dispatch(name,args={}) {
   if(name==='list_tasks')return scoped(tasks,args);
   if(name==='list_waiting_items'||name==='list_waiting')return scoped(waiting,args);
   if(name==='list_works')return works.filter(w=>args.status==null||w.status===args.status);
-  if(name==='get_work_detail'){const work=find(works,args.id),point=work.id===1?resume:null;return {work,latest_resume:point,resume_history:point?[point]:[],files:[],tasks:scoped(tasks,{workId:work.id}),waiting:scoped(waiting,{workId:work.id}),calendar:scoped(calendar,{workId:work.id}),recent_activity:[]};}
+  if(name==='set_project_category'){const work=find(works,args.workId);if(work.revision!==args.expectedRevision)throw Error('项目已更新，请刷新');work.category=args.category??null;work.revision++;return clone(work);}
+  if(name==='get_clinical_link')return clone(clinicalLinks.find(r=>r.entity_kind===args.entityKind&&r.entity_id===args.entityId)??null);
+  if(name==='set_clinical_link'){
+    let row=clinicalLinks.find(r=>r.entity_kind===args.entityKind&&r.entity_id===args.entityId);
+    if((row?.revision??0)!==args.expectedRevision)throw Error('临床研究关联已更新，请刷新');
+    if(args.clinicalWorkId!=null&&!works.some(w=>w.id===args.clinicalWorkId&&w.category==='clinical'&&w.status!=='archived'))throw Error('请选择未归档的临床研究项目');
+    if(!row){row={id:clinicalLinks.length+1,entity_kind:args.entityKind,entity_id:args.entityId,clinical_work_id:null,revision:0,...base};clinicalLinks.push(row);}
+    row.clinical_work_id=args.clinicalWorkId??null;row.revision++;return clone(row);
+  }
+  if(name==='get_work_detail'){const work=find(works,args.id),point=work.id===1?resume:null;const linked=(list,kind)=>list.filter(item=>item.work_id===work.id||clinicalLinks.some(r=>r.entity_kind===kind&&r.entity_id===item.id&&r.clinical_work_id===work.id));return {work,latest_resume:point,resume_history:point?[point]:[],files:[],tasks:linked(tasks,'task'),waiting:linked(waiting,'waiting'),calendar:linked(calendar,'calendar'),recent_activity:[],clinical_links:clinicalLinks.filter(r=>r.clinical_work_id===work.id),linked_inbox:linked(inbox,'inbox').filter(item=>!item.processed_at)};}
   if(name==='get_latest_resume_point')return !empty&&(args.workId==null||args.workId===1)?resume:null;
   if(name==='list_resume_points')return !empty&&(args.workId==null||args.workId===1)?[resume]:[];
   if(['list_latest_analysis_proposals','list_ai_proposals','list_recent_ai_proposals'].includes(name))return scoped(proposals,args).filter(p=>args.runId==null||p.analysis_run_id===args.runId);

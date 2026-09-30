@@ -60,6 +60,52 @@ fn mirror(from: &Path, to: &Path) {
 }
 
 #[test]
+fn clinical_links_sync_with_mapped_ids_and_preserve_item_ownership() {
+    let p = Pair::new();
+    p.b.conn().execute("INSERT INTO works(id,title,status,created_at,updated_at) VALUES(1,'Unrelated local','active',1,1)",[]).unwrap();
+    p.a.conn().execute_batch("INSERT INTO works(id,title,status,category,created_at,updated_at) VALUES(1,'Education','active','non_clinical',1,1),(2,'Study','active','clinical',1,1); INSERT INTO tasks(id,work_id,title,created_at,updated_at) VALUES(1,1,'Visit',1,1); INSERT INTO project_relations(entity_kind,entity_id,clinical_work_id,created_at,updated_at) VALUES('task',1,2,1,1)").unwrap();
+    p.send_a();
+    let (owner,target):(String,String)=p.b.conn().query_row("SELECT o.title,c.title FROM tasks t JOIN works o ON o.id=t.work_id JOIN project_relations r ON r.entity_kind='task' AND r.entity_id=t.id JOIN works c ON c.id=r.clinical_work_id WHERE t.title='Visit'",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!((owner.as_str(), target.as_str()), ("Education", "Study"));
+    assert_eq!(
+        p.b.conn()
+            .query_row("SELECT COUNT(*) FROM tasks WHERE title='Visit'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1
+    );
+    let study: i64 =
+        p.b.conn()
+            .query_row("SELECT id FROM works WHERE title='Study'", [], |r| r.get(0))
+            .unwrap();
+    p.b.conn()
+        .execute("UPDATE works SET status='archived' WHERE id=?1", [study])
+        .unwrap();
+    p.send_b();
+    assert!(crate::db::project_relations::get(p.a.conn(), "task", 1)
+        .unwrap()
+        .unwrap()
+        .clinical_work_id
+        .is_some());
+    let link = crate::db::project_relations::get(p.a.conn(), "task", 1)
+        .unwrap()
+        .unwrap();
+    crate::db::project_relations::set(p.a.conn(), "task", 1, None, link.revision).unwrap();
+    p.send_a();
+    assert!(p
+        .b
+        .conn()
+        .query_row(
+            "SELECT clinical_work_id FROM project_relations WHERE entity_kind='task'",
+            [],
+            |r| r.get::<_, Option<i64>>(0)
+        )
+        .unwrap()
+        .is_none());
+}
+
+#[test]
 fn report_and_expert_scope_sync_maps_business_ids_but_never_local_documents() {
     let p = Pair::new();
     p.b.conn().execute_batch("INSERT INTO tasks(id,title,created_at,updated_at) VALUES(1,'Receiver unrelated',1,1); INSERT INTO kol_experts(id,name,institution,created_at,updated_at) VALUES(1,'Receiver expert','B',1,1);").unwrap();

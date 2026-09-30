@@ -1,4 +1,5 @@
 <script lang="ts">
+  import {aiText} from '$lib/services/aiText';
   import { command } from "$lib/services/api";
   import { locale } from "$lib/i18n";
   import { dataRevision } from "$lib/stores/dataRevision";
@@ -34,7 +35,7 @@
       {#if entry}
         <div class="coverage">v{entry.version} · {entry.ready_count} / {entry.document_count} {en?"readable documents":"文件可读"} · {new Date(entry.generated_at*1000).toLocaleString($locale)}</div>
         {#if entry.unavailable_folders}<p class="cognition-error">{en?"Some folders are unavailable; this entry includes historical evidence.":"部分目录暂不可访问，入口含历史索引，请留意资料时效。"}</p>{/if}
-        <pre data-testid="cognition-markdown">{entry.markdown}</pre>
+        <pre data-testid="cognition-markdown">{aiText(entry.markdown)}</pre>
       {/if}
     </div>
   {/if}

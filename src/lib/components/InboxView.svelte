@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ClinicalProjectLink from './ClinicalProjectLink.svelte';
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -251,6 +252,7 @@
           </span>
         {/if}
         <button class="delete-record" data-testid={`inbox-delete-${item.id}`} disabled={removeBusy} onclick={()=>requestRemove(item)}>{tt("common.delete")}</button>
+        {#if !item.processed_at}<ClinicalProjectLink entityKind="inbox" entityId={item.id}/>{/if}
       </li>
     {/each}
   </ul>

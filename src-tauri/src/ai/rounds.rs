@@ -341,6 +341,11 @@ fn fingerprint_with_expert_feedback(
                     continue;
                 }
                 let v: rusqlite::types::Value = r.get(i)?;
+                // Adding an unclassified category during upgrade is not user
+                // progress. Preserve the pre-classification content fingerprint.
+                if c == "category" && matches!(v, rusqlite::types::Value::Null) {
+                    continue;
+                }
                 let value = match v {
                     rusqlite::types::Value::Null => Value::Null,
                     rusqlite::types::Value::Integer(n) => json!(n),
@@ -406,6 +411,62 @@ fn fingerprint_with_expert_feedback(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     data.push(json!({"closed_decisions":decisions}));
+    // Cross-project associations are references to the original record. A real
+    // change to that record contributes to both projects' next eligible round.
+    // Empty links add no bytes, preserving all pre-migration fingerprints.
+    let mut linked_records = Vec::new();
+    for link in crate::db::project_relations::all(conn)? {
+        if link.clinical_work_id.is_none() {
+            continue;
+        }
+        let belongs =
+            entity_scope(conn, &link.entity_kind, link.entity_id)?.as_deref() == Some(scope);
+        if !belongs && (work.is_none() || link.clinical_work_id != work) {
+            continue;
+        }
+        let table = crate::db::project_relations::table_for_kind(&link.entity_kind)?;
+        let mut stmt = conn.prepare(&format!("SELECT * FROM {table} WHERE id=?1"))?;
+        let columns = stmt
+            .column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let record = stmt
+            .query_row([link.entity_id], |row| {
+                let mut value = serde_json::Map::new();
+                for (index, column) in columns.iter().enumerate() {
+                    if matches!(
+                        column.as_str(),
+                        "created_at"
+                            | "updated_at"
+                            | "revision"
+                            | "processed_at"
+                            | "converted_to_id"
+                            | "converted_to_type"
+                    ) {
+                        continue;
+                    }
+                    let field: rusqlite::types::Value = row.get(index)?;
+                    value.insert(
+                        column.clone(),
+                        match field {
+                            rusqlite::types::Value::Integer(v) => json!(v),
+                            rusqlite::types::Value::Real(v) => json!(v),
+                            rusqlite::types::Value::Text(v) => json!(v),
+                            _ => Value::Null,
+                        },
+                    );
+                }
+                Ok(Value::Object(value))
+            })
+            .optional()?;
+        if let Some(record) = record {
+            linked_records.push(json!({"kind":link.entity_kind,"entity_id":link.entity_id,"clinical_work_id":link.clinical_work_id,"record":record}));
+        }
+    }
+    if !linked_records.is_empty() {
+        data.push(json!({"clinical_linked_records":linked_records}));
+    }
     Ok(crate::cognition::digest(&json!(data).to_string()))
 }
 fn ensure(conn: &Connection, scope: &str) -> DbResult<()> {
@@ -714,6 +775,16 @@ pub fn restrict(
         .iter()
         .map(|t| t.scope.clone())
         .collect::<BTreeSet<_>>();
+    for project in &mut snapshot.project_catalog {
+        if !project["id"]
+            .as_i64()
+            .is_some_and(|id| allowed.contains(&format!("work:{id}")))
+        {
+            if let Some(value) = project.as_object_mut() {
+                value.remove("clinical_context");
+            }
+        }
+    }
     let workspace_allowed = |ws: i64| -> DbResult<bool> {
         if allowed.contains(&format!("workspace:{ws}")) {
             return Ok(true);
@@ -855,6 +926,117 @@ pub fn restrict(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accuracy_clinical_link_progress_releases_both_related_project_contexts() {
+        let db = Database::open_in_memory().unwrap();
+        let clinical = project(&db);
+        let w = crate::db::work::WorkRepo::new(db.conn())
+            .get(clinical)
+            .unwrap()
+            .unwrap();
+        crate::db::project_relations::set_category(
+            db.conn(),
+            clinical,
+            Some("clinical"),
+            w.revision,
+        )
+        .unwrap();
+        let owner = project(&db);
+        let task = crate::db::task::TaskRepo::new(db.conn())
+            .insert(Some(owner), "Expert follow-up", "normal", None, None)
+            .unwrap();
+        let scope = format!("work:{clinical}");
+        let r = run(&db);
+        let tickets = reserve(&db, r, &[scope.clone()]).unwrap();
+        remember(db.conn(), r, &tickets).unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "waiting_progress");
+        crate::db::project_relations::set(db.conn(), "task", task.id, Some(clinical), 0).unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "ready");
+        let r = run(&db);
+        let tickets = reserve(&db, r, &[scope.clone()]).unwrap();
+        remember(db.conn(), r, &tickets).unwrap();
+        crate::db::task::TaskRepo::new(db.conn())
+            .complete(task.id)
+            .unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "ready");
+    }
+    #[test]
+    fn accuracy_nullable_category_upgrade_does_not_reopen_unchanged_project() {
+        let db = Database::open_in_memory().unwrap();
+        let w = project(&db);
+        let scope = format!("work:{w}");
+        // Simulate the old business shape on the same synthetic database. This
+        // deliberately exercises fingerprint compatibility, not a stored hash.
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+            .unwrap();
+        let triggers = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        drop(stmt);
+        for trigger in triggers {
+            db.conn()
+                .execute_batch(&format!(
+                    "DROP TRIGGER \"{}\"",
+                    trigger.replace('"', "\"\"")
+                ))
+                .unwrap();
+        }
+        db.conn().execute_batch("DROP VIEW IF EXISTS invalid_project_relations; ALTER TABLE works DROP COLUMN category;").unwrap();
+        let old = fingerprint(db.conn(), &scope).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO secretary_rounds(scope,baseline) VALUES(?1,?2)",
+                params![scope, old],
+            )
+            .unwrap();
+        db.conn()
+            .execute_batch("ALTER TABLE works ADD COLUMN category TEXT;")
+            .unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "waiting_progress");
+        db.conn()
+            .execute("UPDATE works SET category='clinical' WHERE id=?1", [w])
+            .unwrap();
+        assert_eq!(status(&db, &scope).unwrap().state, "ready");
+    }
+    #[test]
+    fn accuracy_reviewed_inbox_without_new_advice_waits_for_new_user_input() {
+        let db = Database::open_in_memory().unwrap();
+        let i = crate::db::inbox::InboxRepo::new(db.conn())
+            .insert("Keep as background context")
+            .unwrap();
+        let scope = format!("inbox:{}", i.id);
+        let r = run(&db);
+        let tickets = reserve(&db, r, &[scope.clone()]).unwrap();
+        let snapshot = super::super::analysis_snapshot::build_for_round(
+            &db,
+            "global_analysis",
+            "2026-09-30",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+            &tickets,
+        )
+        .unwrap();
+        super::super::analysis::apply_output(
+            &db,
+            r,
+            &snapshot,
+            r#"{"summary":"No new action supported","proposals":[]}"#,
+        )
+        .unwrap();
+        assert!(
+            reserve(&db, run(&db), &[scope.clone()]).unwrap().is_empty(),
+            "Unchanged, already analysed notes must not repeatedly call the model"
+        );
+        db.conn().execute("UPDATE inbox_items SET content='User clarification: arrange a follow-up' WHERE id=?1",[i.id]).unwrap();
+        assert_eq!(reserve(&db, run(&db), &[scope]).unwrap().len(), 1);
+    }
     use super::*;
     #[test]
     fn shared_directory_evidence_does_not_attach_held_neighbor_to_owned_proposal() {
@@ -1400,14 +1582,14 @@ mod tests {
             .any(|v| v["reason_code"] == "not_now"));
     }
     #[test]
-    fn inbox_can_propose_association_to_held_project_and_empty_output_remains_actionable() {
+    fn inbox_can_propose_association_to_held_project_and_empty_output_waits() {
         let db = Database::open_in_memory().unwrap();
         let w = project(&db);
         opinion(&db, w, run(&db));
-        let i = crate::db::inbox::InboxRepo::new(db.conn())
-            .insert("New project material")
-            .unwrap();
         for empty in [true, false] {
+            let i = crate::db::inbox::InboxRepo::new(db.conn())
+                .insert("New project material")
+                .unwrap();
             let r = run(&db);
             let tickets = reserve(&db, r, &[format!("inbox:{}", i.id)]).unwrap();
             assert_eq!(tickets.len(), 1);
@@ -1438,6 +1620,9 @@ mod tests {
                 .unwrap(),
                 if empty { 0 } else { 1 }
             );
+            assert!(reserve(&db, run(&db), &[format!("inbox:{}", i.id)])
+                .unwrap()
+                .is_empty());
         }
         assert_eq!(
             status(&db, &format!("work:{w}")).unwrap().state,

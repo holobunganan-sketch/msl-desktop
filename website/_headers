@@ -1,0 +1,13 @@
+/*
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Content-Type-Options: nosniff
+
+/downloads/MSL-Desktop-Windows-x64.exe
+  Content-Disposition: attachment; filename="MSL-Desktop-Windows-x64.exe"
+  Cache-Control: no-cache
+
+/downloads/SHA256SUMS.txt
+  Cache-Control: no-cache
+
+/release/latest.json
+  Cache-Control: no-cache

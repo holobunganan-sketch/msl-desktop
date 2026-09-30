@@ -8,7 +8,7 @@
 >
 > 把 AI 嵌入工作，让信息随工作的推进自然整理、关联和复用。
 
-[官网](https://msl-desktop.pages.dev/) · [下载 Windows x64](https://msl-desktop.pages.dev/downloads/MSL-Desktop-Windows-x64.exe) · [GitHub Releases](https://github.com/holobunganan-sketch/msl-desktop/releases/latest) · [架构说明](docs/architecture.md)
+[官网](https://msl-desktop.pages.dev/) · [下载 Windows x64](https://msl-desktop.pages.dev/downloads/MSL-Desktop-Windows-x64.exe) · [更新记录](https://msl-desktop.pages.dev/#updates) · [GitHub Releases](https://github.com/holobunganan-sketch/msl-desktop/releases/latest) · [架构说明](docs/architecture.md)
 
 当前交付 Windows 桌面版；macOS 版本开发中。支持中文、英文、主题色与字号设置。安装后的名称为 **MSL Desktop**。
 
@@ -35,6 +35,8 @@
 ```
 
 项目承载长期工作；临时任务、等待和日程可以独立存在。输入一段原话即可开始，分类与时间安排由秘书提出，用户保留最终决定权。用户修改与审阅结果参与后续整理，已关闭事项不会因再次读取同一份资料自动重新开放。
+
+项目分为临床研究与非临床研究。非临床事项可以额外关联临床研究项目，保留原归属；同一条记录在相关项目中呈现，无需重复录入。旧项目保持待分类，由用户校准。
 
 ### 与 MSL 日常工作的对应
 
@@ -87,6 +89,7 @@
 - 提供 DeepSeek、OpenCode Go 模板及自定义连接。文件输入能力受所选接口和模型支持范围限制。
 - 任务规格约束 JSON 等输出结构、引用方式与可执行动作，工作主题和内容保持开放。
 - 事实、用户表达、推断和建议分开处理；资料不足时保留缺口，不能以生成内容补作证据。
+- 秘书准备字段时附带输入快照中的来源证据，未知值不强填；推算时间需要在审阅中单独确认，通用采纳操作无法绕过这一确认。
 - 文件正文与模型返回内容作为不可信材料处理，不执行其中的脚本、宏、任意 SQL 或操作指令。
 - 使用既有认知、读取缓存、相关片段与轮次状态减少重复处理。实际上下文长度、文件支持与费用由 Provider 决定。
 
@@ -143,6 +146,8 @@ src-tauri/
 tests/                  前端逻辑及组件回归
 scripts/                隔离验证、发布和安装检查
 docs/                   架构、数据边界与维护文档
+website/                官网静态源文件，不含安装包或个人数据
+release/history.json    按版本整理的更新记录及日期依据
 ```
 
 ## 开发与验证
@@ -194,7 +199,18 @@ src-tauri/target/release/bundle/nsis/MSL Desktop_<version>_x64-setup.exe
 
 发布时保持 `package.json`、`src-tauri/tauri.conf.json`、`Cargo.toml` 和 `Cargo.lock` 的包版本一致。`vX.Y.Z` 标签触发 Windows 构建工作流，发布固定文件名 `MSL-Desktop-Windows-x64.exe` 及 SHA-256 校验值，更新 `release/latest.json`。
 
-官网独立托管安装包。发布需要同步官网安装包、校验值和版本元数据，并核对 GitHub 与官网的下载摘要；普通源码提交不会自动替换公开安装包。
+官网独立托管安装包。`website/` 与应用源码一起维护，`release/history.json` 保存版本说明与日期依据。运行 `node scripts/build-website.mjs` 会生成 `website-dist/`，将更新记录、版本号、安装包与 SHA-256 校验值一并打包；缺少当前版本说明或版本不一致时阻止构建。生成目录不进入 Git。
+
+发布工作流会从 GitHub Release 取回已发布的安装包，用同一文件生成官网发布包。配置仓库 Secrets `CLOUDFLARE_API_TOKEN`（限定目标账户的 Pages 编辑权限）和 `CLOUDFLARE_ACCOUNT_ID` 后，工作流会自动发布到现有 Cloudflare Pages 项目 `msl-desktop`。缺少配置时保留网站构建产物并明确提示需要手动部署，不会将官网部署标记为成功。不要把密钥写入仓库。
+
+本机使用 Cloudflare 标准登录授权后，可执行：
+
+```powershell
+node scripts/build-website.mjs
+npx wrangler@4.141.0 pages deploy website-dist --project-name msl-desktop --branch main
+```
+
+部署后核对官网 `release/latest.json`、`downloads/SHA256SUMS.txt` 及实际下载文件，与 GitHub 发布资产逐一对应。普通源码提交不会替换公开安装包。
 
 `scripts/install-preserving-data.ps1` 用于已授权的本机升级：关闭旧进程后备份数据、执行保留数据更新、核对安装名称／版本／二进制并比较数据文件摘要。该脚本不会自动启动正式应用。
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ClinicalProjectLink from './ClinicalProjectLink.svelte';
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -53,7 +54,7 @@
   let showForm = $state(false);
   let editingId = $state<number | null>(null);
   let saving = $state(false);
-  let works = $state<Array<{ id: number; title: string; status: string }>>([]);
+  let works = $state<Array<{ id: number; title: string; status: string; category?:'clinical'|'non_clinical'|null }>>([]);
 
   function nowSec() {
     return Math.floor(Date.now() / 1000);
@@ -224,6 +225,7 @@
           <button onclick={() => openEdit(w)}>{tt("common.edit")}</button>
           <button onclick={() => remove(w)}>{tt("common.delete")}</button>
         </span>
+        {#if works.find(work=>work.id===w.work_id)?.category!=='clinical'}<ClinicalProjectLink entityKind="waiting" entityId={w.id}/>{/if}
       </li>
     {/each}
   </ul>
@@ -233,6 +235,7 @@
 </div>
 
 <style>
+  .w-list :global(.clinical-link){grid-column:1/-1;}
   h1 {
     font-size: 18px;
     margin: 0 0 12px;

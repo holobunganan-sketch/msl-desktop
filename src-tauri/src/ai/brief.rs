@@ -493,12 +493,14 @@ pub fn normalize_bullet_output(content: &str, locale: &str) -> String {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(|line| {
-            strip_internal_source_markers(
-                line.trim_start_matches(|ch: char| {
-                    matches!(ch, '•' | '-' | '*' | '·' | '▪' | '‣') || ch.is_whitespace()
-                })
-                .trim(),
-            )
+            // A Markdown bullet requires whitespace. Do not eat emphasis or signs.
+            let mut chars = line.chars();
+            let first = chars.next();
+            let rest = chars.as_str();
+            let is_bullet = matches!(first, Some('•' | '·' | '▪' | '‣'))
+                || (matches!(first, Some('-' | '*' | '+'))
+                    && rest.starts_with(char::is_whitespace));
+            strip_internal_source_markers(if is_bullet { rest.trim() } else { line })
         })
         .filter(|line| !line.is_empty())
         .map(|line| format!("• {line}"))
@@ -997,6 +999,17 @@ mod tests {
         assert_eq!(
             normalize_bullet_output("进展完成\n- 等待反馈\n• 明日推进", "zh-CN"),
             "• 进展完成\n• 等待反馈\n• 明日推进"
+        );
+    }
+
+    #[test]
+    fn brief_list_normalization_preserves_inline_formatting_and_signed_numbers() {
+        assert_eq!(
+            normalize_bullet_output(
+                "**项目动态摘要**\n- **后续行动**\n* 等待反馈\n-2 mg",
+                "zh-CN"
+            ),
+            "• **项目动态摘要**\n• **后续行动**\n• 等待反馈\n• -2 mg"
         );
     }
 

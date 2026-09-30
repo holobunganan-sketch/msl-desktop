@@ -14,6 +14,7 @@ const TABLES: &[&str] = &[
     "resume_points",
     "work_workspace_links",
     "work_file_refs",
+    "project_relations",
     "classification_memories",
     "ai_proposals",
     "ai_proposal_outcomes",
@@ -117,13 +118,55 @@ fn finish_capture(conn: &Connection) -> DbResult<Vec<Change>> {
         });
     }
     drop(stmt);
+    // Multiple writes (including revision triggers) form one user action. Store
+    // each row's original state and its actual final state, not intermediate
+    // trigger snapshots that would conflict with our own undo.
+    let mut consolidated: Vec<Change> = Vec::new();
+    for change in changes {
+        if let Some(existing) = consolidated
+            .iter_mut()
+            .find(|entry| entry.table == change.table && entry.key == change.key)
+        {
+            existing.after = change.after;
+        } else {
+            consolidated.push(change);
+        }
+    }
+    for change in &mut consolidated {
+        let cols = columns(conn, &change.table)?;
+        let keys = change
+            .key
+            .as_object()
+            .ok_or_else(|| DbError::Migration("撤销凭据缺少主键".into()))?;
+        let condition = keys
+            .keys()
+            .map(|key| format!("{}=?", quote(key)))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let current: Option<String> = conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM {} WHERE {condition}",
+                    json_row(&cols, "", false),
+                    quote(&change.table)
+                ),
+                rusqlite::params_from_iter(keys.values().map(sql_value)),
+                |row| row.get(0),
+            )
+            .optional()?;
+        change.after = current
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(|_| DbError::Migration("撤销最终状态解析失败".into()))?;
+    }
+    consolidated.retain(|change| change.before != change.after);
     for table in TABLES {
         for event in ["INSERT", "UPDATE", "DELETE"] {
             conn.execute_batch(&format!("DROP TRIGGER _msl_{table}_{event};"))?;
         }
     }
     conn.execute_batch("DROP TABLE _msl_capture;")?;
-    Ok(changes)
+    Ok(consolidated)
 }
 fn execute(db: &Database, items: &[(i64, i64, Option<Value>)]) -> DbResult<ConfirmationGroup> {
     if items.is_empty() || items.len() > 20 {
@@ -204,6 +247,46 @@ pub fn undo(db: &Database, receipt: &str) -> DbResult<()> {
         &json.ok_or_else(|| DbError::Migration("记录不存在或已经撤销".into()))?,
     )
     .map_err(|_| DbError::Migration("撤销凭据无效".into()))?;
+    // Check later external links BEFORE restoring categories. The category
+    // lifecycle trigger may unlink records, so checking after restoration would
+    // miss a user's later association and could silently remove it.
+    for change in &changes {
+        if change.table != "works" {
+            continue;
+        }
+        let removes_clinical = change.before.is_none()
+            || (change
+                .after
+                .as_ref()
+                .is_some_and(|row| row["category"] == "clinical")
+                && !change
+                    .before
+                    .as_ref()
+                    .is_some_and(|row| row["category"] == "clinical"));
+        if !removes_clinical {
+            continue;
+        }
+        let id = change.key["id"].as_i64().unwrap_or(0);
+        for relation in crate::db::project_relations::by_clinical_project(&tx, id)? {
+            let reversed_here = changes.iter().any(|other| {
+                other.table == "project_relations"
+                    && other.key["id"].as_i64() == Some(relation.id)
+                    && other
+                        .after
+                        .as_ref()
+                        .is_some_and(|row| row["clinical_work_id"].as_i64() == Some(id))
+                    && !other
+                        .before
+                        .as_ref()
+                        .is_some_and(|row| row["clinical_work_id"].as_i64() == Some(id))
+            });
+            if !reversed_here {
+                return Err(DbError::Migration(
+                    "项目已有后续临床研究关联，无法安全撤销。未修改任何记录。".into(),
+                ));
+            }
+        }
+    }
     for change in changes.into_iter().rev() {
         let cols = columns(&tx, &change.table)?;
         let keys = change
@@ -234,10 +317,25 @@ pub fn undo(db: &Database, receipt: &str) -> DbResult<()> {
                 |r| r.get(0),
             )
             .optional()?;
-        let current = current
+        let mut current = current
             .map(|s| serde_json::from_str::<Value>(&s))
             .transpose()
             .map_err(|_| DbError::Migration("当前记录解析失败".into()))?;
+        // A legacy receipt predates the nullable category column. Null added by
+        // the migration is not a user edit; any actual classification still
+        // participates in the exact conflict check (as does revision).
+        if change.table == "works"
+            && change
+                .after
+                .as_ref()
+                .is_some_and(|row| row.get("category").is_none())
+        {
+            if let Some(row) = current.as_mut().and_then(Value::as_object_mut) {
+                if row.get("category").is_some_and(Value::is_null) {
+                    row.remove("category");
+                }
+            }
+        }
         if current != change.after {
             return Err(DbError::Migration(
                 "这些事项已被后续修改，无法安全撤销。未覆盖任何新记录。".into(),
@@ -323,6 +421,131 @@ mod tests {
         ai::{AnalysisRunRepo, ProposalRepo},
         Database,
     };
+    #[test]
+    fn clinical_link_receipt_tracks_user_edits_and_restores_unlinked_state() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        let study = crate::db::work::WorkRepo::new(conn)
+            .insert("Synthetic study", "active")
+            .unwrap();
+        crate::db::project_relations::set_category(
+            conn,
+            study.id,
+            Some("clinical"),
+            study.revision,
+        )
+        .unwrap();
+        let task = crate::db::task::TaskRepo::new(conn)
+            .insert(None, "Synthetic followup", "normal", None, None)
+            .unwrap();
+        super::start_capture(conn).unwrap();
+        let link = crate::db::project_relations::set(conn, "task", task.id, Some(study.id), 0)
+            .unwrap()
+            .unwrap();
+        let changes = super::finish_capture(conn).unwrap();
+        assert!(
+            changes
+                .iter()
+                .any(|change| change.table == "project_relations"),
+            "The clinical link must be part of undo, not silently left behind"
+        );
+        conn.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES('clinical-link','[]',?1,1)",[serde_json::to_string(&changes).unwrap()]).unwrap();
+        super::undo(&db, "clinical-link").unwrap();
+        assert!(crate::db::project_relations::get(conn, "task", task.id)
+            .unwrap()
+            .is_none());
+        assert!(crate::db::task::TaskRepo::new(conn)
+            .get(task.id)
+            .unwrap()
+            .is_some());
+
+        super::start_capture(conn).unwrap();
+        crate::db::project_relations::set(conn, "task", task.id, Some(study.id), 0).unwrap();
+        let changed = super::finish_capture(conn).unwrap();
+        conn.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES('clinical-link-conflict','[]',?1,1)",[serde_json::to_string(&changed).unwrap()]).unwrap();
+        crate::db::project_relations::set(conn, "task", task.id, None, link.revision).unwrap();
+        assert!(super::undo(&db, "clinical-link-conflict").is_err());
+    }
+    #[test]
+    fn clinical_project_undo_preserves_later_external_links() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        super::start_capture(conn).unwrap();
+        let study = crate::db::work::WorkRepo::new(conn)
+            .insert("Synthetic clinical study", "active")
+            .unwrap();
+        crate::db::project_relations::set_category(
+            conn,
+            study.id,
+            Some("clinical"),
+            study.revision,
+        )
+        .unwrap();
+        let changes = super::finish_capture(conn).unwrap();
+        conn.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES('clinical-project','[]',?1,1)",[serde_json::to_string(&changes).unwrap()]).unwrap();
+        let task = crate::db::task::TaskRepo::new(conn)
+            .insert(None, "Later external followup", "normal", None, None)
+            .unwrap();
+        crate::db::project_relations::set(conn, "task", task.id, Some(study.id), 0).unwrap();
+        assert!(
+            super::undo(&db, "clinical-project").is_err(),
+            "Undo must not silently detach a user's later clinical link"
+        );
+        assert!(crate::db::work::WorkRepo::new(conn)
+            .get(study.id)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            crate::db::project_relations::get(conn, "task", task.id)
+                .unwrap()
+                .unwrap()
+                .clinical_work_id,
+            Some(study.id)
+        );
+        let relation = crate::db::project_relations::get(conn, "task", task.id)
+            .unwrap()
+            .unwrap();
+        crate::db::project_relations::set(conn, "task", task.id, None, relation.revision).unwrap();
+        super::undo(&db, "clinical-project").unwrap();
+        assert!(crate::db::work::WorkRepo::new(conn)
+            .get(study.id)
+            .unwrap()
+            .is_none());
+    }
+    #[test]
+    fn legacy_project_receipts_remain_undoable_after_nullable_category_migration() {
+        let db = Database::open_in_memory().unwrap();
+        let conn = db.conn();
+        super::start_capture(conn).unwrap();
+        let work = crate::db::work::WorkRepo::new(conn)
+            .insert("Synthetic legacy project", "active")
+            .unwrap();
+        let mut changes = super::finish_capture(conn).unwrap();
+        for change in &mut changes {
+            if change.table == "works" {
+                if let Some(row) = change
+                    .before
+                    .as_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    row.remove("category");
+                }
+                if let Some(row) = change
+                    .after
+                    .as_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    row.remove("category");
+                }
+            }
+        }
+        conn.execute("INSERT INTO proposal_receipts(id,proposal_ids_json,changes_json,created_at) VALUES('legacy-project','[]',?1,1)",[serde_json::to_string(&changes).unwrap()]).unwrap();
+        super::undo(&db, "legacy-project").unwrap();
+        assert!(crate::db::work::WorkRepo::new(conn)
+            .get(work.id)
+            .unwrap()
+            .is_none());
+    }
     #[test]
     fn created_work_undo_preserves_later_children_and_restores_clean_creation() {
         let db = Database::open_in_memory().unwrap();

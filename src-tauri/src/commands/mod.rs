@@ -1075,6 +1075,7 @@ pub fn create_work(
     state: State<AppState>,
     title: String,
     status: Option<String>,
+    category: Option<String>,
 ) -> Result<crate::db::work::Work, String> {
     let title = required(title, "Work 标题")?;
     let status = status.unwrap_or_else(|| "active".into());
@@ -1084,7 +1085,16 @@ pub fn create_work(
         &["active", "paused", "waiting", "done", "archived"],
     )?;
     with_db(&state, |db| {
-        crate::db::work::WorkRepo::new(db.conn()).insert(&title, &status)
+        let tx = crate::db::write_transaction(db.conn())?;
+        let work = crate::db::work::WorkRepo::new(&tx).insert(&title, &status)?;
+        let work = crate::db::project_relations::set_category(
+            &tx,
+            work.id,
+            category.as_deref(),
+            work.revision,
+        )?;
+        tx.commit()?;
+        Ok(work)
     })
     .map(|work| {
         record_activity(
@@ -1168,6 +1178,51 @@ pub fn list_works(
     })
 }
 
+#[tauri::command]
+pub fn set_project_category(
+    state: State<AppState>,
+    work_id: i64,
+    category: Option<String>,
+    expected_revision: i64,
+) -> Result<crate::db::work::Work, String> {
+    with_db(&state, |db| {
+        crate::db::project_relations::set_category(
+            db.conn(),
+            work_id,
+            category.as_deref(),
+            expected_revision,
+        )
+    })
+}
+#[tauri::command]
+pub fn get_clinical_link(
+    state: State<AppState>,
+    entity_kind: String,
+    entity_id: i64,
+) -> Result<Option<crate::db::project_relations::ProjectRelation>, String> {
+    with_db(&state, |db| {
+        crate::db::project_relations::get(db.conn(), &entity_kind, entity_id)
+    })
+}
+#[tauri::command]
+pub fn set_clinical_link(
+    state: State<AppState>,
+    entity_kind: String,
+    entity_id: i64,
+    clinical_work_id: Option<i64>,
+    expected_revision: i64,
+) -> Result<Option<crate::db::project_relations::ProjectRelation>, String> {
+    with_db(&state, |db| {
+        crate::db::project_relations::set(
+            db.conn(),
+            &entity_kind,
+            entity_id,
+            clinical_work_id,
+            expected_revision,
+        )
+    })
+}
+
 /// Work 详情聚合：work + 最新 Resume Point + 历史 + 文件 + tasks + waiting + calendar + 最近活动。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkDetail {
@@ -1179,6 +1234,8 @@ pub struct WorkDetail {
     pub waiting: Vec<crate::db::task::WaitingItem>,
     pub calendar: Vec<crate::db::calendar::CalendarEvent>,
     pub recent_activity: Vec<crate::db::activity::ActivityEvent>,
+    pub clinical_links: Vec<crate::db::project_relations::ProjectRelation>,
+    pub linked_inbox: Vec<crate::db::inbox::InboxItem>,
 }
 
 /// 获取 Work 详情（一次取齐，用于 Work 页面 10 秒恢复上下文）。
@@ -1195,9 +1252,52 @@ pub fn get_work_detail(state: State<AppState>, id: i64) -> Result<WorkDetail, St
         let resume_history = resume_repo.list_by_work(id)?;
 
         let files = crate::db::workspace::WorkFileRefRepo::new(db.conn()).list_by_work(id)?;
-        let tasks = crate::db::task::TaskRepo::new(db.conn()).list(None, Some(id))?;
-        let waiting = crate::db::task::WaitingRepo::new(db.conn()).list(None, Some(id))?;
-        let calendar = crate::db::calendar::CalendarRepo::new(db.conn()).list_by_work(id)?;
+        let mut tasks = crate::db::task::TaskRepo::new(db.conn()).list(None, Some(id))?;
+        let mut waiting = crate::db::task::WaitingRepo::new(db.conn()).list(None, Some(id))?;
+        let mut calendar = crate::db::calendar::CalendarRepo::new(db.conn()).list_by_work(id)?;
+        let clinical_links = crate::db::project_relations::by_clinical_project(db.conn(), id)?;
+        let mut linked_inbox = Vec::new();
+        for link in &clinical_links {
+            match link.entity_kind.as_str() {
+                "task" => {
+                    if let Some(item) =
+                        crate::db::task::TaskRepo::new(db.conn()).get(link.entity_id)?
+                    {
+                        if !tasks.iter().any(|t| t.id == item.id) {
+                            tasks.push(item);
+                        }
+                    }
+                }
+                "waiting" => {
+                    if let Some(item) =
+                        crate::db::task::WaitingRepo::new(db.conn()).get(link.entity_id)?
+                    {
+                        if !waiting.iter().any(|t| t.id == item.id) {
+                            waiting.push(item);
+                        }
+                    }
+                }
+                "calendar" => {
+                    if let Some(item) =
+                        crate::db::calendar::CalendarRepo::new(db.conn()).get(link.entity_id)?
+                    {
+                        if !calendar.iter().any(|t| t.id == item.id) {
+                            calendar.push(item);
+                        }
+                    }
+                }
+                "inbox" => {
+                    if let Some(item) =
+                        crate::db::inbox::InboxRepo::new(db.conn()).get(link.entity_id)?
+                    {
+                        if item.processed_at.is_none() {
+                            linked_inbox.push(item);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let recent_activity = crate::db::activity::ActivityRepo::new(db.conn()).query(
             None,
             None,
@@ -1216,6 +1316,8 @@ pub fn get_work_detail(state: State<AppState>, id: i64) -> Result<WorkDetail, St
             waiting,
             calendar,
             recent_activity,
+            clinical_links,
+            linked_inbox,
         })
     })
 }
@@ -2039,7 +2141,7 @@ mod validation_tests {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(version, 24);
+        assert_eq!(version, 25);
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let _ = std::fs::remove_dir_all(root);

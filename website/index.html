@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MSL Desktop｜让每次医学交流，都有下文</title>
+  <meta name="description" content="医学联络官的日常工作台。连接专家交流、证据需求与长期项目，让记录随工作自然流动。AI 整理线索，你修正并确认下一步。下载 Windows 版，Mac 版本正在开发。">
+  <meta name="theme-color" content="#f7f8fa">
+  <meta name="msl-release" content="{{RELEASE_VERSION}}">
+  <meta name="robots" content="index,follow">
+  <meta name="google-site-verification" content="hHLUZnx62EXTIQoJ1XaO9vfTrOjEzbNE89BZ8uAzDZc">
+  <link rel="canonical" href="https://msl-desktop.pages.dev/">
+  <meta property="og:url" content="https://msl-desktop.pages.dev/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:title" content="MSL Desktop｜让每次医学交流，都有下文">
+  <meta property="og:description" content="把 AI 嵌入工作。专家的原话、你的判断、项目的下一步，在同一条工作线上。">
+  <meta property="og:image" content="https://msl-desktop.pages.dev/assets/project.png">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"MSL Desktop","applicationCategory":"BusinessApplication","audience":{"@type":"Audience","audienceType":"医学联络官（MSL）"},"operatingSystem":"Windows","inLanguage":"zh-CN","url":"https://msl-desktop.pages.dev/","downloadUrl":"https://msl-desktop.pages.dev/downloads/MSL-Desktop-Windows-x64.exe","description":"医学联络官的日常工作台，连接专家交流、证据需求与长期项目。AI 整理线索，由用户修正并确认下一步。Mac 版本正在开发。"}</script>
+  <link rel="icon" type="image/png" href="assets/icon.png">
+  <link rel="preload" href="assets/noto-serif-sc-headings.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="style.css?v={{RELEASE_VERSION}}">
+  <script src="site.js?v={{RELEASE_VERSION}}" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到正文</a>
+  <header class="site-header wrap">
+    <a class="brand" href="#main" aria-label="MSL Desktop 首页"><img src="assets/icon.png" alt="" width="34" height="34"><span>MSL <span class="brand-light">Desktop</span></span></a>
+    <nav aria-label="主导航"><a href="#approach">设计理念</a><a href="#workspace">工作台</a><a class="nav-updates" href="#updates">更新记录</a><a class="nav-download" href="#download">下载 <span aria-hidden="true">↗</span></a></nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="small-rule" aria-hidden="true"></span>为医学联络官设计的日常工作台</p>
+        <h1 id="hero-title">让每次医学交流，<br><em>都有下文。</em></h1>
+        <p class="hero-intro">专家的一句话，连着证据、项目和下一次跟进。<br class="desktop-break">MSL Desktop 把这些线索留在一起，<br class="desktop-break">陪你从交流走到行动。</p>
+        <div class="hero-actions"><a class="button" href="/downloads/MSL-Desktop-Windows-x64.exe">下载 Windows 版 <span aria-hidden="true">↓</span></a><a class="text-link" href="#workspace">看看工作台 <span aria-hidden="true">↘</span></a></div>
+        <p class="platform-note"><span data-release-version>v{{RELEASE_VERSION}}</span><span>Windows x64</span><span>Mac 版开发中</span></p>
+      </div>
+      <div class="casebook" aria-labelledby="casebook-title">
+        <div class="casebook-header"><p id="casebook-title">一次交流之后</p><span>工作流示意</span></div>
+        <div class="case-tabs" role="tablist" aria-label="选择 MSL 工作场景">
+          <button type="button" id="tab-practice" role="tab" aria-selected="true" aria-controls="case-practice" tabindex="0">临床实践</button>
+          <button type="button" id="tab-evidence" role="tab" aria-selected="false" aria-controls="case-evidence" tabindex="-1">证据需求</button>
+          <button type="button" id="tab-research" role="tab" aria-selected="false" aria-controls="case-research" tabindex="-1">研究合作</button>
+        </div>
+        <div class="case-panels">
+          <section class="case-panel" id="case-practice" role="tabpanel" aria-labelledby="tab-practice" tabindex="0">
+            <p class="case-source">专家交流原话</p>
+            <blockquote>“长期随访很重要，<br>但患者往往很难坚持下来。”</blockquote>
+            <div class="user-direction"><span>你的补充</span><p>先了解随访中断的原因，暂不安排教育活动。</p></div>
+            <dl class="case-route"><div><dt>关联项目</dt><dd>长期随访项目</dd></div><div><dt>建议下一步</dt><dd>整理随访中断的常见障碍</dd></div></dl>
+            <div class="case-decision"><span class="status-dot" aria-hidden="true"></span><span>等你修正、确认</span><span class="route-destination">任务计划 <span aria-hidden="true">↗</span></span></div>
+          </section>
+          <section class="case-panel" id="case-evidence" role="tabpanel" aria-labelledby="tab-evidence" tabindex="0" hidden>
+            <p class="case-source">专家交流原话</p>
+            <blockquote>“这类患者的长期获益，<br>目前有哪些证据？”</blockquote>
+            <div class="user-direction"><span>你的补充</span><p>优先看长期随访数据，把证据缺口单独列出。</p></div>
+            <dl class="case-route"><div><dt>关联项目</dt><dd>长期疗效证据整理</dd></div><div><dt>建议下一步</dt><dd>核查随访研究与适用人群</dd></div></dl>
+            <div class="case-decision"><span class="status-dot" aria-hidden="true"></span><span>等你修正、确认</span><span class="route-destination">任务计划 <span aria-hidden="true">↗</span></span></div>
+          </section>
+          <section class="case-panel" id="case-research" role="tabpanel" aria-labelledby="tab-research" tabindex="0" hidden>
+            <p class="case-source">专家交流原话</p>
+            <blockquote>“我们有一些随访资料，<br>可以先讨论研究问题。”</blockquote>
+            <div class="user-direction"><span>你的补充</span><p>等团队确认数据可用性，再约时间讨论方案。</p></div>
+            <dl class="case-route"><div><dt>关联项目</dt><dd>真实世界研究合作</dd></div><div><dt>建议下一步</dt><dd>跟进团队的数据可用性反馈</dd></div></dl>
+            <div class="case-decision"><span class="status-dot" aria-hidden="true"></span><span>等你修正、确认</span><span class="route-destination">等待事项 <span aria-hidden="true">↗</span></span></div>
+          </section>
+        </div>
+        <p class="casebook-caption">原话有出处，建议有归属，下一步由你决定。</p>
+      </div>
+      <div class="hero-foot"><span>MEDICAL SCIENCE LIAISON</span><p>专家交流 <span aria-hidden="true">/</span> 医学洞察 <span aria-hidden="true">/</span> 持续跟进</p><a href="#approach" aria-label="向下查看设计理念">↓</a></div>
+    </section>
+
+    <section id="approach" class="approach" aria-labelledby="approach-title">
+      <div class="wrap">
+        <div class="approach-heading"><p class="eyebrow">我们的出发点</p><p class="approach-motto">把 AI 嵌入工作。</p></div>
+        <h2 id="approach-title">不要让记录工作，<br>变成比工作本身更耗费时间的事。</h2>
+        <div class="principles">
+          <div><span class="index">01</span><h3>先说几句话</h3><p>留下想法与原话，整理随后进行。</p></div>
+          <div><span class="index">02</span><h3>把关联留住</h3><p>结合项目、资料和日程，理清来路。</p></div>
+          <div><span class="index">03</span><h3>按你的判断推进</h3><p>尊重修正；已有建议待处理时少打扰。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="workspace" class="workspace wrap" aria-labelledby="workspace-title">
+      <div class="section-heading"><div><p class="eyebrow">一份连续的工作记忆</p><h2 id="workspace-title">从上次进度，接着做。</h2></div><p>交流前找回背景，交流后理清线索。<br>每次回顾，看见项目如何向前。</p></div>
+      <div class="workspace-grid">
+        <figure class="product-figure">
+          <a class="screenshot-link" href="assets/project.png" target="_blank" rel="noopener" aria-label="查看项目页面完整截图，演示数据，在新标签页打开"><img src="assets/project.png" alt="项目页面：关联任务、当前等待、上次进度及下一步集中呈现。图中为演示数据。" width="1440" height="1000" loading="lazy"><span class="image-expand" aria-hidden="true">查看完整界面 ↗</span></a>
+          <figcaption><span>MSL Desktop · 项目</span><span>实机界面 / 演示数据</span></figcaption>
+        </figure>
+        <div class="workspace-notes">
+          <article><span class="index">01 / 专家与洞察</span><h3>记得谁说过，也看见共性</h3><p>交流原话与专家资料一起保存。梳理临床障碍、证据需求、合作机会，保留来源与待核实之处。</p></article>
+          <article><span class="index">02 / 项目与推进</span><h3>下一步，有它的位置</h3><p>任务、等待和日程关联到项目。建议经你确认后落入对应事项，零散事务也可以独立处理。</p></article>
+          <article><span class="index">03 / 工作台问答</span><h3>带着上下文，继续问</h3><p>用 <span class="inline-tag">@项目</span> 聚焦相关记录，连续追问。回答附带来源，也说明目前缺少哪些依据。</p></article>
+        </div>
+      </div>
+      <div class="workspace-endnote"><span>留给你的，是判断的空间。</span><p>秘书简报、周报与月报沿着工作进展回顾；你的意见与调整，继续参与后续整理。</p></div>
+    </section>
+
+    <section class="data-section wrap" aria-labelledby="data-title">
+      <div><p class="eyebrow">清楚的资料边界</p><h2 id="data-title">工作在本地，<br>备份由你选择。</h2></div>
+      <div class="data-facts"><div><h3>应用与数据分开</h3><p>记录保存在本地。WPS、OneDrive 等云盘的本地同步文件夹，可用于备份和多设备同步。</p></div><div><h3>源工作文件保持原样</h3><p>工作台读取关联资料，不添加、修改或删除源工作文件。AI 分析所需资料会发送给你选择的模型服务商。</p></div></div>
+    </section>
+
+    <!-- RELEASE_HISTORY -->
+
+    <section id="download" class="download-section" aria-labelledby="download-title">
+      <div class="wrap download-grid">
+        <div class="download-copy"><p class="eyebrow">MSL DESKTOP</p><h2 id="download-title">把时间，<br>留给值得跟进的事。</h2><p>从手边正在推进的一个项目开始。</p></div>
+        <div class="download-options">
+          <div class="release-line"><span>Windows <span class="release-arch">/ x64</span></span><span class="release-version" data-release-version>v{{RELEASE_VERSION}}</span></div>
+          <a class="button download-button" href="/downloads/MSL-Desktop-Windows-x64.exe">下载 Windows 安装包 <span aria-hidden="true">↓</span></a>
+          <div class="download-meta"><span>Mac 版本正在开发</span><a href="/downloads/SHA256SUMS.txt">安装包校验值 ↗</a></div>
+          <div class="model-note"><h3>关于模型</h3><p>建议使用 <strong>1M 上下文的多模态模型</strong>。自行配置 API Key；资料读取范围取决于模型与接口能力，模型服务费用由相应服务商收取。</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="wrap"><a class="brand" href="#main"><img src="assets/icon.png" alt="" width="28" height="28"><span>MSL <span class="brand-light">Desktop</span></span></a><p>让工作被自然而然地整理和流动。</p><span>© 2026 MSL Desktop</span></footer>
+</body>
+</html>

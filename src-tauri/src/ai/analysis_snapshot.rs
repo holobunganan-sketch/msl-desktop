@@ -362,11 +362,64 @@ fn project_catalog(db: &Database) -> DbResult<Vec<serde_json::Value>> {
         }
         catalog.push(serde_json::json!({
             "id":work.id, "title":work.title, "status":work.status,
+            "category":work.category, "revision":work.revision,
+            "clinical_links":crate::db::project_relations::by_clinical_project(db.conn(),work.id)?,
+            "clinical_context":clinical_context(db,work.id,20)?,
             "objective":work.summary.as_deref().map(|text|crate::cognition::bounded(text,300)),
             "related_terms":related
         }));
     }
     Ok(catalog)
+}
+
+/// Related records are explanatory context only; they never authorize edits to
+/// another project's held round. Long prose is bounded and omissions disclosed.
+fn clinical_context(db: &Database, work_id: i64, limit: usize) -> DbResult<serde_json::Value> {
+    let mut items = Vec::new();
+    for link in crate::db::project_relations::by_clinical_project(db.conn(), work_id)? {
+        let mut record = match link.entity_kind.as_str() {
+            "task" => {
+                serde_json::to_value(crate::db::task::TaskRepo::new(db.conn()).get(link.entity_id)?)
+            }
+            "waiting" => serde_json::to_value(
+                crate::db::task::WaitingRepo::new(db.conn()).get(link.entity_id)?,
+            ),
+            "calendar" => serde_json::to_value(
+                crate::db::calendar::CalendarRepo::new(db.conn()).get(link.entity_id)?,
+            ),
+            "inbox" => serde_json::to_value(
+                crate::db::inbox::InboxRepo::new(db.conn()).get(link.entity_id)?,
+            ),
+            _ => continue,
+        }
+        .unwrap_or(serde_json::Value::Null);
+        if record.is_null() {
+            continue;
+        }
+        let mut shortened = false;
+        if let Some(object) = record.as_object_mut() {
+            for value in object.values_mut() {
+                if let Some(text) = value.as_str() {
+                    if text.chars().count() > 1200 {
+                        *value = serde_json::json!(crate::cognition::bounded(text, 1200));
+                        shortened = true;
+                    }
+                }
+            }
+        }
+        items.push(serde_json::json!({"relation":link,"record":record,"text_truncated":shortened,"usage":"context_only"}));
+    }
+    items.sort_by_key(|item| {
+        std::cmp::Reverse(
+            item["record"]["updated_at"]
+                .as_i64()
+                .or(item["record"]["created_at"].as_i64())
+                .unwrap_or(0),
+        )
+    });
+    let omitted = items.len().saturating_sub(limit);
+    items.truncate(limit);
+    Ok(serde_json::json!({"items":items,"omitted":omitted}))
 }
 
 /// Build a bounded snapshot. It contains structured workbench facts plus selected,
@@ -678,7 +731,53 @@ pub fn focus_work(
         "waiting":crate::db::task::WaitingRepo::new(db.conn()).list(None, Some(id))?,
         "calendar":crate::db::calendar::CalendarRepo::new(db.conn()).list_by_work(id)?,
         "resume_history":crate::db::work::ResumePointRepo::new(db.conn()).list_by_work(id)?,
+        "clinical_links":crate::db::project_relations::by_clinical_project(db.conn(),id)?,
     });
+    let relations = crate::db::project_relations::all(db.conn())?;
+    for (key, kind) in [
+        ("tasks", "task"),
+        ("waiting", "waiting"),
+        ("calendar", "calendar"),
+    ] {
+        if let Some(items) = value[key].as_array_mut() {
+            for item in items {
+                let relation = relations
+                    .iter()
+                    .find(|r| r.entity_kind == kind && Some(r.entity_id) == item["id"].as_i64());
+                item["clinical_work_id"] =
+                    serde_json::json!(relation.and_then(|r| r.clinical_work_id));
+                item["clinical_relation_revision"] =
+                    serde_json::json!(relation.map_or(0, |r| r.revision));
+            }
+        }
+    }
+    let mut linked_items = Vec::new();
+    for link in relations
+        .iter()
+        .filter(|r| r.clinical_work_id == Some(id))
+        .take(300)
+    {
+        let record = match link.entity_kind.as_str() {
+            "task" => {
+                serde_json::to_value(crate::db::task::TaskRepo::new(db.conn()).get(link.entity_id)?)
+            }
+            "waiting" => serde_json::to_value(
+                crate::db::task::WaitingRepo::new(db.conn()).get(link.entity_id)?,
+            ),
+            "calendar" => serde_json::to_value(
+                crate::db::calendar::CalendarRepo::new(db.conn()).get(link.entity_id)?,
+            ),
+            "inbox" => serde_json::to_value(
+                crate::db::inbox::InboxRepo::new(db.conn()).get(link.entity_id)?,
+            ),
+            _ => continue,
+        }
+        .unwrap_or(serde_json::Value::Null);
+        if !record.is_null() {
+            linked_items.push(serde_json::json!({"relation":link,"record":record,"usage":"Related context; original project ownership is unchanged"}));
+        }
+    }
+    value["clinical_linked_items"] = serde_json::json!(linked_items);
     for (key, source_type) in [
         ("tasks", "task"),
         ("waiting", "waiting"),

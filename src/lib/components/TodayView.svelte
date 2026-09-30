@@ -1,5 +1,7 @@
 <script lang="ts">
  import DashboardOverview from './DashboardOverview.svelte';
+ import QuickCapture from './QuickCapture.svelte';
+ import {briefLines} from '$lib/services/aiText';
  import {dashboardGreeting,fileChangeLabel} from '$lib/services/dashboardPresentation';
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
  import ManualCompletionFeedback from './ManualCompletionFeedback.svelte';
@@ -12,14 +14,22 @@
   import {aiJobs} from '$lib/stores/aiJobs';
   let activeTasks=$state<Task[]>([]);
   let receiptTarget=$state<{kind:string;id:number;workId:number|null}|null>(null);
-  const analysisBusy=$derived($aiJobs.some(job=>job.command==='run_analysis_now'&&job.status==='running'));
-  async function analyze(){try{await command('run_analysis_now',{trigger:'manual'});await load();}catch(e){dataError=String(e);}}
+  let analysisSubmitting=$state(false);
+  const analysisBusy=$derived(analysisSubmitting||$aiJobs.some(job=>job.command==='run_analysis_now'&&job.status==='running'));
+  async function analyze(){
+    if(analysisBusy)return;
+    analysisSubmitting=true;dataError='';
+    try{await command('run_analysis_now',{trigger:'manual'});await load();}
+    catch(e){dataError=String(e);addToast(dataError,'error');}
+    finally{analysisSubmitting=false;}
+  }
 
   import { invoke } from "@tauri-apps/api/core";
   import { locale, t, translateStatus } from "$lib/i18n";
   import { command, confirmAiProposal, deferAiProposal, getToday, listLatestAnalysisProposals, listWorks, updateAiProposalClassification } from "$lib/services/api";
   import type { AiProposal } from "$lib/types/domain";
   import { dataRevision, invalidate } from "$lib/stores/dataRevision";
+  import {addToast} from '$lib/stores/toast';
   const savedRoutes=new Map<number,Pick<AiProposal,"kind"|"operation"|"target_id">>();
   import Icon from "$lib/components/ui/Icon.svelte";
   import { decisionPayload } from "$lib/services/proposalPayload";
@@ -86,13 +96,6 @@
     return [todayStart - 86400, todayStart];
   }
   function nav(view:string,id?:number,workId?:number|null){navigateTo(view,id,workId);}
-  function bulletLines(value: string): string[] {
-    return value
-      .split(/\r?\n/)
-      .map((line) => line.trim().replace(/^[•·▪‣*-]\s*/, ""))
-      .map((line) => line.replace(/\s*[（(\[][^）)\]]*(?:source_type|entity_id|workspace_id|source_id|\[source_)[^）)\]]*[）)\]]/gi, "").trim())
-      .filter(Boolean);
-  }
   function briefWarningText(value: string): string {
     return /local summary|本地摘要|API|network|网络|choices|content/i.test(value)
       ? tt("brief.aiFallbackShort")
@@ -131,10 +134,16 @@
   async function completeTask(item: Task) { try { await completeManual('task',item.id);await loadData(); } catch (e) { dataError = String(e); } }
   async function confirmDecision(item: AiProposal) {
     if(decisionBusy!==null)return;
+    const presentation=proposalPresentation(item,works,currentLocale);
+    if(presentation.needsAttention){
+      addToast(presentation.needsTimeConfirmation
+        ?(currentLocale==='en-US'?'Check and confirm the suggested time separately before saving the arrangement.':'请先核对并单独确认建议时间，确认后才会写入正式安排。')
+        :(currentLocale==='en-US'?'Check the time and project before accepting this suggestion.':'请先核对时间和项目归属，再确认这条安排。'),'info');
+      nav('review',item.id);return;
+    }
     decisionBusy = item.id; decisionMessage = ""; dataError = "";
     try {
       const payload = payloadForKind(item, item.kind);
-      if (proposalPresentation(item,works,currentLocale).needsAttention) throw new Error(tt("calendar.invalidStart"));
       const edited = await updateAiProposalClassification(item.id, item.updated_at, item.kind, item.work_id, item.title, payload);
       Object.assign(item,edited);
       savedRoutes.set(edited.id,{kind:edited.kind,operation:edited.operation,target_id:edited.target_id});
@@ -174,7 +183,7 @@
 
   const scheduledToday=$derived(activeTasks.filter(item=>item.scheduled_start&&item.scheduled_start>=dayRange()[0]&&item.scheduled_start<dayRange()[1]));
   const appointmentCount=$derived((data?.today_calendar.length??0)+scheduledToday.length);
-  const briefItems = $derived(brief ? bulletLines(brief) : []);
+  const briefItems = $derived(brief ? briefLines(brief) : []);
   const briefHighlights = $derived(briefItems.filter(line =>
     !/^(?:今日日程|等待与阻塞|当前无|today.s calendar|waiting and blockers)[:：]?\s*(?:无|none|no )/i.test(line)
   ).slice(0, 3));
@@ -188,8 +197,8 @@
     <div class="intro-copy">
       <div class="brief-eyebrow">{currentLocale==='en-US'?'TODAY’S WORKSPACE':'今日工作台'} <span>· {briefDate}</span></div>
       <h1>{greeting.title}</h1>
-      <div class="intro-actions"><p class="day-judgment">{currentLocale==='en-US'?`${appointmentCount} arrangements today · ${pendingProposals} new suggestions to review`:`今天 ${appointmentCount} 项日程，${pendingProposals} 条新建议待确认。`}</p><button class="brief-generate" data-testid="generate-daily-brief" onclick={()=>generateBrief(Boolean(brief))} disabled={generating} aria-busy={generating}><Icon name="reports" size={16}/><span>{generating?(currentLocale==='en-US'?'Preparing brief…':'简报整理中…'):(currentLocale==='en-US'?'Prepare daily brief':'整理每日简报')}</span></button></div>
-      <ManualCompletionFeedback error={dataError} onrefresh={loadData}/>
+      <p class="day-judgment">{currentLocale==='en-US'?`${appointmentCount} arrangements today · ${pendingProposals} new suggestions to review`:`今天 ${appointmentCount} 项日程，${pendingProposals} 条新建议待确认。`}</p>
+      <div class="intro-actions"><button class="organize-workspace primary" data-testid="organize-workspace" onclick={analyze} disabled={analysisBusy} aria-busy={analysisBusy} title={currentLocale==='en-US'?'Organize new information across the workspace. Suggestions awaiting your response will not be repeated.':'整理全工作台的新信息，等待您回应的内容不会重复整理。'}><Icon name="refresh" size={16}/><span>{analysisBusy?(currentLocale==='en-US'?'Organizing…':'后台整理中…'):(currentLocale==='en-US'?'Ask secretary to organize':'让秘书整理')}</span></button><button class="brief-generate" data-testid="generate-daily-brief" onclick={()=>generateBrief(Boolean(brief))} disabled={generating} aria-busy={generating}><Icon name="reports" size={16}/><span>{generating?(currentLocale==='en-US'?'Preparing brief…':'简报整理中…'):(currentLocale==='en-US'?'Prepare daily brief':'整理每日简报')}</span></button></div>
     </div>
     <aside class="quiet-note" aria-label={currentLocale==='en-US'?'Our philosophy':'我们的理念'}>
       <p>{greeting.note}</p>
@@ -197,6 +206,7 @@
       <svg viewBox="0 0 350 120" preserveAspectRatio="xMaxYMax meet" aria-hidden="true"><path d="M0 120L69 76L102 97L189 27L227 56L281 7L350 60V120Z" fill="currentColor" opacity=".09"/><path d="M135 120L220 69L244 85L281 7L315 48L350 27V120Z" fill="currentColor" opacity=".13"/><path d="M240 87L281 7L275 45L290 49L274 55Z" fill="white" opacity=".85"/></svg>
     </aside>
   </section>
+  <QuickCapture prominent />
   <section class="brief-rail">
     <details class="brief-details" bind:open={briefExpanded}>
       <summary>{currentLocale==='en-US'?'Secretary brief':'秘书简报'}{#if generating}<span class="brief-progress" role="status">{currentLocale==='en-US'?'Preparing in background':'正在后台整理'}</span>{/if}</summary>
@@ -239,7 +249,7 @@
       {#if decisionMessage}<div class="decision-message" role="status">{decisionMessage}{#if lastReceipt&&receiptTarget}<div><button onclick={()=>nav(receiptTarget!.kind,receiptTarget!.id,receiptTarget!.workId)}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button disabled={decisionBusy!==null} onclick={undoLastDecision}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}</div>{/if}
       <div class="decision-list">
         {#each latestProposals.slice(0,3) as item(item.id)}
-          <article class="decision-row" data-testid={`latest-decision-${item.id}`}><h3>{item.title}</h3><ProposalPreview {item} {works} compact/><div class="decision-actions"><button class="primary" disabled={decisionBusy!==null||proposalPresentation(item,works,currentLocale).needsAttention} onclick={()=>confirmDecision(item)}>{currentLocale==='en-US'?'Accept':'采用安排'}</button><button disabled={decisionBusy!==null} onclick={()=>nav('review',item.id)}>{currentLocale==='en-US'?'Adjust':'调整'}</button><button disabled={decisionBusy!==null} onclick={()=>deferDecision(item)}>{currentLocale==='en-US'?'Later':'稍后'}</button><details class="decision-more"><summary data-testid={`decision-more-${item.id}`} aria-label={currentLocale==='en-US'?'Other actions for this suggestion':'这条建议的其他操作'}>{currentLocale==='en-US'?'More':'更多'}</summary><div><button data-testid={`decision-delete-${item.id}`} disabled={decisionBusy!==null} onclick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');deleteCandidate={...item};}}>{currentLocale==='en-US'?'Delete record':'删除记录'}</button></div></details></div></article>
+          <article class="decision-row" data-testid={`latest-decision-${item.id}`}><h3>{item.title}</h3><ProposalPreview {item} {works} compact/><div class="decision-actions"><button class="primary" disabled={decisionBusy!==null} onclick={()=>confirmDecision(item)}>{proposalPresentation(item,works,currentLocale).needsAttention?(currentLocale==='en-US'?'Review & confirm':'查看并确认'):(currentLocale==='en-US'?'Accept':'采用安排')}</button><button disabled={decisionBusy!==null} onclick={()=>nav('review',item.id)}>{currentLocale==='en-US'?'Adjust':'调整'}</button><button disabled={decisionBusy!==null} onclick={()=>deferDecision(item)}>{currentLocale==='en-US'?'Later':'稍后'}</button><details class="decision-more"><summary data-testid={`decision-more-${item.id}`} aria-label={currentLocale==='en-US'?'Other actions for this suggestion':'这条建议的其他操作'}>{currentLocale==='en-US'?'More':'更多'}</summary><div><button data-testid={`decision-delete-${item.id}`} disabled={decisionBusy!==null} onclick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');deleteCandidate={...item};}}>{currentLocale==='en-US'?'Delete record':'删除记录'}</button></div></details></div></article>
         {/each}
       </div>
       {#if !latestProposals.length}<div class="empty-state"><strong>{currentLocale==='en-US'?'No new decisions for now':'眼下没有新的安排要决定'}</strong><p>{currentLocale==='en-US'?'Keep working. New suggestions will appear after organizing.':'安心推进工作，整理完成后，新建议会出现在这里。'}</p><button onclick={analyze} disabled={analysisBusy}>{analysisBusy?(currentLocale==='en-US'?'Organizing…':'后台整理中…'):(currentLocale==='en-US'?'Ask secretary to organize':'让秘书整理一次')}</button></div>{/if}
@@ -268,6 +278,7 @@
       </section>
     </aside>
   </section>
+  <ManualCompletionFeedback error={dataError} onrefresh={loadData}/>
   <section class="attention-strip">
     <div><strong>{currentLocale==='en-US'?'Worth a look':'值得留意'}</strong><p>{(data?.waiting_followups??[]).slice(0,2).map(item=>item.title).join(' · ')||(currentLocale==='en-US'?'No waiting items need following up today.':'今天暂无到期的等待事项。')}</p></div><button onclick={()=>nav('waiting')}>{currentLocale==='en-US'?'View waiting':'查看等待'} ↗</button>
     {#if data?.inbox_pending.length}<button onclick={()=>nav('inbox')}>{data.inbox_pending.length} {currentLocale==='en-US'?'notes to organize':'条记录待整理'} ↗</button>{/if}
@@ -298,7 +309,7 @@
 
   .dashboard-side{display:grid;gap:16px;min-width:0}.small-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}.small-card-head h2{font-size:16px;margin:0}.schedule-date{font-size:12px;color:var(--color-muted);background:var(--color-surface-muted);border-radius:5px;padding:7px 9px}.schedule-card .agenda-row{grid-template-columns:40px minmax(0,1fr);gap:8px;padding:12px 0}.schedule-card .agenda-body strong{font-size:14px;font-weight:550}.schedule-card .agenda-body small{font-size:12px}.schedule-item{display:grid;gap:6px;text-align:left;width:100%;padding:12px 0 12px 10px;border:0;border-left:2px solid var(--color-primary);border-radius:0;margin-top:14px;background:transparent}.schedule-item span{font-size:12px;color:var(--color-muted)}.schedule-item strong{font-size:14px;line-height:1.6;color:var(--color-text)}.secondary-empty{font-size:13px;color:var(--color-muted);line-height:1.8;margin:10px 0 0}
   .material-row{display:flex;gap:10px;align-items:center;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--color-border);border-radius:0;text-align:left;background:transparent}.material-row:last-child{border-bottom:0}.file-icon{display:grid;place-items:center;width:31px;height:37px;border-radius:6px;background:var(--color-primary-soft);color:var(--color-primary);flex-shrink:0}.material-row>span:last-child{min-width:0;display:grid;gap:5px}.material-row strong{font-size:13px;font-weight:550;color:var(--color-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.material-row small{font-size:11px;color:var(--color-muted)}
-  .intro-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}.brief-generate{display:inline-flex;gap:8px;align-items:center;justify-content:center;min-width:156px;min-height:40px;background:var(--color-surface)}.brief-progress{display:inline-block;margin-left:14px;font-size:13px;color:var(--color-muted);font-weight:400}
+  .intro-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:12px}.brief-generate,.organize-workspace{display:inline-flex;gap:8px;align-items:center;justify-content:center;width:176px;min-width:176px;min-height:42px}.brief-generate{background:var(--color-surface)}.organize-workspace{width:208px;min-width:208px}.brief-progress{display:inline-block;margin-left:14px;font-size:13px;color:var(--color-muted);font-weight:400}
   @container(max-width:1120px){.focus-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dashboard-side{grid-column:1/-1;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dashboard-intro{grid-template-columns:minmax(0,1fr) 270px}.quiet-note{padding:18px}}
   @container(max-width:740px){.focus-grid{grid-template-columns:minmax(0,1fr)}.dashboard-intro{grid-template-columns:minmax(0,1fr)}.quiet-note{display:none}.desk-card{padding:18px}.intro-copy h1{font-size:24px}.card-head h2{font-size:20px}}
   @container(max-width:500px){.dashboard-side{grid-template-columns:minmax(0,1fr)}.agenda-row{grid-template-columns:38px minmax(0,1fr) auto;gap:8px}}

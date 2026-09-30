@@ -1,6 +1,9 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
-const reader=await import('../src/lib/services/reportReading.ts').catch(()=>({}));
+import {createServer} from 'vite';
+const server=await createServer({server:{middlewareMode:true,hmr:false},logLevel:'error'});
+after(()=>server.close());
+const reader=await server.ssrLoadModule('/src/lib/services/reportReading.ts');
 test('report reading keeps a finding and its supporting explanation together',()=>{
   assert.equal(typeof reader.reportBlocks,'function');
   assert.deepEqual(reader.reportBlocks('1. 项目 A｜完成摘要\n   本期进展：已核对资料。\n   下一步：确认反馈。\n\n2. 独立事项｜准备会议\n   工作影响：减少重复准备。'),[

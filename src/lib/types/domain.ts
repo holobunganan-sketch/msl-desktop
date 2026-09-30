@@ -13,6 +13,7 @@ export type Work = {
   title: string;
   status: string;
   summary: string | null;
+  category?: 'clinical' | 'non_clinical' | null;
   created_at: number;
   updated_at: number;
   archived_at: number | null;

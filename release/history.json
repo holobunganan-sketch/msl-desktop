@@ -1,0 +1,299 @@
+{
+  "schemaVersion": 1,
+  "releases": [
+    {
+      "version": "0.3.15",
+      "date": "2026-09-30",
+      "status": "released",
+      "dateKind": "published",
+      "title": "随手记下来，整理更有依据",
+      "summary": "从一句话记录，到秘书整理和建议确认，让日常推进更连贯。",
+      "changes": [
+        "首页突出一句话记录入口；提交后可一键交给秘书整理，后台继续处理。",
+        "已有建议待处理时减少重复分析；你的意见与调整会参与下一轮整理。",
+        "项目可按临床与非临床分类，支持跨项目关联，并保留原始归属。",
+        "建议预先整理更多可编辑字段，展示记录依据和待核实之处；推测的时间单独提示，由你确认。",
+        "清理 AI 文本中多余的 Markdown 标记，让阅读与审阅更清楚。",
+        "官网新增更新记录，支持回顾历次发布与早期本地更新。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.15",
+        "label": "发布记录"
+      }
+    },
+    {
+      "version": "0.3.14",
+      "date": "2026-09-27",
+      "status": "released",
+      "dateKind": "published",
+      "title": "沿着项目，接着上次推进",
+      "summary": "保留项目上下文，补齐完成记录与资料追溯，让工作来回切换时更连贯。",
+      "changes": [
+        "项目记录、建议审阅和返回导航持续保留项目范围。",
+        "已完成任务与已结束等待可从最近完成记录恢复。",
+        "专家交流草稿与资料来源追溯更稳定。",
+        "报告中的下一步可编辑后存入待整理。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.14",
+        "label": "发布记录",
+        "publishedAt": "2026-09-26T16:41:07Z",
+        "commit": "1732ba826406f9bef5830699fa7a2841115a2965"
+      }
+    },
+    {
+      "version": "0.3.13",
+      "date": "2026-09-26",
+      "status": "released",
+      "dateKind": "published",
+      "title": "更清楚的工作台层次",
+      "summary": "调整首页信息与视觉层级，让继续推进和需要决定的事项更容易找到。",
+      "changes": [
+        "采用浅蓝与冷白配色，统一字体与卡片层级。",
+        "首页突出继续推进与需要决定的事项，增加日程和资料动态入口。",
+        "启用新的双色环形标志。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.13",
+        "label": "发布记录",
+        "publishedAt": "2026-09-26T08:45:06Z",
+        "commit": "72e32acd4d185f98545d946b297c1807b68c8eb5"
+      }
+    },
+    {
+      "version": "0.3.12",
+      "date": "2026-09-26",
+      "status": "released",
+      "dateKind": "published",
+      "title": "安装与升级，名称保持一致",
+      "summary": "统一 Windows 中的应用名称，改善旧快捷方式的升级迁移。",
+      "changes": [
+        "安装后的名称统一为 MSL Desktop，修正开始菜单、桌面快捷方式及应用列表的大小写。",
+        "升级时迁移旧快捷方式，保留原数据目录，并保护其他程序的同名入口。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.12",
+        "label": "发布记录",
+        "publishedAt": "2026-09-25T16:04:12Z",
+        "commit": "24fa1728fa88b2eb9d6da6a43ef1f0da03e56d95"
+      }
+    },
+    {
+      "version": "0.3.11",
+      "date": "2026-09-25",
+      "status": "released",
+      "dateKind": "published",
+      "title": "秘书整理，跟随工作进度",
+      "summary": "理清首页今日工作信息，调整秘书分析的时机与上下文。",
+      "changes": [
+        "精简首页今日工作信息。",
+        "改进秘书对项目、专家记录和用户修正意见的关联分析。",
+        "按项目及独立事项维护分析轮次，待处理建议或无进展时减少重复分析。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.11",
+        "label": "发布记录",
+        "publishedAt": "2026-09-25T09:54:30Z",
+        "commit": "abe916426a57f2d5b35a968025bfaf136d510f7c"
+      }
+    },
+    {
+      "version": "0.3.8",
+      "date": "2026-09-11",
+      "status": "local",
+      "dateKind": "local",
+      "title": "应用与资料，各有位置",
+      "summary": "本地更新里程碑：完善应用与数据分离、备份及同步目录识别。",
+      "changes": [
+        "支持本地与云盘同步文件夹的备份、恢复及多设备同步。",
+        "改善备份目录识别，让应用更新与个人资料分别管理。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/6666bd45747665d3b88ced30818213b060d1247b",
+        "label": "提交记录",
+        "commit": "6666bd45747665d3b88ced30818213b060d1247b",
+        "committedAt": "2026-09-11T16:34:12+08:00"
+      }
+    },
+    {
+      "version": "0.3.2",
+      "date": "2026-09-07",
+      "status": "local",
+      "dateKind": "local",
+      "title": "带着项目背景，连续追问",
+      "summary": "本地更新里程碑：会话式工作台问答与项目聚焦。",
+      "changes": [
+        "支持 @项目 聚焦、连续追问与独立问答模型选择。",
+        "改善输入法交互和小窗口阅读体验。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "committedAt": "2026-09-07T21:38:51+08:00"
+      }
+    },
+    {
+      "version": "0.3.1",
+      "date": "2026-09-07",
+      "status": "local",
+      "dateKind": "local",
+      "title": "专家信息，随交流一起保留",
+      "summary": "本地更新记录：完善专家资料和工作台入口。",
+      "changes": [
+        "专家入口归入工作台；机构与科室分别保存、编辑和搜索。",
+        "专家资料参与交流记录与 AI 上下文，旧机构信息完整保留。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-07"
+      }
+    },
+    {
+      "version": "0.3.0",
+      "date": "2026-09-07",
+      "status": "local",
+      "dateKind": "local",
+      "title": "问答、交流与洞察相互连接",
+      "summary": "本地更新记录：扩展连续问答与专家交流工作流。",
+      "changes": [
+        "支持连续工作台问答和 @项目 范围，回答区分记录依据、推断与资料缺口。",
+        "整理专家交流、三类洞察与跨专家共性分析，后续动作经过审阅确认。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-07"
+      }
+    },
+    {
+      "version": "0.2.2",
+      "date": "2026-09-06",
+      "status": "local",
+      "dateKind": "local",
+      "title": "目录关联，随项目进退",
+      "summary": "本地更新记录：梳理共享目录与项目的关联关系。",
+      "changes": [
+        "目录清单按项目汇总，共享目录去重，解绑后同步更新目录入口。",
+        "全部关联项目归档后才允许安全移除目录入口，源文件保持原样。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-06"
+      }
+    },
+    {
+      "version": "0.2.1",
+      "date": "2026-09-06",
+      "status": "local",
+      "dateKind": "local",
+      "title": "回顾成果，也安排下一步",
+      "summary": "本地更新记录：串联周期分析、工作报告与日历。",
+      "changes": [
+        "无变化时复用周期分析结果，周月报呈现成果、影响、下一步和来源。",
+        "任务预约、截止与等待跟进统一呈现在日历，并区分只保存与交秘书整理。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-06"
+      }
+    },
+    {
+      "version": "0.2.0",
+      "date": "2026-09-05",
+      "status": "local",
+      "dateKind": "local",
+      "title": "记录之后，看见可推进的事",
+      "summary": "本地更新记录：从自然语言记录接续到建议和行动。",
+      "changes": [
+        "自然语言记录保留项目与来源背景，首页集中展示继续推进及待决定建议。",
+        "建议默认预览，支持调整后采纳与撤销；为原任务安排时间，减少重复日历项。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-05"
+      }
+    },
+    {
+      "version": "0.1.4",
+      "date": "2026-09-05",
+      "status": "local",
+      "dateKind": "local",
+      "title": "事项归属与建议修改更稳妥",
+      "summary": "本地更新记录：补齐项目范围与批量确认行为。",
+      "changes": [
+        "任务、等待和日历可归入项目或独立处理，收件箱记录可归入项目细项。",
+        "修复建议类型切换后的状态错误，批量确认保留各卡片的修改。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-05"
+      }
+    },
+    {
+      "version": "0.1.2",
+      "date": "2026-09-05",
+      "status": "local",
+      "dateKind": "local",
+      "title": "慢分析与网络问题，更容易处理",
+      "summary": "本地更新记录：改善模型请求的等待与错误提示。",
+      "changes": [
+        "延长慢分析的等待时间，超时后避免重复生成。",
+        "网络错误提供具体原因及处理提示。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-05"
+      }
+    },
+    {
+      "version": "0.1.1",
+      "date": "2026-09-05",
+      "status": "local",
+      "dateKind": "local",
+      "title": "小窗口中，也能完整操作",
+      "summary": "本地更新记录：改善小窗口与大字号下的可读性。",
+      "changes": [
+        "修复底部操作不可达及卡片裁切，弹窗支持滚动。",
+        "调整通知位置，完整显示优先级标签。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "label": "归档提交记录",
+        "commit": "2bca1bca3fc3630c2cb4f389aa1aba2e9f7ae57e",
+        "recordDate": "2026-09-05"
+      }
+    },
+    {
+      "version": "0.1.0",
+      "date": "2026-08-14",
+      "status": "local",
+      "dateKind": "local",
+      "title": "第一份日常工作台",
+      "summary": "初始本地 Alpha 构建：连接项目、记录与下一步。",
+      "changes": [
+        "集中查看项目进度、任务、等待和日历，支持快捷记录与搜索。",
+        "提供工作目录浏览、可选 AI 每日简报及托盘提醒。"
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/commit/341b538d9da51494408336cd7b7f771a5909baee",
+        "label": "构建记录",
+        "commit": "341b538d9da51494408336cd7b7f771a5909baee",
+        "committedAt": "2026-08-14T15:39:49+08:00"
+      }
+    }
+  ]
+}

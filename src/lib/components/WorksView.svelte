@@ -10,6 +10,8 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import NaturalCapture from './NaturalCapture.svelte';
   import SecretaryRound from './SecretaryRound.svelte';
+  import ClinicalProjectLink from './ClinicalProjectLink.svelte';
+  import type {InboxItem} from '$lib/types/domain';
   import {navigateTo} from '$lib/services/navigation';
   let {focusId=null,resumeId=null,onprojectchange=()=>{}}:{focusId?:number|null;resumeId?:number|null;onprojectchange?:(id:number)=>void}=$props();
   let projectCapture=$state(false);
@@ -32,6 +34,7 @@
     title: string;
     status: string;
     summary: string | null;
+    category?: 'clinical'|'non_clinical'|null;
     created_at: number;
     updated_at: number;
     archived_at: number | null;
@@ -116,6 +119,7 @@
     waiting: WaitingItem[];
     calendar: CalendarEvent[];
     recent_activity: ActivityEvent[];
+    linked_inbox?: InboxItem[];
   };
   type Workspace = {id:number; name:string; root_path:string};
   let linkedFolders = $state<Workspace[]>([]);
@@ -124,14 +128,21 @@
   let folderBusy = $state(false);
 
   let works = $state<Work[]>([]);
+  let categoryFilter=$state<'all'|'clinical'|'non_clinical'>('all');
+  let newCategory=$state<'clinical'|'non_clinical'|null>(null);
+  let categoryBusy=$state(false);
+  const visibleWorks=$derived(works.filter(w=>categoryFilter==='all'||w.category===categoryFilter));
+  const unclassifiedCount=$derived(works.filter(w=>!w.category).length);
   let selectedId = $state<number | null>(null);
   let detail = $state<WorkDetail | null>(null);
   let taskListPage=$state(1),waitingListPage=$state(1),calendarListPage=$state(1),fileListPage=$state(1);
+  let inboxListPage=$state(1);
+  const projectInbox=$derived(paginate(detail?.linked_inbox??[],inboxListPage));
   const projectTasks=$derived(paginate(detail?.tasks??[],taskListPage));
   const projectWaiting=$derived(paginate(detail?.waiting.filter(item=>item.status==='open')??[],waitingListPage));
   const projectCalendar=$derived(paginate(detail?.calendar??[],calendarListPage));
   const projectFiles=$derived(paginate(detail?.files??[],fileListPage));
-  $effect(()=>{selectedId;taskListPage=1;waitingListPage=1;calendarListPage=1;fileListPage=1;});
+  $effect(()=>{selectedId;taskListPage=1;waitingListPage=1;calendarListPage=1;fileListPage=1;inboxListPage=1;});
   let error = $state("");
   let newTitle = $state("");
   let newSummary = $state("");
@@ -177,7 +188,7 @@
       if(selectedId===null){
         let id=focusId;
         if(resumeId){const location=await invoke<{work_id:number}>('get_entity_location',{kind:'resume_point',id:resumeId});id=location.work_id;}
-        if(id)await openDetail(id);else if(works.length)await openDetail(works[0].id);
+        if(id){if(categoryFilter!=='all'&&!works.some(work=>work.id===id&&work.category===categoryFilter))categoryFilter='all';await openDetail(id);}else {const first=works.find(work=>categoryFilter==='all'||work.category===categoryFilter);if(first)await openDetail(first.id);}
         if(resumeId){await tick();const target=document.querySelector(`[data-testid="resume-record-${resumeId}"]`);if(target)target.scrollIntoView({block:'center'});else error=currentLocale==='en-US'?'This progress record is no longer available.':'这条进展记录已不可用。';}
       }
     } catch (e) {
@@ -193,7 +204,7 @@
     createLoading = true;
     createError = "";
     try {
-      const w: Work = await invoke("create_work", { title: newTitle.trim(), status: "active" });
+      const w: Work = await invoke("create_work", { title: newTitle.trim(), status: "active", category:newCategory });
       if (newSummary.trim()) await invoke("update_work", {id:w.id,title:w.title,status:w.status,summary:newSummary.trim()});
       newTitle = "";
       newSummary = "";
@@ -210,6 +221,7 @@
   }
 
   function openCreate() {
+    newCategory=categoryFilter==='all'?null:categoryFilter;
     newTitle = "";
     newSummary = "";
     createError = "";
@@ -279,6 +291,19 @@
       error = String(e);
     }
   }
+
+  async function classify(category:Work['category']){
+    if(!detail||categoryBusy)return;const work=detail.work;categoryBusy=true;error='';
+    try{await invoke('set_project_category',{workId:work.id,category:category??null,expectedRevision:work.revision});invalidate('works','analysis');await loadWorks();await openDetail(work.id);}catch(e){error=String(e);}finally{categoryBusy=false;}
+  }
+  async function selectCategory(category:typeof categoryFilter){
+    categoryFilter=category;
+    const available=works.filter(w=>category==='all'||w.category===category);
+    if(selectedId&&!available.some(w=>w.id===selectedId)){selectedId=null;detail=null;}
+    if(!selectedId&&available.length)await openDetail(available[0].id);
+  }
+  function categoryLabel(category:Work['category']){return category==='clinical'?(currentLocale==='en-US'?'Clinical research':'临床研究'):category==='non_clinical'?(currentLocale==='en-US'?'Non-clinical work':'非临床研究'):(currentLocale==='en-US'?'Unclassified':'待分类');}
+  function ownership(workId:number|null){return workId?works.find(w=>w.id===workId)?.title??(currentLocale==='en-US'?'Original project':'原项目'):(currentLocale==='en-US'?'Independent matter':'独立事项');}
 
   async function archive(w: Work) {
     if (!confirm(tt("work.archiveMessage", { title: w.title }))) return;
@@ -501,6 +526,7 @@
       <label for="new-work-title">{tt("work.title")} *</label>
       <input id="new-work-title" bind:value={newTitle} placeholder={tt("work.placeholder")} />
       <label for="new-work-summary">{tt("work.summary")}</label><textarea id="new-work-summary" bind:value={newSummary} rows="3"></textarea>
+      <label for="new-work-category">{currentLocale==='en-US'?'Project category':'项目分类'}</label><select id="new-work-category" bind:value={newCategory}><option value={null}>{currentLocale==='en-US'?'Decide later':'暂不分类'}</option><option value="clinical">{categoryLabel('clinical')}</option><option value="non_clinical">{categoryLabel('non_clinical')}</option></select>
       <div class="status error stable-feedback"><StatusLine message={createError}/></div>
       <div class="modal-actions">
         <button type="button" onclick={() => (showCreate = false)}>{tt("common.cancel")}</button>
@@ -509,16 +535,21 @@
     </form>
   </Modal>
 
+  <div class="project-category-tabs" role="group" aria-label={currentLocale==='en-US'?'Project category':'项目分类'}>
+    {#each ['all','clinical','non_clinical'] as category}<button class:active={categoryFilter===category} aria-pressed={categoryFilter===category} onclick={()=>selectCategory(category as typeof categoryFilter)}>{category==='all'?(currentLocale==='en-US'?'All projects':'全部项目'):categoryLabel(category as Work['category'])}<span>{category==='all'?works.length:works.filter(w=>w.category===category).length}</span></button>{/each}
+  </div>
+  {#if unclassifiedCount}<p class="category-hint">{currentLocale==='en-US'?`${unclassifiedCount} existing projects remain unclassified and are kept in All projects.`:`${unclassifiedCount} 个项目待分类，仍保留在「全部项目」中。`}</p>{/if}
   <div class="layout">
     <!-- 左侧：Work 列表 -->
     <div class="list-pane">
-      <div class="pane-head"><strong>{tt("work.allWorks")}</strong><span>{works.length}</span></div>
-      {#if works.length}
+      <div class="pane-head"><strong>{categoryFilter==='all'?tt("work.allWorks"):categoryLabel(categoryFilter)}</strong><span>{visibleWorks.length}</span></div>
+      {#if visibleWorks.length}
       <ul class="work-list">
-        {#each works as w (w.id)}
+        {#each visibleWorks as w (w.id)}
           <li class:active={selectedId === w.id}>
             <button class="work-item" onclick={() => openDetail(w.id)}>
               <span class="wt">{w.title}</span>
+              <span class="category-label">{categoryLabel(w.category)}</span>
               <span class="muted">{translateStatus(w.status, currentLocale)}{w.updated_at ? ` · ${fmtTime(w.updated_at)}` : ""}</span>
             </button>
           </li>
@@ -535,6 +566,7 @@
         {@const w = detail.work}
         <div class="detail-head">
           <h2>{w.title}</h2>
+          <span class="category-label">{categoryLabel(w.category)}</span>
           <button class="project-delete" data-testid="work-delete" onclick={openDelete} disabled={deleteLoading}>{currentLocale==='en-US'?'Delete project':'删除项目'}</button>
           <details class="project-options"><summary>{currentLocale==='en-US'?'Project settings':'项目设置'}</summary><div class="status-actions">
             {#each ["active", "paused", "waiting", "done"] as s (s)}
@@ -544,6 +576,7 @@
             <button onclick={() => archive(w)}>{tt("common.archive")}</button>
           </div>
           </details>
+          <div class="project-classification"><span>{currentLocale==='en-US'?'Project category':'项目分类'}</span><select aria-label={currentLocale==='en-US'?'Project category':'项目分类'} value={w.category??''} disabled={categoryBusy} onchange={event=>classify((event.currentTarget.value||null) as Work['category'])}><option value="">{categoryLabel(null)}</option><option value="clinical">{categoryLabel('clinical')}</option><option value="non_clinical">{categoryLabel('non_clinical')}</option></select></div>
           <div class="project-goal"><span>{currentLocale==='en-US'?'Goal':'希望达成什么'}</span><p>{w.summary||(currentLocale==='en-US'?'Record a few words or let the secretary help clarify the goal.':'可以先说几句话，随后让秘书帮您理清目标。')}</p></div>
           <div class="project-primary-actions"><button data-testid="project-ask" onclick={()=>navigateTo({view:'qa',workId:w.id})}>{currentLocale==='en-US'?'Ask about this project':'问这个项目'}</button><button data-testid="project-record" onclick={()=>projectCapture=!projectCapture}>{currentLocale==='en-US'?'Record progress':'记进展'}</button><button onclick={()=>{projectCapture=true;}}>{currentLocale==='en-US'?'Add a matter':'加一件事'}</button><AppButton testid="organize-work-with-ai" loading={organizeBusy} onclick={organizeWork}>{currentLocale==='en-US'?'Let secretary organize':'让秘书整理'}</AppButton></div>
           <SecretaryRound workId={w.id}/>
@@ -611,6 +644,17 @@
         </TypedDeleteDialog>
 
         <!-- WAITING -->
+        {#if detail.linked_inbox?.length}
+          <section class="card linked-captures" aria-label={currentLocale==='en-US'?'Linked original notes':'关联原话'}>
+            <div class="card-title">{currentLocale==='en-US'?'Linked original notes · To organize':'关联原话 · 待整理'}</div>
+            <ListPager view={projectInbox} onchange={page=>inboxListPage=page} testid="project-inbox-pagination"/>
+            {#each projectInbox.items as note(note.id)}
+              <div class="linked-capture" data-testid={`project-linked-inbox-${note.id}`}>
+                <p>{note.content}</p><div><span>{fmtTime(note.created_at)}</span><button class="entity-link" onclick={()=>navigateTo('inbox',note.id)}>{currentLocale==='en-US'?'View original note':'查看原话'} ↗</button></div>
+              </div>
+            {/each}
+          </section>
+        {/if}
         <section class="card">
           <div class="card-title">{tt("work.waiting")}</div>
           {#if detail.waiting.filter((x) => x.status === "open").length === 0}
@@ -621,9 +665,11 @@
             {#if wq.status === "open"}
               <div class="row-item">
                 <button class="entity-link" onclick={()=>navigateTo('waiting',wq.id)}>{wq.title}</button>
+                {#if wq.work_id!==w.id}<span class="linked-owner">{currentLocale==='en-US'?'Linked · ':'关联事项 · '}{ownership(wq.work_id)}</span>{/if}
                 <span class="muted">{tt("work.waitingDetail", { person: wq.waiting_for || "—" })}{wq.follow_up_at ? ` · ${tt("work.followUpDetail", { time: fmtTime(wq.follow_up_at) })}` : ""}</span>
                 <button onclick={() => resolveWaiting(wq)}>{tt("common.resolve")}</button>
                 <button class="record-delete" data-testid={`project-waiting-delete-${wq.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('waiting',wq.id,wq.title)}>{tt("common.delete")}</button>
+                {#if works.find(work=>work.id===wq.work_id)?.category!=='clinical'}<ClinicalProjectLink entityKind="waiting" entityId={wq.id} onchange={()=>openDetail(w.id)}/>{/if}
               </div>
             {/if}
           {/each}
@@ -669,8 +715,10 @@
             <div class="row-item">
               <span>{fmtTime(ev.start_at)}</span>
               <button class="entity-link" onclick={()=>navigateTo('calendar',ev.id)}>{ev.title}</button>
+              {#if ev.work_id!==w.id}<span class="linked-owner">{currentLocale==='en-US'?'Linked · ':'关联事项 · '}{ownership(ev.work_id)}</span>{/if}
               <span class="muted">{translateKind(ev.kind, currentLocale)}</span>
               <button class="record-delete" data-testid={`project-calendar-delete-${ev.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('calendar',ev.id,ev.title)}>{tt("common.delete")}</button>
+              {#if works.find(work=>work.id===ev.work_id)?.category!=='clinical'}<ClinicalProjectLink entityKind="calendar" entityId={ev.id} onchange={()=>openDetail(w.id)}/>{/if}
             </div>
           {/each}
         </details>
@@ -685,11 +733,13 @@
           {#each projectTasks.items as t (t.id)}
             <div class="row-item" class:task-done={t.status === "done"}>
               <button class="entity-link" class:strike={t.status === "done"} onclick={()=>navigateTo('task',t.id)}>{t.title}</button>
+              {#if t.work_id!==w.id}<span class="linked-owner">{currentLocale==='en-US'?'Linked · ':'关联事项 · '}{ownership(t.work_id)}</span>{/if}
               <span class="muted">{translateStatus(t.status, currentLocale)}{t.due_at ? ` · ${fmtTime(t.due_at)}` : ""}</span>
               {#if t.status !== "done"}
                 <button onclick={() => completeTask(t)}>{tt("common.complete")}</button>
               {/if}
               <button class="record-delete" data-testid={`project-task-delete-${t.id}`} disabled={deleteItemBusy} onclick={()=>requestItemDelete('task',t.id,t.title)}>{tt("common.delete")}</button>
+              {#if works.find(work=>work.id===t.work_id)?.category!=='clinical'}<ClinicalProjectLink entityKind="task" entityId={t.id} onchange={()=>openDetail(w.id)}/>{/if}
             </div>
           {/each}
         </section>
@@ -716,6 +766,8 @@
 </div>
 
 <style>
+  .linked-capture{padding:12px 0;border-bottom:1px solid var(--color-border)}.linked-capture:last-child{border-bottom:0}.linked-capture p{margin:0 0 8px;font-size:15px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}.linked-capture>div{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.linked-capture span{font-size:13px;color:var(--color-muted)}.linked-capture .entity-link{flex:0 0 auto;font-size:14px}
+  .project-category-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0 10px}.project-category-tabs button{display:flex;align-items:center;gap:10px;min-height:44px;padding:10px 16px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-surface);font-size:15px;color:var(--color-text)}.project-category-tabs button.active{background:var(--color-primary-soft);color:var(--color-primary);border-color:var(--color-primary)}.project-category-tabs span{font-size:13px;opacity:.8}.category-hint{font-size:14px;color:var(--color-muted);margin:0 0 18px}.category-label{font-size:13px!important;line-height:1.5;color:var(--color-primary);background:var(--color-primary-soft);padding:3px 8px;border-radius:5px;align-self:flex-start;display:inline-flex}.project-classification{display:flex;align-items:center;gap:12px;flex-basis:100%;font-size:14px;color:var(--color-muted)}.project-classification select{width:180px;max-width:100%;min-height:40px;border:1px solid var(--color-border);border-radius:8px;background:var(--color-surface);font:inherit;color:var(--color-text);padding:6px 10px}.linked-owner{color:var(--color-primary);font-size:13px}
   .record-delete-title{overflow-wrap:anywhere;white-space:pre-wrap;font-weight:600;line-height:1.7}
   .resume-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:12px}
   .project-delete,.record-delete{flex:0 0 auto;min-height:38px;padding:7px 12px;border:1px solid var(--color-border);border-radius:var(--radius-sm);background:var(--color-surface);color:var(--color-danger);font:inherit;font-size:14px;cursor:pointer}
@@ -742,7 +794,8 @@
     align-items: flex-start;
   }
   .list-pane {
-    width: 260px;
+    width: auto;
+    min-width: 0;
     flex-shrink: 0;
   }
   .detail-pane {

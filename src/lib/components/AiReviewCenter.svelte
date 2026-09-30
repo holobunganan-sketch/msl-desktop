@@ -1,10 +1,11 @@
 <script lang="ts">
+  import {aiText} from '$lib/services/aiText';
   import SecretaryRound from './SecretaryRound.svelte';
   import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
  import StatusLine from "$lib/components/ui/StatusLine.svelte";
   import ProposalPreview from './ProposalPreview.svelte';
   import {navigateTo} from '$lib/services/navigation';
-  import {proposalPresentation} from '$lib/services/proposalPresentation';
+  import {proposalPresentation,needsTimeConfirmation} from '$lib/services/proposalPresentation';
   import {listAiProposals} from '$lib/services/api';
   let {focusId=null,workId=null,runId=null}:{focusId?:number|null;workId?:number|null;runId?:number|null}=$props();
   let focusConsumed=false;
@@ -15,7 +16,7 @@
   async function undo(){if(!receipt||busy)return;busy=true;try{await command('undo_ai_confirmation',{receiptId:receipt.receipt_id});receipt=null;invalidate('works','tasks','waiting','calendar','inbox','proposals','brief');await load();}catch(e){error=friendlyError(e);}finally{busy=false;}}
   import ReviewTools from "$lib/components/ReviewTools.svelte";
   import ProposalRouting from "$lib/components/ProposalRouting.svelte";
-  import { decisionPayload, reviewPayload } from "$lib/services/proposalPayload";
+  import { decisionPayload, reviewPayload, confirmationPayload } from "$lib/services/proposalPayload";
   import ProposalStatus from "./ProposalStatus.svelte";
   import { command, deferAiProposal } from "$lib/services/api";
   import { invalidate } from "$lib/stores/dataRevision";
@@ -36,6 +37,9 @@
   let memory = $state<ClassificationMemoryStats>({ pattern_count: 0, feedback_count: 0, accepted_count: 0, corrected_count: 0, rejected_count: 0, updated_at: null });
   let index = $state(0);
   let payloadText = $state("{}");
+  let acceptedTimePayload=$state<string|null>(null);
+  const suggestedTimeAccepted=$derived(acceptedTimePayload===payloadText);
+  const tentativeTime=$derived.by(()=>{try{return needsTimeConfirmation(JSON.parse(payloadText));}catch{return false;}});
   let repairedStatus = $state(false);
   let statusFilter = $state("pending");
   let runFilter = $state(untrack(()=>runId?String(runId):"all"));
@@ -91,6 +95,33 @@
     return typeof value === "string" || typeof value === "number" ? String(value) : "";
   }
   function payloadBool(key: string): boolean { return payloadValue(key) === true; }
+  function optionalSelection(key: string): string {
+    try { const payload=parsePayload();return !Object.hasOwn(payload,key)?'__keep':payload[key]===null?'__none':String(payload[key]); } catch { return '__keep'; }
+  }
+  async function setOptionalSelection(key: string,value: string): Promise<void> {
+    if(value==='__keep'){
+      try { const payload=parsePayload();delete payload[key];payloadText=JSON.stringify(payload,null,2);if(items[index])items[index].payload_json=payloadText;error=''; } catch { error=tt('aiReview.invalidJson'); }
+      return;
+    }
+    const item=items[index];if(!item||busy)return;
+    if(item.operation==='update'&&item.target_id){
+      try {
+        const payload=parsePayload();
+        if(key==='category'&&!Object.hasOwn(payload,'project_revision')){
+          const work=works.find(work=>work.id===item.target_id);
+          if(!work)throw new Error(currentLocale==='en-US'?'Project unavailable. Refresh the review.':'项目已不存在，请刷新审阅。');
+          setPayloadField('project_revision',work.revision);
+        }
+        if(key==='clinical_work_id'&&!Object.hasOwn(payload,'clinical_relation_revision')){
+          busy=true;
+          const relation=await command<{revision:number}|null>('get_clinical_link',{entityKind:item.kind,entityId:item.target_id});
+          if(items[index]?.id!==item.id)return;
+          setPayloadField('clinical_relation_revision',relation?.revision??0);
+        }
+      } catch(cause){error=friendlyError(cause);return;}finally{busy=false;}
+    }
+    setPayloadField(key,value==='__none'?null:key==='clinical_work_id'?Number(value):value);
+  }
   function setPayloadField(key: string, value: unknown): void {
     let payload: Record<string, unknown>;
     try { payload = parsePayload(); } catch { payload = {}; }
@@ -105,8 +136,9 @@
     const local = new Date(source.getTime() - source.getTimezoneOffset() * 60_000);
     return local.toISOString().slice(0, 16);
   }
-  function setDateTime(key: string, value: string): void { setPayloadField(key, value ? Math.floor(new Date(value).getTime() / 1000) : null); setPayloadField("time_basis", "explicit"); setPayloadField("time_reason", null); }
+  function setDateTime(key: string, value: string): void { const inferred=tentativeTime;setPayloadField(key, value ? Math.floor(new Date(value).getTime() / 1000) : null);if(!inferred){setPayloadField("time_basis", "explicit");setPayloadField("time_reason", null);} }
   function preparePayload(item: AiProposal): void {
+    acceptedTimePayload=null;
     let payload: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(item.payload_json || "{}");
@@ -176,11 +208,16 @@
   async function confirm() {
     if(busy)return;
     const item=items[index];
-    if(item&&proposalPresentation({...item,payload_json:payloadText},works,currentLocale).needsAttention){adjusting=true;error=currentLocale==='en-US'?'Please confirm the missing project or time.':'请先补充项目归属或安排时间。审阅内容仍保留。';return;}
+    if(!item||item.status!=='pending')return;
+    const adoptedTime=suggestedTimeAccepted;
+    let candidate:Record<string,unknown>;
+    try {candidate=parsePayload();}catch{error=tt('aiReview.invalidJson');return;}
+    const validationPayload=adoptedTime?{...candidate,time_basis:'explicit'}:candidate;
+    if(item&&proposalPresentation({...item,payload_json:JSON.stringify(validationPayload)},works,currentLocale).needsAttention){adjusting=true;error=tentativeTime&&!adoptedTime?(currentLocale==='en-US'?'Confirm the proposed time separately, or remove it before accepting.':'请单独勾选确认建议时间，或清除时间后再采用。'):(currentLocale==='en-US'?'Please confirm the project and missing information.':'请先核对项目归属及缺少的信息。审阅内容仍保留。');return;}
     const edited = await saveDraft();
     if (!edited) return;
     busy = true;
-    try { const result=await confirmAiProposal(edited.id, edited.updated_at, parsePayload());const preview=proposalPresentation(edited,works,currentLocale);receipt={...result,workId:edited.work_id,message:`${preview.action} · ${preview.scope}`};adjusting=false; invalidate("works","tasks","waiting","calendar","inbox","proposals","brief"); await load(); }
+    try { const result=await confirmAiProposal(edited.id, edited.updated_at, confirmationPayload(parsePayload(),adoptedTime));const preview=proposalPresentation(edited,works,currentLocale);receipt={...result,workId:edited.work_id,message:`${preview.action} · ${preview.scope}`};adjusting=false; invalidate("works","tasks","waiting","calendar","inbox","proposals","brief"); await load(); }
     catch (cause) { error = friendlyError(cause); }
     finally { busy = false; }
   }
@@ -198,6 +235,9 @@
     if(selectedIds.includes(currentId) && !(await saveDraft())) return;
     const selected=allItems.filter(item=>selectedIds.includes(item.id)&&item.status==="pending");
     if(!selected.length)return;
+    if(selected.some(item=>proposalPresentation(item,works,currentLocale).needsAttention)){
+      error=currentLocale==='en-US'?'Review missing details and confirm tentative times individually before accepting this group.':'请先逐条核对缺少的信息；建议时间需要单独确认，不能批量采用。';return;
+    }
     busy=true;error="";
     try{
       const ready:AiProposal[]=[];
@@ -245,7 +285,7 @@
     {#if items.filter(item=>item.status==="pending").length>1}
       <details class="group-confirm" data-testid="group-review"><summary>{currentLocale==="en-US"?"Review related suggestions together":"一起处理相关建议"}</summary>
         <p>{currentLocale==="en-US"?"Select only reviewed items. The group is saved atomically and can be undone together.":"勾选已查看的事项。所选建议会一起保存，可在“分类记忆与撤销”中一并撤销；需要修改时先在下方编辑该条目。"}</p>
-        {#each items.filter(item=>item.status==="pending") as item(item.id)}<label><input type="checkbox" value={item.id} bind:group={selectedIds}/><span><strong>{item.title}</strong><small>{tt(`proposal.kind.${item.kind}` as Parameters<typeof t>[0])} · {item.reason}</small></span></label>{/each}
+        {#each items.filter(item=>item.status==="pending") as item(item.id)}<label><input type="checkbox" value={item.id} bind:group={selectedIds}/><span><strong>{item.title}</strong><small>{tt(`proposal.kind.${item.kind}` as Parameters<typeof t>[0])} · {aiText(item.reason)}</small></span></label>{/each}
         <button data-testid="confirm-proposal-group" disabled={busy||!selectedIds.length||selectedIds.length>20} onclick={confirmGroup}>{currentLocale==="en-US"?"Confirm selected":"确认所选"} ({selectedIds.length})</button>
       </details>
     {/if}
@@ -265,12 +305,13 @@
         {#if item.status==='resolved'}
           <details class="resolved-snapshot"><summary>{currentLocale==='en-US'?'Original arrangement (history)':'查看当时采用的安排'}</summary><ProposalPreview {item} {works}/></details>
         {:else}<ProposalPreview {item} {works}/>{/if}
+        {#if item.status==='pending'&&tentativeTime}<label class="suggested-time-confirm" data-testid="suggested-time-confirm"><input type="checkbox" checked={suggestedTimeAccepted} disabled={busy} onchange={event=>{acceptedTimePayload=event.currentTarget.checked?payloadText:null;}}/><span>{currentLocale==='en-US'?'I confirm the proposed time shown above.':'我确认采用上面列出的建议时间。'}<small>{currentLocale==='en-US'?'Optional: adjust or clear it first. Other fields still need acceptance.':'可以先调整或清除时间。勾选后，仍需点“采用安排”保存。'}</small></span></label>{/if}
         <div class="safety-note"><Icon name="check" size={15} /><span>{item.status === "pending" ? (currentLocale==='en-US'?'Accept to save these changes. You can undo them afterward.':'采用后保存以上变更，完成后可以撤销。') : tt("aiReview.readOnly")}</span></div>
         {#if adjusting}<div class="editor-scroll">
           <div class="form-grid">
             <label>{tt("aiReview.titleField")}<input value={item.title} oninput={(event) => updateTitle(item, event.currentTarget.value)} disabled={item.status !== "pending"} /></label>
             {#key item.id}<ProposalRouting kind={item.kind} workId={item.work_id} operation={item.operation} {works} disabled={busy||item.status!=="pending"} onkindchange={value=>updateKind(item,value)} onworkchange={value=>{item.work_id=value;error="";}}/>{/key}
-            <label class="reason-field">{tt("aiReview.reason")}<textarea value={item.reason} rows="2" readonly></textarea></label>
+            <label class="reason-field">{tt("aiReview.reason")}<textarea value={aiText(item.reason)} rows="2" readonly></textarea></label>
           </div>
 
           <div class="detail-card">
@@ -279,8 +320,10 @@
             <div class="detail-grid">
               {#if item.kind === "work"}
                 <ProposalStatus kind="work" value={payloadString("status")} onchange={value=>setPayloadField("status",value)} disabled={busy||item.status!=="pending"}/>
+                <label>{currentLocale==='en-US'?'Project category':'项目分类'}<select data-testid="review-project-category" value={optionalSelection('category')} onchange={event=>setOptionalSelection('category',event.currentTarget.value)} disabled={busy||item.status!=='pending'}><option value="__keep">{currentLocale==='en-US'?'Not specified (keep existing)':'未指定（保留已有分类）'}</option><option value="clinical">{currentLocale==='en-US'?'Clinical research':'临床研究'}</option><option value="non_clinical">{currentLocale==='en-US'?'Non-clinical work':'非临床研究'}</option><option value="__none">{currentLocale==='en-US'?'Clear category':'清除分类'}</option></select></label>
                 <label>{tt("aiReview.currentState")}<textarea value={payloadString("current_state")} oninput={(event) => setPayloadField("current_state", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
                 <label>{tt("aiReview.nextStep")}<textarea value={payloadString("next_step")} oninput={(event) => setPayloadField("next_step", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
+                <label class="wide">{tt("aiReview.remember")}<textarea value={payloadString("remember")} oninput={(event) => setPayloadField("remember", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
                 <label class="wide">{tt("aiReview.summaryField")}<textarea value={payloadString("summary")} oninput={(event) => setPayloadField("summary", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
               {:else if item.kind === "task"}
                 <ProposalStatus kind="task" value={payloadString("status")} onchange={value=>setPayloadField("status",value)} disabled={busy||item.status!=="pending"}/>
@@ -308,6 +351,7 @@
                 <label>{tt("aiReview.nextStep")}<textarea value={payloadString("next_step")} oninput={(event) => setPayloadField("next_step", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
                 <label class="wide">{tt("aiReview.remember")}<textarea value={payloadString("remember")} oninput={(event) => setPayloadField("remember", event.currentTarget.value)} rows="2" disabled={item.status !== "pending"}></textarea></label>
               {/if}
+              {#if ['task','waiting','calendar','inbox'].includes(item.kind)}<label class="wide">{currentLocale==='en-US'?'Related clinical research (optional)':'关联临床研究（可选）'}<select data-testid="review-clinical-link" value={optionalSelection('clinical_work_id')} onchange={event=>setOptionalSelection('clinical_work_id',event.currentTarget.value)} disabled={busy||item.status!=='pending'||works.some(work=>work.id===item.work_id&&work.category==='clinical')}><option value="__keep">{currentLocale==='en-US'?'Not specified (keep existing)':'未指定（保留已有关联）'}</option><option value="__none">{currentLocale==='en-US'?'Remove additional link':'解除额外关联'}</option>{#each works.filter(work=>work.category==='clinical'&&work.status!=='archived'&&work.id!==item.work_id) as research(research.id)}<option value={String(research.id)}>{research.title}</option>{/each}</select><small>{currentLocale==='en-US'?'Keeps the original project and the same item.':'保留原所属项目，同一事项不会重复创建。'}</small></label>{/if}
             </div>
           </div>
 
@@ -351,6 +395,7 @@
 <ProposalLifecycleDialog item={lifecycle?.item??null} action={lifecycle?.action??'delete'} onclose={()=>lifecycle=null} oncomplete={lifecycleCompleted} onbusychange={value=>busy=value}/>
 
 <style>
+  .suggested-time-confirm{display:flex;align-items:flex-start;gap:10px;padding:14px;border:1px solid var(--color-border);border-radius:10px;background:var(--color-primary-soft);font-size:14px;line-height:1.65}.suggested-time-confirm input{width:18px;height:18px;flex-shrink:0;margin-top:3px}.suggested-time-confirm span{min-width:0;overflow-wrap:anywhere}.suggested-time-confirm small{display:block;color:var(--color-muted);font-size:13px}
   .record-actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:18px;padding-top:14px;border-top:1px solid var(--color-border);min-width:0}
   .record-actions small{flex:1 1 260px;color:var(--color-muted);font-size:.9rem;line-height:1.65;overflow-wrap:anywhere}
   .resolve-control{display:flex;align-items:center;gap:9px;flex:1 1 260px;min-height:42px;font-size:1rem;line-height:1.6;cursor:pointer}

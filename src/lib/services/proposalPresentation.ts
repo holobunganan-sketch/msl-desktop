@@ -1,5 +1,9 @@
 type Proposal = {kind:string; operation?:string; work_id:number|null; payload_json:string};
-export function proposalPresentation(item:Proposal,works:Array<{id:number;title:string}>,locale:string) {
+export const proposalTimeFields=['scheduled_start','scheduled_end','due_at','follow_up_at','start_at','end_at'] as const;
+export function needsTimeConfirmation(payload:Record<string,unknown>):boolean {
+  return payload.time_basis==='inferred'&&proposalTimeFields.some(key=>typeof payload[key]==='number'&&Number.isFinite(payload[key])&&Number(payload[key])>0);
+}
+export function proposalPresentation(item:Proposal,works:Array<{id:number;title:string;category?:string|null}>,locale:string) {
   const en=locale==='en-US';
   let payload:Record<string,unknown>={};
   try { const parsed=JSON.parse(item.payload_json);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))payload=parsed; } catch { /* Missing data requires editing. */ }
@@ -23,10 +27,20 @@ export function proposalPresentation(item:Proposal,works:Array<{id:number;title:
   const fields:Array<[string,string,string]>=[['status','状态','Status'],['current_state','目前进展','Progress'],['next_step','下一步','Next step'],['waiting_for','等待谁','Waiting for'],['notes','说明','Notes'],['summary','目标','Goal'],['content','记录','Note'],['remember','提醒','Remember']];
   const statuses:Record<string,[string,string]>={done:['已完成','Completed'],resolved:['已结束等待','Resolved'],next:['待推进','Next'],scheduled:['已安排','Scheduled'],open:['等待中','Waiting'],active:['进行中','Active'],paused:['暂缓','Paused'],waiting:['等待中','Waiting']};
   const changes=fields.flatMap(([key,zh,eng])=>{const value=payload[key];if(typeof value!=='string'||!value.trim())return [];return [`${en?eng:zh}：${key==='status'?(statuses[value]?.[en?1:0]??value):value}`];});
+  const categories:Record<string,string>={clinical:en?'Clinical research':'临床研究',non_clinical:en?'Non-clinical work':'非临床研究'};
+  if(typeof payload.category==='string'&&categories[payload.category])changes.unshift(`${en?'Project category':'项目分类'}：${categories[payload.category]}`);
+  const clinical=works.find(work=>work.id===payload.clinical_work_id);
+  const invalidClinical=typeof payload.clinical_work_id==='number'&&(!clinical||clinical.category!=='clinical');
+  if(Object.hasOwn(payload,'clinical_work_id'))changes.push(`${en?'Related clinical research':'关联临床研究'}：${payload.clinical_work_id===null?(en?'No additional research link':'不额外关联研究'):clinical?.title??(en?'Unavailable — choose again':'项目不可用，请重新选择')}`);
+  if(typeof payload.priority==='string'){
+    const priorities:Record<string,string>={low:en?'Low':'低',normal:en?'Normal':'普通',high:en?'High':'高'};
+    if(priorities[payload.priority])changes.push(`${en?'Priority':'优先级'}：${priorities[payload.priority]}`);
+  }
   const timeBasis=payload.time_basis==='inferred'?(en?'AI suggested time':'AI 建议时间'):payload.time_basis==='explicit'?(en?'Specified time':'指定时间'):'';
   const timeReason=typeof payload.time_reason==='string'?payload.time_reason:'';
-  const calendarHint=hasTime&&['task','waiting','calendar'].includes(item.kind)?(en?'Appears on the calendar after acceptance; editing keeps the original item in sync.':'采用后自动进入日历，修改时仍关联原事项。'):'';
-  return {action,scope,time,timeDetails,changes,timeBasis,timeReason,calendarHint,needsAttention:missingDate||(item.kind==='resume_point'&&!item.work_id)||Boolean(item.work_id&&!project)};
+  const confirmTime=needsTimeConfirmation(payload);
+  const calendarHint=confirmTime?(en?'Confirm the suggested time separately before adding it to the calendar.':'建议时间需要单独确认，确认后才进入日历。'):hasTime&&['task','waiting','calendar'].includes(item.kind)?(en?'Appears on the calendar after acceptance; editing keeps the original item in sync.':'采用后自动进入日历，修改时仍关联原事项。'):'';
+  return {action,scope,time,timeDetails,changes,timeBasis,timeReason,calendarHint,needsTimeConfirmation:confirmTime,needsAttention:confirmTime||invalidClinical||missingDate||(item.kind==='resume_point'&&!item.work_id)||Boolean(item.work_id&&!project)};
 }
 export function actionTimeLabel(timestamp:number,now:number):string{
   const at=new Date(timestamp*1000),today=new Date(now*1000),pad=(n:number)=>String(n).padStart(2,'0');

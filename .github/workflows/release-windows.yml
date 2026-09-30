@@ -52,7 +52,7 @@ jobs:
       - run: pnpm check:publish
       - run: pnpm check:installer
       - run: pnpm check:ui
-      - run: node --test --test-concurrency=1 tests/*.test.mjs
+      - run: node --test --test-concurrency=1 tests/*.test.mjs scripts/*.test.mjs
       - run: pnpm check
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Test with isolated application data
@@ -83,6 +83,8 @@ jobs:
           $hash = (Get-FileHash -LiteralPath 'release/MSL-Desktop-Windows-x64.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
           $line = "$hash  MSL-Desktop-Windows-x64.exe`n"
           [System.IO.File]::WriteAllText((Join-Path $PWD 'release/SHA256SUMS.txt'), $line, [System.Text.UTF8Encoding]::new($false))
+      - name: Validate website release package
+        run: node scripts/build-website.mjs --installer release/MSL-Desktop-Windows-x64.exe
       - name: Publish verified release
         shell: pwsh
         env:
@@ -103,6 +105,37 @@ jobs:
             gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest
             if ($LASTEXITCODE -ne 0) { throw 'Could not publish release.' }
           }
+      # A manually published verified build can differ from a fresh CI build.
+      # Always distribute the exact binary already published on GitHub.
+      - name: Prepare website from published download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern 'MSL-Desktop-Windows-x64.exe' --pattern 'SHA256SUMS.txt' --dir release --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download the published release.' }
+          $expected = ((Get-Content 'release/SHA256SUMS.txt' -Raw).Trim() -split '\s+')[0]
+          $actual = (Get-FileHash 'release/MSL-Desktop-Windows-x64.exe' -Algorithm SHA256).Hash
+          if ($actual -ine $expected) { throw 'Published installer checksum mismatch.' }
+          node scripts/build-website.mjs --installer release/MSL-Desktop-Windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Website release preparation failed.' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msl-desktop-website-${{ github.ref_name }}
+          path: website-dist/
+          if-no-files-found: error
+      - name: Deploy official website when configured
+        shell: pwsh
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if (-not $env:CLOUDFLARE_API_TOKEN -or -not $env:CLOUDFLARE_ACCOUNT_ID) {
+            'Website deployment requires Cloudflare repository secrets. Download the website artifact or run the documented local deployment; the official website has not been updated by this workflow.' | Add-Content $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          npx --yes wrangler@4.141.0 pages deploy website-dist --project-name msl-desktop --branch main
+          if ($LASTEXITCODE -ne 0) { throw 'Official website deployment failed.' }
       - name: Refresh website version metadata
         shell: pwsh
         env:
