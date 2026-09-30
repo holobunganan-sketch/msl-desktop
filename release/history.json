@@ -4,8 +4,8 @@
     {
       "version": "0.3.18",
       "date": "2026-09-30",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "微信记录入口与整理过程改进",
       "summary": "新增微信扫码入口，支持发一句话记录和提交全局整理；改进资料读取、建议确认及失败重试。",
       "changes": [
@@ -16,7 +16,13 @@
         "收件箱显示原话的处理进度和已保存去向；暂缓建议可以继续处理，无需重新生成。",
         "采纳、拒绝或暂缓时可附加方向修正。修改建议展示原值与拟修改值，记录已变化时阻止旧建议覆盖。",
         "失败重试保留原来的整理范围并读取最新记录，避免单条整理被扩大成全局分析。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.18",
+        "label": "发布记录",
+        "publishedAt": "2026-09-30T13:42:43Z",
+        "commit": "f67b6fc2c48f50b2fe04d2d7f6d54cc8a38a1abb"
+      }
     },
     {
       "version": "0.3.17",
