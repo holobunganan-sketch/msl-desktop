@@ -245,7 +245,7 @@ fn validate_report(snapshot: &ReportSnapshot, raw: &str) -> Result<ValidatedRepo
     })
 }
 
-/// Validate both the first response and the single repair identically.
+/// Retain a readable report even when structured evidence needs user review.
 pub async fn complete_report(
     connection: &crate::db::provider::ProviderConnection,
     model: &crate::db::provider::ProviderModel,
@@ -257,13 +257,34 @@ pub async fn complete_report(
         validate_structured(snapshot, content)
     })
     .await
-    .map(|(_, report)| report)
+    .map(|(response, report)| {
+        report.unwrap_or_else(|warning| retained_report(&response.content, &warning))
+    })
+}
+
+fn retained_report(raw: &str, warning: &str) -> ValidatedReport {
+    ValidatedReport {
+        content: format!(
+            "回答已保留，报告格式或依据待核对：{warning}。以下为模型原始回答，尚未核实。\n\n{raw}"
+        ),
+        structured: serde_json::json!({"version":"report-spec-v2","items":[],"review_required":true,"raw_output":raw,"warnings":[warning]}),
+        evidence: serde_json::json!({"sources":[],"review_required":true,"warnings":[warning]}),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    #[test]
+    fn invalid_report_remains_readable_without_trusted_sources_or_actions() {
+        let report = retained_report("模型的完整原话", "缺少来源");
+        assert!(report.content.contains("模型的完整原话"));
+        assert_eq!(report.structured["raw_output"], "模型的完整原话");
+        assert_eq!(report.structured["items"], json!([]));
+        assert_eq!(report.evidence["sources"], json!([]));
+        assert_eq!(report.structured["review_required"], true);
+    }
     #[test]
     fn validated_structure_preserves_canonical_evidence_not_model_metadata() {
         let (snapshot, mut output) = fixture();

@@ -350,29 +350,69 @@ pub fn fail_run(db: &Database, run_id: i64, code: &str, message: &str) -> DbResu
     finish_run(db, run_id, "failed", None, Some((code, message)))
 }
 
-/// Validate and persist a completed model response. Every exit path after a
-/// model response moves the run out of `running`.
+/// Keep the original response even when only some proposals can be trusted.
+fn review_output(snapshot: &AnalysisSnapshot, output: &str) -> (ValidatedOutput, Vec<String>) {
+    let error = match parse_output(&snapshot.task_kind, output, snapshot) {
+        Ok(value) => return (value, Vec::new()),
+        Err(error) => error,
+    };
+    let cleaned = super::schema::strip_single_code_fence(output);
+    let value = cleaned
+        .find('{')
+        .zip(cleaned.rfind('}'))
+        .and_then(|(start, end)| (end >= start).then(|| &cleaned[start..=end]))
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let mut valid = ValidatedOutput {
+        summary: value
+            .as_ref()
+            .and_then(|v| v["summary"].as_str())
+            .map(str::to_string),
+        proposals: Vec::new(),
+    };
+    let mut warnings = vec![format!("回答已保留，以下内容需要核对：{error}")];
+    if let Some(items) = value.as_ref().and_then(|v| v["proposals"].as_array()) {
+        for (index, item) in items.iter().take(50).enumerate() {
+            let envelope = serde_json::json!({"proposals":[item]}).to_string();
+            match parse_output(&snapshot.task_kind, &envelope, snapshot) {
+                Ok(one) => valid.proposals.extend(one.proposals),
+                Err(error) => warnings.push(format!(
+                    "第 {} 条「{}」：{}；原文保留，未生成可直接确认的变更。",
+                    index + 1,
+                    item["title"].as_str().unwrap_or("未命名建议"),
+                    error
+                )),
+            }
+        }
+        if items.len() > 50 {
+            warnings.push("超过 50 条的建议保留在完整回答中，请分批核对。".into());
+        }
+    }
+    (valid, warnings)
+}
+
+/// Persist output before queue writes, so a queue failure cannot erase the answer.
 pub fn apply_output(
     db: &Database,
     run_id: i64,
     snapshot: &AnalysisSnapshot,
     output: &str,
 ) -> Result<usize, String> {
-    let validated = match parse_output("global_analysis", output, snapshot) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ = fail_run(db, run_id, "invalid_output", &error);
-            return Err(error);
-        }
-    };
+    let (validated, mut warnings) = review_output(snapshot, output);
+    db.conn().execute("INSERT INTO analysis_outputs(run_id,raw_output,warnings_json,created_at) VALUES(?1,?2,?3,?4) ON CONFLICT(run_id) DO NOTHING", rusqlite::params![run_id,output,serde_json::json!(warnings).to_string(),now_unix()]).map_err(|error| format!("模型已返回，但回答保存失败：{error}"))?;
     let tx = crate::db::write_transaction(db.conn()).map_err(|e| e.to_string())?;
     if !super::rounds::valid(&tx, run_id, &snapshot.round_tickets).map_err(|e| e.to_string())? {
+        warnings.push("分析期间事项已变化。旧回答已保留供参考，未据此覆盖当前建议。".into());
+        tx.execute(
+            "UPDATE analysis_outputs SET warnings_json=?1 WHERE run_id=?2",
+            rusqlite::params![serde_json::json!(warnings).to_string(), run_id],
+        )
+        .map_err(|e| e.to_string())?;
         finish_run(
             db,
             run_id,
             "reused",
-            Some("分析期间事项已变化，已保留当前建议；旧分析结果未写入。"),
-            None,
+            Some("分析期间事项已变化，回答已保留供参考；当前建议未改动。"),
+            Some(("output_needs_review", "事项已变化，已保留旧回答供查看。")),
         )
         .map_err(|e| e.to_string())?;
         tx.execute(
@@ -398,6 +438,10 @@ pub fn apply_output(
                 && proposal.work_id.is_none()
                 && proposal.source_refs.is_empty()
             {
+                warnings.push(format!(
+                    "「{}」缺少可核对的事项来源，保留原文供查看。",
+                    proposal.title
+                ));
                 continue;
             }
             // A captured item may propose its destination without reopening
@@ -413,12 +457,20 @@ pub fn apply_output(
                 });
             }
             if scopes.is_empty() {
+                warnings.push(format!(
+                    "「{}」未对应到本轮可整理事项，保留原文供查看。",
+                    proposal.title
+                ));
                 continue;
             }
             if scopes
                 .iter()
                 .any(|scope| !snapshot.round_tickets.iter().any(|t| &t.scope == scope))
             {
+                warnings.push(format!(
+                    "「{}」涉及本轮范围之外或尚待响应的事项，保留原文供查看。",
+                    proposal.title
+                ));
                 continue;
             }
         }
@@ -442,6 +494,8 @@ pub fn apply_output(
             Err(error) => {
                 let message = error.to_string();
                 let _ = tx.rollback();
+                let message =
+                    format!("回答已保留，但建议队列保存失败：{message}；请在整理记录中查看回答。");
                 let _ = fail_run(db, run_id, "proposal_write_failed", &message);
                 return Err(message);
             }
@@ -451,7 +505,23 @@ pub fn apply_output(
         .summary
         .unwrap_or_else(|| format!("已生成 {queued} 条待确认建议"));
     let summary = crate::ai::brief::normalize_bullet_output(&summary, &snapshot.locale);
-    finish_run(db, run_id, "completed", Some(&summary), None).map_err(|error| error.to_string())?;
+    tx.execute(
+        "UPDATE analysis_outputs SET warnings_json=?1 WHERE run_id=?2",
+        rusqlite::params![serde_json::json!(warnings).to_string(), run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    let warning = format!(
+        "回答已保留，{} 项提示待核对；可确认的建议有 {queued} 条。请打开整理记录查看。",
+        warnings.len()
+    );
+    finish_run(
+        db,
+        run_id,
+        "completed",
+        Some(&summary),
+        (!warnings.is_empty()).then_some(("output_needs_review", warning.as_str())),
+    )
+    .map_err(|error| error.to_string())?;
     // A successful review with no supported action still counts as reviewed.
     // Preserve the inbox item, and wait for changed user input before another call.
     super::rounds::remember(&tx, run_id, &snapshot.round_tickets).map_err(|e| e.to_string())?;
@@ -468,6 +538,43 @@ pub fn apply_output(
 mod tests {
     use super::*;
     use crate::ai::analysis_snapshot::build;
+    #[test]
+    fn retained_unstructured_answer_closes_round_without_repeating_unchanged_input() {
+        let db = Database::open_in_memory().unwrap();
+        let inbox = crate::db::inbox::InboxRepo::new(db.conn())
+            .insert("合成原话：请整理下一步。")
+            .unwrap();
+        let run = create_run(&db, "manual", 0, i64::MAX).unwrap();
+        let scope = format!("inbox:{}", inbox.id);
+        let tickets = super::super::rounds::reserve(&db, run, &[scope.clone()]).unwrap();
+        assert!(!tickets.is_empty());
+        let mut snapshot = build(
+            &db,
+            "global_analysis",
+            "2026-09-30",
+            0,
+            i64::MAX,
+            0,
+            i64::MAX,
+            "zh-CN",
+        )
+        .unwrap();
+        snapshot.round_tickets = tickets;
+        assert_eq!(
+            apply_output(&db, run, &snapshot, "先核对交流背景。").unwrap(),
+            0
+        );
+        let next = create_run(&db, "manual", 0, i64::MAX).unwrap();
+        assert!(super::super::rounds::reserve(&db, next, &[scope])
+            .unwrap()
+            .is_empty());
+        assert!(crate::db::inbox::InboxRepo::new(db.conn())
+            .get(inbox.id)
+            .unwrap()
+            .unwrap()
+            .processed_at
+            .is_none());
+    }
     #[test]
     fn accuracy_rejects_invented_deadline_and_completed_state_from_a_real_source() {
         let db = Database::open_in_memory().unwrap();
@@ -809,11 +916,14 @@ mod tests {
     }
 
     #[test]
-    fn invalid_output_is_finalized_as_failed_by_the_analysis_engine() {
+    fn invalid_output_is_preserved_for_review_without_formal_writes() {
         let db = Database::open_in_memory().unwrap();
         let run = create_run(&db, "manual", 0, 1).unwrap();
         let snapshot = build(&db, "global_analysis", "2026-08-20", 0, 1, 0, 1, "zh-CN").unwrap();
-        assert!(apply_output(&db, run, &snapshot, "not-json").is_err());
+        assert_eq!(
+            apply_output(&db, run, &snapshot, "模型原始分析：建议先核对专家归属。").unwrap(),
+            0
+        );
         let status: String = db
             .conn()
             .query_row(
@@ -822,7 +932,32 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(status, "failed");
+        assert_eq!(status, "completed");
+        let warning: String = db
+            .conn()
+            .query_row(
+                "SELECT error_code FROM analysis_runs WHERE id=?1",
+                [run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(warning, "output_needs_review");
+        let raw: String = db
+            .conn()
+            .query_row(
+                "SELECT raw_output FROM analysis_outputs WHERE run_id=?1",
+                [run],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "模型原始分析：建议先核对专家归属。");
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM ai_proposals", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

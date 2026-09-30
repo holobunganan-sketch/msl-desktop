@@ -99,6 +99,13 @@ pub fn build_report_snapshot(
         crate::db::reports::ReportRepo::new(db.conn())
             .list_overlapping_weekly(period_start, period_end, 20)?
             .into_iter()
+            .filter(|report| {
+                !report
+                    .structured_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                    .is_some_and(|v| v["review_required"] == true)
+            })
             .filter_map(|report| {
                 report.content.map(|content| WeeklyReportEvidence {
                     report_id: report.id,

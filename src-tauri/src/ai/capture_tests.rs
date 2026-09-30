@@ -60,6 +60,52 @@ fn queue(db: &Database, value: &Value) -> crate::db::ai::AiProposal {
 }
 
 #[test]
+fn unsupported_expert_attribution_keeps_answer_and_queues_valid_peer_only() {
+    let (db, expert, inbox) = setup();
+    let mut value = output(&db, expert, inbox);
+    value["proposals"][0]["payload"]["field_evidence"]["expert_id"]["snapshot_path"] =
+        json!("/expert_catalog/0/name");
+    value["proposals"].as_array_mut().unwrap().push(json!({"kind":"task","operation":"create","title":"核对长期随访资料","payload":{},"source_refs":[{"source_type":"inbox","entity_id":inbox}]}));
+    let raw = value.to_string();
+    let run = analysis::create_run(&db, "manual", 0, i64::MAX).unwrap();
+    assert_eq!(
+        analysis::apply_output(&db, run, &snapshot(&db), &raw).unwrap(),
+        1
+    );
+    let stored: (String, String) = db
+        .conn()
+        .query_row(
+            "SELECT raw_output,warnings_json FROM analysis_outputs WHERE run_id=?1",
+            [run],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, raw);
+    assert!(stored
+        .1
+        .contains("专家归属必须引用本次提供的原话或交流记录"));
+    assert!(stored.1.contains("长期证据需求"));
+    let queue = ProposalRepo::new(db.conn())
+        .list(Some("pending"), 100)
+        .unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].title, "核对长期随访资料");
+    assert!(kol::insights(&db, Some(expert)).unwrap().is_empty());
+    assert_eq!(
+        db.conn()
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(InboxRepo::new(db.conn())
+        .get(inbox)
+        .unwrap()
+        .unwrap()
+        .processed_at
+        .is_none());
+}
+
+#[test]
 fn capture_flow_insight_is_confirmed_only_once_and_undo_restores_inbox() {
     let (db, expert, inbox) = setup();
     let p = queue(&db, &output(&db, expert, inbox));

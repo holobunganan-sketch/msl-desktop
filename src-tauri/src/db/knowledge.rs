@@ -245,7 +245,7 @@ pub fn collect(db: &Database, scope: &[i64], query: &str) -> DbResult<EvidencePa
     }
     let global_queries=[
         ("brief","SELECT id,brief_date AS title,content,generated_at,period_start,period_end,ai_used FROM daily_briefs WHERE retention_state='kept'","generated_summary"),
-        ("report","SELECT id,kind AS title,content,period_start,period_end,generated_at FROM reports WHERE status='completed' AND retention_state='kept' AND NOT EXISTS(SELECT 1 FROM json_each(reports.evidence_json,'$.sources') s WHERE json_extract(s.value,'$.trust')='deleted')","generated_summary"),
+        ("report","SELECT id,kind AS title,content,period_start,period_end,generated_at FROM reports WHERE status='completed' AND retention_state='kept' AND COALESCE(json_extract(structured_json,'$.review_required'),0)=0 AND NOT EXISTS(SELECT 1 FROM json_each(reports.evidence_json,'$.sources') s WHERE json_extract(s.value,'$.trust')='deleted')","generated_summary"),
         ("analysis","SELECT id,trigger AS title,status,summary,period_start,period_end,created_at FROM analysis_runs","generated_summary"),
         ("kol_insight","SELECT * FROM kol_insights","reviewed_hypothesis"),
     ];

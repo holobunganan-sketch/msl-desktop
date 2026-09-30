@@ -344,6 +344,7 @@ fn clear_active_dataset(conn: &rusqlite::Connection) -> SyncResult<()> {
         "classification_memories",
         "ai_proposals",
         "daily_briefs",
+        "analysis_outputs",
         "analysis_runs",
         "reports",
         "capture_context",

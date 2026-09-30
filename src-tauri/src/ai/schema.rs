@@ -211,10 +211,10 @@ pub fn validate(
     // repair punctuation, truncate arrays, select nested proposals or merge objects.
     let candidate = match (clean.find('{'), clean.rfind('}')) {
         (Some(start), Some(end)) if end >= start => &clean[start..=end],
-        _ => return Err("AI 输出缺少完整 JSON 对象，可能已截断；未写入任何建议".into()),
+        _ => return Err("回答使用了非结构化格式，尚无法自动识别建议字段".into()),
     };
     let value: serde_json::Value = serde_json::from_str(candidate)
-        .map_err(|_| "AI JSON 语法无效或已截断；未写入任何建议".to_string())?;
+        .map_err(|_| "回答的结构化语法有误，尚无法自动识别建议字段".to_string())?;
     let contract: AiOutputContract = serde_json::from_value(value)
         .map_err(|_| "AI JSON 字段结构无效：summary 应为文本，proposals 应为建议数组，建议须有 kind、operation、title、payload".to_string())?;
     if contract.proposals.len() > 50 {
@@ -306,7 +306,7 @@ mod tests {
         .is_ok());
         assert!(validate("global_analysis", "{\"summary\":\"未完成", &[])
             .unwrap_err()
-            .contains("截断"));
+            .contains("结构化"));
         assert!(
             validate("global_analysis", "{\"summary\":[],\"proposals\":[]}", &[])
                 .unwrap_err()

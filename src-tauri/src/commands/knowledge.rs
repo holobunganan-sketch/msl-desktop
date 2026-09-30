@@ -161,7 +161,7 @@ async fn model_output(
     input: Value,
     pack: &EvidencePack,
     kol: bool,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     let resolved = with_db(state, |db| {
         let repo = db::provider::ProviderCatalogRepo::new(db.conn());
         crate::ai::router::resolve(&repo, &crate::ai::router::KeyringCredentialSource, kind)
@@ -189,7 +189,7 @@ async fn model_output(
         output_format: crate::ai::output::OutputFormat::PromptJson,
         budget: Default::default(),
     };
-    let (response, _) = crate::ai::provider::complete_checked(
+    let (response, checked) = crate::ai::provider::complete_checked(
         &resolved.connection,
         &resolved.model,
         &key,
@@ -216,7 +216,7 @@ async fn model_output(
         },
     )
     .await?;
-    Ok(response.content)
+    Ok((response.content, checked.err()))
 }
 
 pub async fn ask_workbench(
@@ -241,8 +241,8 @@ pub async fn ask_workbench(
         }).await.map_err(|_|"证据检索任务中断")??;
         with_db(&state,|db|db::qa::save_evidence(db,turn_id,&pack))?;
         let input=json!({"question":question,"locale":locale.unwrap_or_else(||"zh-CN".into()),"local_time":chrono::Local::now().to_rfc3339(),"history_context_only":history,"evidence":pack});
-        let raw=model_output(&state,"workbench_qa",include_str!("../ai/qa-spec.md"),input,&pack,false).await?;
-        crate::ai::knowledge_contract::parse_answer(&raw,&pack)
+        let (raw,warning)=model_output(&state,"workbench_qa",include_str!("../ai/qa-spec.md"),input,&pack,false).await?;
+        Ok::<_,String>(crate::ai::knowledge_contract::answer_for_review(&raw,&pack,warning))
     }.await;
     with_db(&state, |db| {
         db::qa::finish(db, turn_id, result.as_ref().map_err(|s| s.as_str()))
@@ -261,7 +261,7 @@ pub async fn analyze_kol(
     }
     let pack = with_db(&state, |db| db::kol::evidence_pack(db, expert_id))?;
     let input = json!({"expert_id":expert_id,"purpose":purpose,"locale":locale.unwrap_or_else(||"zh-CN".into()),"local_time":chrono::Local::now().to_rfc3339(),"evidence":pack});
-    let raw = model_output(
+    let (raw, warning) = model_output(
         &state,
         "kol_analysis",
         include_str!("../ai/kol-spec.md"),
@@ -270,7 +270,7 @@ pub async fn analyze_kol(
         true,
     )
     .await?;
-    let output = crate::ai::knowledge_contract::parse_kol(&raw, &pack)?;
+    let output = crate::ai::knowledge_contract::kol_for_review(&raw, &pack, warning);
     let draft_id = with_db(&state, |db| {
         db::kol::insert_draft(db, expert_id, &purpose, &output, &pack)
     })?;

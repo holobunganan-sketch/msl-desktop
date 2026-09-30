@@ -33,7 +33,7 @@
       {#if error}<p role="alert">{error}</p>{/if}
       <div class="job-list">
         {#each $aiJobs.slice(0,12) as job(job.id)}
-          <button class="job" onclick={()=>visit(job)}><span><strong>{label(job.command)}</strong><small>#{job.id} · {new Date(job.created_at*1000).toLocaleTimeString($locale,{hour:"2-digit",minute:"2-digit"})}</small></span><span class:failed={job.status==="failed"||job.status==="interrupted"}>{status(job.status)}</span>{#if job.error}<small class="job-error">{job.error}</small>{/if}</button>
+          <button class="job" onclick={()=>visit(job)}><span><strong>{label(job.command)}</strong><small>#{job.id} · {new Date(job.created_at*1000).toLocaleTimeString($locale,{hour:"2-digit",minute:"2-digit"})}</small></span><span class:failed={job.status==="failed"||job.status==="interrupted"}>{job.status==='completed'&&job.error?($locale==='en-US'?'Saved · review needed':'已保留 · 待核对'):status(job.status)}</span>{#if job.error}<small class="job-error">{job.error}</small>{/if}</button>
         {:else}<p>{$locale==="en-US"?"No recent tasks":"暂无后台任务"}</p>{/each}
       </div>
     </section>

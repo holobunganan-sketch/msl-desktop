@@ -121,6 +121,31 @@ pub struct KolOutput {
     pub citations: Vec<Citation>,
 }
 
+/// Unverified model text remains readable but never receives trusted citations
+/// or executable actions merely to satisfy the output contract.
+pub fn answer_for_review(raw: &str, pack: &EvidencePack, warning: Option<String>) -> Answer {
+    let checked = warning.map_or_else(|| parse_answer(raw, pack), Err);
+    checked.unwrap_or_else(|warning| Answer {
+        document: None,
+        claims: vec![Claim {
+            text: raw.to_string(),
+            basis: "unknown".into(),
+            citations: Vec::new(),
+        }],
+        gaps: vec![format!(
+            "回答已保留，格式或依据需要核对：{warning}。上述内容未经验证，请勿直接视为已证实事实。"
+        )],
+    })
+}
+
+pub fn kol_for_review(raw: &str, pack: &EvidencePack, warning: Option<String>) -> KolOutput {
+    let checked = warning.map_or_else(|| parse_kol(raw, pack), Err);
+    checked.unwrap_or_else(|warning| KolOutput {
+        summary: format!("回答已保留，待核对：{warning}。以下为模型原始回答，尚未转成可确认的洞察或安排。\n\n{raw}"),
+        insights: Vec::new(), actions: Vec::new(), citations: Vec::new(),
+    })
+}
+
 fn text(value: &str, max: usize, required: bool) -> Result<(), String> {
     if (required && value.trim().is_empty()) || value.chars().count() > max {
         Err("内容为空或超过长度限制".into())
@@ -296,6 +321,25 @@ pub fn parse_kol(raw: &str, pack: &EvidencePack) -> Result<KolOutput, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unverified_answers_remain_readable_without_fabricated_evidence_or_actions() {
+        let pack = pack();
+        let raw = "这是需要核对的模型观点。";
+        let answer = answer_for_review(raw, &pack, None);
+        assert_eq!(answer.claims[0].text, raw);
+        assert_eq!(answer.claims[0].basis, "unknown");
+        assert!(answer.claims[0].citations.is_empty());
+        assert!(!answer.gaps.is_empty());
+        let draft = kol_for_review(raw, &pack, None);
+        assert!(draft.summary.contains(raw));
+        assert!(
+            draft.insights.is_empty() && draft.actions.is_empty() && draft.citations.is_empty()
+        );
+        assert!(
+            parse_kol(&serde_json::to_string(&draft).unwrap(), &pack).is_err(),
+            "readable drafts must not bypass formal confirmation validation"
+        );
+    }
     use serde_json::json;
     fn pack() -> EvidencePack {
         let mut pack = EvidencePack::default();

@@ -1376,11 +1376,12 @@ mod tests {
                     if grounded {
                         assert_eq!(result.unwrap(), if same { 0 } else { 1 });
                     } else {
-                        assert!(
-                            result.is_err(),
-                            "Ungrounded output must fail instead of acknowledging a round"
-                        );
                         assert_eq!(
+                            result.unwrap(),
+                            0,
+                            "Ungrounded output is retained without queueing unsafe actions"
+                        );
+                        assert_ne!(
                             status(&db, &format!("inbox:{source}")).unwrap().state,
                             "ready"
                         );

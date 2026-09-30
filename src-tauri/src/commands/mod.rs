@@ -2142,7 +2142,7 @@ mod validation_tests {
                     .unwrap()
             })
             .unwrap();
-        assert_eq!(version, 27);
+        assert_eq!(version, 28);
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         let _ = std::fs::remove_dir_all(root);

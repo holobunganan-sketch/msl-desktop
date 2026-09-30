@@ -430,6 +430,7 @@ fn run_app() {
             commands::ai_secretary::save_analysis_schedule,
             commands::ai_secretary::run_analysis_now,
             commands::ai_secretary::list_analysis_runs,
+            commands::ai_secretary::get_analysis_output,
             commands::ai_secretary::get_ai_efficiency_stats,
             commands::ai_secretary::retry_analysis_run,
             commands::ai_secretary::keep_daily_brief,

@@ -105,6 +105,12 @@ const TABLES: &[TableSpec] = &[
         excluded: NO_EXCLUSIONS,
     },
     TableSpec {
+        name: "analysis_outputs",
+        key: "id",
+        refs: &[("run_id", "analysis_runs")],
+        excluded: NO_EXCLUSIONS,
+    },
+    TableSpec {
         name: "ai_proposals",
         key: "id",
         refs: PROPOSAL_REFS,

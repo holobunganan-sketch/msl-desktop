@@ -81,7 +81,7 @@ fn sync_schema_has_durable_identity_journal_and_conflicts() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(version, 27);
+    assert_eq!(version, 28);
     for table in [
         "sync_local_state",
         "sync_entities",
@@ -95,6 +95,7 @@ fn sync_schema_has_durable_identity_journal_and_conflicts() {
         "sync_workspace_bindings",
         "sync_feedback_events",
         "ai_readable_documents",
+        "analysis_outputs",
         "ai_proposal_outcomes",
     ] {
         let found: i64 = db
@@ -234,6 +235,33 @@ fn simultaneous_new_tasks_keep_distinct_identity_and_project_links() {
         assert_eq!(titles, "A 新任务|B 新任务");
     }
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn retained_analysis_outputs_sync_to_their_remapped_run_without_changing_raw_text() {
+    let root = std::env::temp_dir().join(format!("msl-output-sync-{}", uuid::Uuid::new_v4()));
+    let shared = root.join("MSLDesktop.sync");
+    std::fs::create_dir_all(&shared).unwrap();
+    let a = crate::db::Database::open(&root.join("a.db")).unwrap();
+    let b = crate::db::Database::open(&root.join("b.db")).unwrap();
+    let run_a = crate::ai::analysis::create_run(&a, "manual", 0, 1).unwrap();
+    let run_b = crate::ai::analysis::create_run(&b, "manual", 0, 2).unwrap();
+    assert_eq!(run_a, run_b);
+    a.conn().execute("INSERT INTO analysis_outputs(run_id,raw_output,warnings_json,created_at) VALUES(?1,'合成原话：保留 001 与专家编号 1。','[\"待核对\"]',1)",[run_a]).unwrap();
+    publish_state(a.conn(), &shared, "A", "dataset", "generation").unwrap();
+    receive_states(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    receive_states(b.conn(), &shared, "B", "dataset", "generation").unwrap();
+    let result:(i64,String,i64)=b.conn().query_row("SELECT o.run_id,o.raw_output,r.period_end FROM analysis_outputs o JOIN analysis_runs r ON r.id=o.run_id",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_ne!(result.0, run_b);
+    assert_eq!(result.1, "合成原话：保留 001 与专家编号 1。");
+    assert_eq!(result.2, 1);
+    assert_eq!(
+        b.conn()
+            .query_row("SELECT COUNT(*) FROM analysis_outputs", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]

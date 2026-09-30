@@ -15,6 +15,7 @@ async function notifyFinished(job:AiJob) {
   notified.add(job.id);
   if(notified.size>200)notified.delete(notified.values().next().value!);
   const en=get(locale)==="en-US";
+  if(job.status==='completed'&&job.error){addToast(en?'Answer saved. Open Background tasks to review the notes.':'回答已保留，有内容待核对。请从“后台任务”打开查看。','info',6500);return;}
   if(job.status==='completed'&&['run_analysis_now','start_workspace_work_draft','organize_inbox_item','retry_analysis_run'].includes(job.command)) {
     try {
       const runs=await invoke<{id:number;status:string;summary:string|null}[]>('list_analysis_runs',{limit:30});

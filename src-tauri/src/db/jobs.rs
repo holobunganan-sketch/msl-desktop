@@ -95,7 +95,14 @@ pub(crate) fn start_in_transaction(
 }
 pub fn finish(conn: &Connection, id: i64, result: Result<Value, String>) -> DbResult<()> {
     let (status, value, error) = match result {
-        Ok(v) => ("completed", Some(v.to_string()), None),
+        Ok(v) => {
+            let warning = if let Some(run_id) = v.as_i64() {
+                conn.query_row("SELECT r.error_message FROM analysis_runs r JOIN ai_jobs j ON j.id=?1 WHERE r.id=?2 AND r.error_code='output_needs_review' AND j.command IN ('run_analysis_now','retry_analysis_run','start_workspace_work_draft','organize_inbox_item')",params![id,run_id],|r|r.get::<_,Option<String>>(0)).optional()?.flatten()
+            } else {
+                None
+            };
+            ("completed", Some(v.to_string()), warning)
+        }
         Err(e) => (
             "failed",
             None,
@@ -117,6 +124,32 @@ pub fn recover(conn: &Connection) -> DbResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_analysis_with_review_notes_is_not_a_failed_job() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let run = crate::ai::analysis::create_run(&db, "manual", 0, 1).unwrap();
+        crate::ai::analysis::finish_run(
+            &db,
+            run,
+            "completed",
+            Some("已保留回答"),
+            Some(("output_needs_review", "专家归属待核对")),
+        )
+        .unwrap();
+        for command in [
+            "run_analysis_now",
+            "start_workspace_work_draft",
+            "organize_inbox_item",
+            "retry_analysis_run",
+        ] {
+            let (job, _) = start(db.conn(), command, &serde_json::json!({})).unwrap();
+            finish(db.conn(), job.id, Ok(serde_json::json!(run))).unwrap();
+            let result = get(db.conn(), job.id).unwrap();
+            assert_eq!(result.status, "completed");
+            assert_eq!(result.result, Some(serde_json::json!(run)));
+            assert_eq!(result.error.as_deref(), Some("专家归属待核对"));
+        }
+    }
     #[test]
     fn receipt_retention_never_removes_active_jobs_or_formal_outputs() {
         let db = crate::db::Database::open_in_memory().unwrap();

@@ -323,7 +323,11 @@ fn recovery_invalid_or_untrusted_second_output_never_triggers_a_third_generation
                 &snapshot,
             ));
             let calls = server.finish();
-            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap().content,
+                second,
+                "validation issues retain the response"
+            );
             assert_eq!(calls.len(), 2);
             assert_eq!(pending_count(&db), 0);
         }
@@ -476,7 +480,7 @@ fn recovery_and_transport_retries_share_three_http_attempts() {
 }
 
 #[test]
-fn recovery_existing_format_repair_remains_available_for_complete_invalid_json() {
+fn complete_invalid_format_does_not_force_regeneration() {
     let (_db, snapshot, output) = fixture("global_analysis");
     let server = MockServer::new(vec![
         (200, response("chat_completions", "not-json", false)),
@@ -490,10 +494,31 @@ fn recovery_existing_format_repair_remains_available_for_complete_invalid_json()
         &snapshot,
     ));
     let calls = server.finish();
-    assert_eq!(result.unwrap().content, output);
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0]["messages"][0], calls[1]["messages"][0]);
-    assert_eq!(calls[0]["messages"][1], calls[1]["messages"][1]);
+    assert_eq!(result.unwrap().content, "not-json");
+    assert_eq!(calls.len(), 1);
+}
+
+#[test]
+fn complete_but_unstructured_response_is_visible_without_format_regeneration() {
+    for protocol in ["chat_completions", "responses", "anthropic_messages"] {
+        let (_db, snapshot, _) = fixture("global_analysis");
+        let raw = "建议先核对专家归属，再安排下一次交流。";
+        let server = MockServer::new(vec![(200, response(protocol, raw, false))]);
+        let result = tauri::async_runtime::block_on(complete_validated(
+            &connection(&server.base, "custom"),
+            &model(protocol, "independent-model", json!({})),
+            "synthetic-test-only",
+            &build_request("independent-model", &snapshot),
+            &snapshot,
+        ));
+        let calls = server.finish();
+        assert_eq!(result.unwrap().content, raw);
+        assert_eq!(
+            calls.len(),
+            1,
+            "format differences must not force another model request"
+        );
+    }
 }
 
 #[test]
@@ -611,7 +636,9 @@ fn recovery_translation_keeps_input_and_requires_complete_schema() {
                 },
             ));
             let calls = server.finish();
-            assert_eq!(result.is_ok(), valid, "{protocol}: {result:?}");
+            let (response, checked) = result.unwrap();
+            assert_eq!(checked.is_ok(), valid, "{protocol}: {checked:?}");
+            assert_eq!(response.content, output);
             assert_eq!(calls.len(), 2);
             assert_eq!((limit(&calls[0]), limit(&calls[1])), (4000, 5000));
             assert_eq!(

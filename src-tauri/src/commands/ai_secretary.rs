@@ -621,6 +621,16 @@ pub async fn run_analysis_now(
 }
 
 #[tauri::command]
+pub fn get_analysis_output(
+    state: State<AppState>,
+    run_id: i64,
+) -> Result<Option<serde_json::Value>, String> {
+    with_db(&state, |db| {
+        Ok(crate::db::knowledge::rows(db.conn(), "SELECT o.run_id,o.raw_output,o.warnings_json,o.created_at,r.status FROM analysis_outputs o JOIN analysis_runs r ON r.id=o.run_id WHERE o.run_id=?1", &[&run_id])?.into_iter().next())
+    })
+}
+
+#[tauri::command]
 pub fn list_analysis_runs(
     state: State<AppState>,
     limit: Option<usize>,
@@ -692,7 +702,10 @@ pub async fn translate_text(
         |content| crate::ai::translation::parse_output(&input, direction, content),
     )
     .await
-    .map(|(_, translation)| translation)
+    .map(|(response, translation)| {
+        translation
+            .unwrap_or_else(|warning| format!("翻译结果待核对：{warning}\n\n{}", response.content))
+    })
 }
 
 #[tauri::command]

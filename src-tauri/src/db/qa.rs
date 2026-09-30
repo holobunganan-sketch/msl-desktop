@@ -181,8 +181,8 @@ pub fn finish(
                 return Ok(());
             };
             let document = value.to_document(&question);
-            crate::ai::output::parse_document(&serde_json::to_string(&document).unwrap())
-                .map_err(|error| DbError::Migration(error.to_string()))?;
+            // Answer validation happened at the model boundary. A display-only
+            // fallback is marked Unknown and must remain persistable here.
             crate::db::ai_documents::save_document(
                 &tx,
                 "qa_turn",

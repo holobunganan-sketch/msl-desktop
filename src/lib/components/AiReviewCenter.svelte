@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AnalysisOutput from './AnalysisOutput.svelte';
   import {aiText} from '$lib/services/aiText';
   import SecretaryRound from './SecretaryRound.svelte';
   import ProposalLifecycleDialog from './ProposalLifecycleDialog.svelte';
@@ -77,9 +78,9 @@
     const display = item.status === "pending" && item.deferred_at ? "deferred" : item.status;
     return (statusFilter === "all" || display === statusFilter) && (runFilter === "all" || String(item.analysis_run_id ?? "none") === runFilter);
   }));
-  const latestRun = $derived(analysisRuns.find(run=>run.status!=='reused'&&(workId===null||scopedItems.some(item=>item.analysis_run_id===run.id))) ?? null);
+  const latestRun = $derived((runFilter==='all'?analysisRuns.find(run=>run.status!=='reused'&&(workId===null||scopedItems.some(item=>item.analysis_run_id===run.id))):analysisRuns.find(run=>run.id===Number(runFilter))) ?? null);
   const latestPendingCount = $derived(latestRun ? scopedItems.filter((item) => item.analysis_run_id === latestRun.id && item.status === "pending" && !item.deferred_at).length : 0);
-  const runIds = $derived([...new Set(scopedItems.map((item) => item.analysis_run_id).filter((id): id is number => id !== null))]);
+  const runIds = $derived([...new Set([...analysisRuns.filter(run=>workId===null||scopedItems.some(item=>item.analysis_run_id===run.id)||run.id===runId).map(run=>run.id),...scopedItems.map(item=>item.analysis_run_id).filter((id):id is number=>id!==null)])].sort((a,b)=>b-a));
   const pendingCount=$derived(scopedItems.filter(item=>item.status==='pending'&&!item.deferred_at).length);
   const deferredCount=$derived(scopedItems.filter(item=>item.status==='pending'&&item.deferred_at).length);
 
@@ -302,7 +303,7 @@
     <div class="workflow-copy">
       <strong>{latestRun?.status === "failed" ? tt("aiReview.workflowFailed") : latestRun?.status === "running" ? tt("aiReview.workflowRunning") : latestRun?.status === "completed" ? tt("aiReview.workflowCompleted") : tt("aiReview.workflowIdle")}</strong>
       {#if latestRun?.status === "failed"}<small>{friendlyError(latestRun.error_message || latestRun.error_code || "—").replace(/global_analysis/g, tt("aiReview.title"))}</small>
-      {:else if latestRun?.status === "completed"}<small>{latestPendingCount ? tt("aiReview.workflowPendingCount", { count: latestPendingCount }) : tt("aiReview.workflowNoSuggestion")} · {fmtTime(latestRun.finished_at)}</small>
+      {:else if latestRun?.status === "completed"}<small>{latestRun.error_code==='output_needs_review'?latestRun.error_message:latestPendingCount ? tt("aiReview.workflowPendingCount", { count: latestPendingCount }) : tt("aiReview.workflowNoSuggestion")} · {fmtTime(latestRun.finished_at)}</small>
       {:else if latestRun?.status === "running"}<small>#{latestRun.id} · {fmtTime(latestRun.started_at)}</small>{/if}
     </div>
     <ReviewTools feedbackCount={memory.feedback_count} onchange={()=>void load()}/>
@@ -310,6 +311,7 @@
   <AnalysisCoverage counts={latestRun?.source_counts_json}/>
   </details><AppButton testid="review-run-analysis" loading={analysisBusy || latestRun?.status === "running"} onclick={analyzeNow}>{latestRun ? tt("aiReview.runAnalysis") : tt("aiReview.startAnalysis")}</AppButton></div>
   <div class="error stable-feedback"><StatusLine message={error} onclear={()=>error=""}/></div>
+  <AnalysisOutput runId={runFilter==='all'?(latestRun?.id??null):Number(runFilter)||null} updatedAt={analysisRuns.find(run=>run.id===(runFilter==='all'?latestRun?.id:Number(runFilter)))?.finished_at??0}/>
 
   {#if receipt}<div class="receipt" role="status"><span>{currentLocale==='en-US'?'Saved: ':'已保存：'}{receipt.message}</span><button data-testid="review-receipt-view" onclick={openReceipt}>{currentLocale==='en-US'?'View item':'查看去向'}</button><button data-testid="review-receipt-undo" disabled={busy} onclick={undo}>{currentLocale==='en-US'?'Undo':'撤销'}</button></div>{/if}
   {#if items.length}
