@@ -4,8 +4,8 @@
     {
       "version": "0.3.17",
       "date": "2026-09-30",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "秘书分析的输出恢复",
       "summary": "修复秘书分析因模型输出额度不足而中止的问题，补充有界恢复和清晰的失败提示。",
       "changes": [
@@ -14,7 +14,13 @@
         "区分输出截断、服务中断、内容拒绝和上下文超限，避免反复执行无效重试。",
         "固定模板校准时保留已保存的模型能力与输出上限。",
         "恢复后的结果仍须通过来源、项目范围和字段校验；未完成的内容不会写入工作台。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.17",
+        "label": "发布记录",
+        "publishedAt": "2026-09-30T11:52:34Z",
+        "commit": "e6aa701987a55af4493a7b142bc1a08e55b6d903"
+      }
     },
     {
       "version": "0.3.16",
