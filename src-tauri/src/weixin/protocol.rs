@@ -267,13 +267,14 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         std::thread::spawn(move || {
             let start = std::time::Instant::now();
-            while start.elapsed().as_secs() < 5 {
+            while start.elapsed().as_secs() < 30 {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
-                        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                        .set_read_timeout(Some(std::time::Duration::from_secs(15)))
                         .unwrap();
                     let mut request = vec![];
                     let mut bytes = [0u8; 4096];
+                    let mut complete = false;
                     loop {
                         let n = stream.read(&mut bytes).unwrap_or(0);
                         if n == 0 {
@@ -291,10 +292,15 @@ mod tests {
                                 })
                                 .unwrap_or(0);
                             if body.len() >= len {
+                                complete = true;
                                 break;
                             }
                         }
                     }
+                    assert!(
+                        complete,
+                        "Mock must receive a complete HTTP request before replying"
+                    );
                     let _ = tx.send(String::from_utf8(request).unwrap());
                     let _=write!(stream,"HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len());
                     break;

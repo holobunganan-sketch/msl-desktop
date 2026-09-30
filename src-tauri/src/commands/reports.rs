@@ -34,12 +34,6 @@ pub(crate) async fn execute_report(
     };
     let resolved = match with_db(state, |db| {
         let repo = crate::db::provider::ProviderCatalogRepo::new(db.conn());
-        let explicit = repo.get_route(task_kind)?;
-        if explicit.and_then(|route| route.provider_model_id).is_none() {
-            return Err(crate::db::DbError::Migration(format!(
-                "任务 {task_kind} 未绑定专用 Provider 模型"
-            )));
-        }
         crate::ai::router::resolve(
             &repo,
             &crate::ai::router::KeyringCredentialSource,

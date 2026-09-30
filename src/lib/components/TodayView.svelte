@@ -283,7 +283,7 @@
       </section>
     </aside>
   </section>
-  <ManualCompletionFeedback error={dataError} onrefresh={loadData}/>
+  <ManualCompletionFeedback error={dataError} onrefresh={loadData} collapseWhenEmpty/>
   <section class="attention-strip">
     <div><strong>{currentLocale==='en-US'?'Worth a look':'值得留意'}</strong><p>{(data?.waiting_followups??[]).slice(0,2).map(item=>item.title).join(' · ')||(currentLocale==='en-US'?'No waiting items need following up today.':'今天暂无到期的等待事项。')}</p></div><button onclick={()=>nav('waiting')}>{currentLocale==='en-US'?'View waiting':'查看等待'} ↗</button>
     {#if data?.inbox_pending.length}<button onclick={()=>nav('inbox')}>{data.inbox_pending.length} {currentLocale==='en-US'?'notes to organize':'条记录待整理'} ↗</button>{/if}

@@ -7,11 +7,12 @@ test('model choices exclude disabled providers, disabled models and unavailable 
  const models=[{id:11,provider_id:1,enabled:true,available:true},{id:12,provider_id:1,enabled:false,available:true},{id:13,provider_id:2,enabled:true,available:true},{id:14,provider_id:1,enabled:true,available:false}];
  assert.deepEqual(chat.chatModels(providers,models).map(m=>m.id),[11]);
 });
-test('Q&A follows its own route and explicit unconfigured route never silently falls back',()=>{
+test('Q&A prefers its own model and unassigned routes inherit the global default',()=>{
  assert.equal(typeof chat.chatModelId,'function');
  assert.equal(chat.chatModelId([{task_kind:'general',provider_model_id:1},{task_kind:'workbench_qa',provider_model_id:2}]),2);
- assert.equal(chat.chatModelId([{task_kind:'general',provider_model_id:1},{task_kind:'workbench_qa',provider_model_id:null}]),null);
+ assert.equal(chat.chatModelId([{task_kind:'general',provider_model_id:1},{task_kind:'workbench_qa',provider_model_id:null}]),1);
  assert.equal(chat.chatModelId([{task_kind:'general',provider_model_id:1}]),1);
+ assert.equal(chat.chatModelId([{task_kind:'general',provider_model_id:null},{task_kind:'workbench_qa',provider_model_id:null}]),null);
 });
 test('Enter sends, Shift Enter adds a line, IME confirmation never sends a question',()=>{
  assert.equal(typeof chat.chatEnter,'function');

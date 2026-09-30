@@ -4,7 +4,11 @@ export function chatModels(providers: ProviderConnection[], models: ProviderMode
   return models.filter(m => enabled.has(m.provider_id) && m.enabled && m.available);
 }
 export function chatModelId(routes: AiTaskRoute[]): number | null {
-  return (routes.find(r => r.task_kind === 'workbench_qa') ?? routes.find(r => r.task_kind === 'general'))?.provider_model_id ?? null;
+  return taskModelId(routes, 'workbench_qa');
+}
+export function taskModelId(routes: AiTaskRoute[], taskKind: string): number | null {
+  return routes.find(r => r.task_kind === taskKind)?.provider_model_id
+    ?? routes.find(r => r.task_kind === 'general')?.provider_model_id ?? null;
 }
 export function chatEnter(event: {key: string; shiftKey?: boolean; isComposing?: boolean; keyCode?: number}) {
   return event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229;

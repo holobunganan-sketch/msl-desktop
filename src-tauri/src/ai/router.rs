@@ -39,6 +39,7 @@ impl<'a, C: CredentialSource> AiRouter<'a, C> {
             .repo
             .get_route(task_kind)
             .map_err(|error| super::provider::AiError::Config(error.to_string()))?
+            .filter(|route| route.provider_model_id.is_some())
             .or(self
                 .repo
                 .get_route("general")
@@ -201,6 +202,57 @@ mod tests {
         assert_eq!(resolved.task_kind, "translation");
         assert!(resolve(&repo, &credentials, "daily_brief").is_ok());
         assert!(resolve(&repo, &credentials, "unknown").is_err());
+    }
+
+    #[test]
+    fn every_unassigned_task_inherits_general_but_explicit_choices_are_preserved() {
+        let (db, provider_id, default_id) = fixture();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        let other = repo
+            .upsert_model(
+                provider_id,
+                "other-model",
+                "Other",
+                "responses",
+                "/responses",
+                "{}",
+                "manual",
+                true,
+                true,
+            )
+            .unwrap();
+        let credentials = FakeCredentials { value: None };
+        repo.upsert_route("general", Some(default_id)).unwrap();
+        for kind in crate::db::provider::AI_TASK_KINDS
+            .iter()
+            .filter(|kind| **kind != "general")
+        {
+            repo.upsert_route(kind, None).unwrap();
+            let resolved =
+                resolve(&repo, &credentials, kind).expect("unassigned tasks inherit the default");
+            assert_eq!(resolved.model.id, default_id, "{kind}");
+            assert_eq!(resolved.task_kind, *kind);
+            repo.upsert_route(kind, Some(other.id)).unwrap();
+            assert_eq!(
+                resolve(&repo, &credentials, kind).unwrap().model.id,
+                other.id
+            );
+        }
+        repo.set_model_enabled(other.id, false).unwrap();
+        assert!(resolve(&repo, &credentials, "translation")
+            .unwrap_err()
+            .to_string()
+            .contains("禁用"));
+        repo.upsert_route("translation", None).unwrap();
+        assert_eq!(
+            resolve(&repo, &credentials, "translation")
+                .unwrap()
+                .model
+                .id,
+            default_id
+        );
+        repo.upsert_route("general", None).unwrap();
+        assert!(resolve(&repo, &credentials, "translation").is_err());
     }
 
     #[test]
