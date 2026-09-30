@@ -520,40 +520,47 @@ fn completion_status(body: &Value, protocol: &str) -> Result<super::Completion, 
                         .is_some_and(|c| c.iter().any(|p| p["type"] == "refusal"))
                 })
             });
-    if refusal || matches!(reason, Some("content_filter" | "refusal")) {
+    let incomplete_reason = body
+        .pointer("/incomplete_details/reason")
+        .and_then(Value::as_str);
+    if refusal
+        || matches!(reason, Some("content_filter" | "refusal"))
+        || (protocol == "responses" && incomplete_reason == Some("content_filter"))
+    {
         return Err(AiError::Api(
             "模型未提供此内容，本次已停止；未进行格式修复或重复生成".into(),
         ));
     }
-    if matches!(
-        reason,
-        Some(
-            "length"
-                | "max_tokens"
-                | "incomplete"
-                | "failed"
-                | "cancelled"
-                | "in_progress"
-                | "queued"
-                | "tool_calls"
-                | "tool_use"
-                | "pause_turn"
-        )
-    ) {
+    if (protocol == "chat_completions" && reason == Some("length"))
+        || (protocol == "anthropic_messages" && reason == Some("max_tokens"))
+        || (protocol == "responses"
+            && reason == Some("incomplete")
+            && incomplete_reason == Some("max_output_tokens"))
+    {
+        return Err(AiError::OutputLimit);
+    }
+    if matches!(reason, Some("model_context_window_exceeded")) {
         return Err(AiError::Api(
-            "模型输出尚未完整结束，未保存为成功结果；可调整输出上限后重试".into(),
+            "模型上下文容量不足，未保存结果；请缩小本次整理范围或选择更大上下文的模型（AI_CONTEXT_LIMIT）".into(),
         ));
     }
-    Ok(
-        if matches!(
-            reason,
-            Some("stop" | "end_turn" | "stop_sequence" | "completed")
-        ) {
-            super::Completion::Complete
-        } else {
-            super::Completion::Unknown
-        },
-    )
+    if matches!(
+        reason,
+        Some("aborted" | "insufficient_system_resource" | "failed" | "cancelled")
+    ) {
+        return Err(AiError::Api(
+            "模型服务中断或取消了生成，未保存结果；请稍后重试（AI_GENERATION_INTERRUPTED）".into(),
+        ));
+    }
+    match reason {
+        Some("stop" | "end_turn" | "stop_sequence" | "completed") => Ok(super::Completion::Complete),
+        // Legacy compatible providers may omit the finish field. The secretary
+        // still validates the complete JSON and all evidence before persistence.
+        None => Ok(super::Completion::Unknown),
+        Some(_) => Err(AiError::Api(
+            "模型未完成本次生成，未保存结果；接口未返回可恢复的输出截断标记（AI_GENERATION_INCOMPLETE）".into(),
+        )),
+    }
 }
 
 async fn chat_completions(
@@ -1004,6 +1011,24 @@ mod tests {
             assert!(result.unwrap_err().to_string().contains("4 MiB"));
         });
     }
+    #[test]
+    fn interrupted_or_exhausted_context_is_never_completed_content() {
+        for reason in [
+            "aborted",
+            "insufficient_system_resource",
+            "model_context_window_exceeded",
+        ] {
+            let body =
+                serde_json::json!({"choices":[{"finish_reason":reason}],"stop_reason":reason});
+            for protocol in ["chat_completions", "anthropic_messages"] {
+                assert!(
+                    completion_status(&body, protocol).is_err(),
+                    "accepted {protocol} {reason}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn explicit_truncation_and_refusal_never_become_completed_content() {
         tauri::async_runtime::block_on(async {

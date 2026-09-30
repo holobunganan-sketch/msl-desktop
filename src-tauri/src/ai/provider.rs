@@ -51,7 +51,7 @@ pub struct AiTextRequest {
     pub max_output_tokens: Option<u32>,
     #[serde(default)]
     pub output_format: crate::ai::output::OutputFormat,
-    /// Clones used for format repair retain the same logical request budget.
+    /// Format correction and output-limit recovery share this request budget.
     #[serde(skip)]
     pub budget: std::sync::Arc<std::sync::Mutex<crate::ai::output::RequestBudget>>,
 }
@@ -78,6 +78,8 @@ pub enum AiError {
     Keyring(String),
     Http(String),
     Api(String),
+    /// Explicit token-budget exhaustion. Partial text is deliberately discarded.
+    OutputLimit,
 }
 
 impl fmt::Display for AiError {
@@ -87,6 +89,10 @@ impl fmt::Display for AiError {
             AiError::Keyring(m) => write!(f, "凭据存储错误: {m}"),
             AiError::Http(m) => write!(f, "网络错误: {m}"),
             AiError::Api(m) => write!(f, "API 错误: {m}"),
+            AiError::OutputLimit => write!(
+                f,
+                "模型输出额度已用尽，结果不完整，未写入工作台（AI_OUTPUT_LIMIT）"
+            ),
         }
     }
 }

@@ -248,7 +248,7 @@ pub fn repair_fixed_templates(repo: &ProviderCatalogRepo<'_>) -> crate::db::DbRe
                     &model.display_name,
                     seed.protocol,
                     seed.endpoint_path,
-                    "{}",
+                    &model.capabilities_json,
                     &model.source,
                     model.enabled,
                     model.available,
@@ -477,7 +477,7 @@ mod tests {
             "Muse Spark 1.2 Contributor",
             "chat_completions",
             "/chat/completions",
-            "{}",
+            r#"{"max_output_tokens":10000,"vision":true}"#,
             "remote",
             true,
             true,
@@ -492,5 +492,9 @@ mod tests {
             .unwrap();
         assert_eq!(repaired.protocol, "responses");
         assert_eq!(repaired.endpoint_path, "/responses");
+        assert_eq!(
+            repaired.capabilities_json,
+            r#"{"max_output_tokens":10000,"vision":true}"#
+        );
     }
 }
