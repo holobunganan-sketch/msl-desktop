@@ -153,9 +153,13 @@ try{
  await snap('01-question-answer');
  await route('kol',expert.id);await page.getByTestId('kol-tab-materials').click();await page.getByTestId('kol-materials').waitFor();await snap('02-expert-materials');
  await page.getByTestId('kol-delete').click();await snap('03-safe-delete');await page.keyboard.press('Escape');
- await route('settings');const fold=page.getByTestId('models-fold-'+provider.id);await fold.scrollIntoViewIfNeeded();
+ await route('settings');const fold=page.getByTestId('models-fold-'+provider.id);
+ const vendorFolder=page.locator('.vendor-folder').filter({has:fold}).locator(':scope > summary');
+ if(!await vendorFolder.evaluate(el=>el.parentElement.open))await vendorFolder.click();
+ await fold.scrollIntoViewIfNeeded();
  if(process.argv.includes('--reopen'))check('Model fold preference survived restart',await fold.evaluate(el=>el.parentElement.open));
  else if(!process.argv.includes('--layout')){check('Model catalog initially folded',!await fold.evaluate(el=>el.parentElement.open));await snap('04-folded-models');await fold.click();}
+ if(await fold.evaluate(el=>el.parentElement.open))for(const protocol of await page.locator(`[data-testid^="protocol-fold-${provider.id}-"]`).all())if(!await protocol.evaluate(el=>el.parentElement.open))await protocol.click();
  await snap('05-expanded-models');
  const views=['today','works','plan','waiting','calendar','inbox','review','reports','workspace','qa','kol','translate','settings'];
  const matrix=[];

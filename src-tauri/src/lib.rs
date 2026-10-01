@@ -403,6 +403,7 @@ fn run_app() {
             commands::list_providers,
             commands::save_provider,
             commands::provider_catalog::list_provider_connections,
+            commands::provider_catalog::list_provider_templates,
             commands::provider_catalog::create_provider_template,
             commands::provider_catalog::save_provider_connection,
             commands::provider_catalog::list_provider_models,

@@ -203,7 +203,7 @@ pub(crate) async fn execute_focused_analysis(
             return Ok(original);
         }
     }
-    let key = match crate::ai::provider::get_api_key(&resolved.connection.credential_ref) {
+    let key = match crate::ai::provider::get_connection_api_key(&resolved.connection) {
         Ok(Some(value)) => value,
         Ok(None) => {
             let error = "全局分析模型未配置 API Key";
@@ -549,7 +549,7 @@ async fn execute_workspace_work_draft(
         mark_analysis_failed(&state, run_id, "context_write_failed", &error);
         return Err(format!("项目整理 #{run_id} 失败：{error}"));
     }
-    let key = match crate::ai::provider::get_api_key(&resolved.connection.credential_ref) {
+    let key = match crate::ai::provider::get_connection_api_key(&resolved.connection) {
         Ok(Some(value)) => value,
         Ok(None) => {
             let error = "项目整理模型未配置 API Key";
@@ -689,7 +689,7 @@ pub async fn translate_text(
         )
         .map_err(|error| crate::db::DbError::Migration(error.to_string()))
     })?;
-    let key = crate::ai::provider::get_api_key(&resolved.connection.credential_ref)
+    let key = crate::ai::provider::get_connection_api_key(&resolved.connection)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "翻译模型未配置 API Key".to_string())?;
     let request = crate::ai::translation::build_request(&resolved.model.model_id, &input, &style)?;

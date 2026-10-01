@@ -50,7 +50,7 @@ pub(crate) async fn execute_report(
     let key = if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") {
         "isolated-synthetic-key".to_string()
     } else {
-        match crate::ai::provider::get_api_key(&resolved.connection.credential_ref) {
+        match crate::ai::provider::get_connection_api_key(&resolved.connection) {
             Ok(Some(value)) => value,
             Ok(None) => {
                 let message = format!("{task_kind} 模型未配置 API Key");

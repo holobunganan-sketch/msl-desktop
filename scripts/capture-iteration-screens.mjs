@@ -25,8 +25,12 @@ try{
  await page.evaluate(()=>document.querySelector('.content-scroll').scrollTop=0);await snap('02-expert-materials');
  await page.getByTestId('kol-delete').click();await snap('03-safe-delete');await page.keyboard.press('Escape');
  await route('settings');const fold=page.getByTestId('models-fold-'+provider.id);
+ const vendorFolder=page.locator('.vendor-folder').filter({has:fold}).locator(':scope > summary');
+ if(!await vendorFolder.evaluate(e=>e.parentElement.open))await vendorFolder.click();
  if(await fold.evaluate(e=>e.parentElement.open))await fold.click();
- await fold.evaluate(el=>{const scroll=document.querySelector('.content-scroll'),card=el.closest('.app-card');scroll.scrollTop+=card.getBoundingClientRect().top-scroll.getBoundingClientRect().top-18;});await snap('04-folded-models');
- await fold.click();await snap('05-expanded-models');
+ await fold.evaluate(el=>{const scroll=document.querySelector('.content-scroll'),card=el.closest('.connection-card');scroll.scrollTop+=card.getBoundingClientRect().top-scroll.getBoundingClientRect().top-18;});await snap('04-folded-models');
+ await fold.click();
+ for(const protocol of await page.locator(`[data-testid^="protocol-fold-${provider.id}-"]`).all())if(!await protocol.evaluate(e=>e.parentElement.open))await protocol.click();
+ await snap('05-expanded-models');
  console.log('Six native screenshots refreshed, synthetic information only.');
 }finally{await browser.close();}

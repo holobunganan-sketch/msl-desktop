@@ -1636,7 +1636,7 @@ async fn generate_brief_inner(
     let mut ai_used = false;
     let mut content = crate::ai::brief::render_local(&snapshot);
     let provider_name = if let Ok(resolved) = routed_model {
-        match crate::ai::provider::get_api_key(&resolved.connection.credential_ref) {
+        match crate::ai::provider::get_connection_api_key(&resolved.connection) {
             Ok(Some(key)) => {
                 match crate::ai::brief::call(&resolved.connection, &resolved.model, &key, &snapshot)
                     .await

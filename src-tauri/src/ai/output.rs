@@ -278,6 +278,7 @@ pub fn apply_output_format(
 
 #[derive(Clone, Debug)]
 pub struct RequestBudget {
+    session_id: String,
     max_http: u8,
     max_repairs: u8,
     used: u8,
@@ -292,6 +293,7 @@ impl Default for RequestBudget {
 impl RequestBudget {
     pub fn new(max_http: u8, max_repairs: u8) -> Self {
         Self {
+            session_id: format!("msl-desktop-{}", uuid::Uuid::new_v4()),
             max_http,
             max_repairs,
             used: 0,
@@ -321,6 +323,11 @@ impl RequestBudget {
 
     pub fn used(&self) -> u8 {
         self.used
+    }
+
+    /// A logical generation and its bounded recovery keep the same routing session.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
     }
 }
 

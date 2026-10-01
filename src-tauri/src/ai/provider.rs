@@ -107,8 +107,25 @@ fn keyring_user(credential_ref: &str) -> &str {
     credential_ref
 }
 
+// Native UI tests must never consult or change the user's credential vault.
+// This store is deliberately ephemeral and only active in isolated test runs.
+fn isolated_credentials(
+) -> Option<&'static std::sync::Mutex<std::collections::HashMap<String, String>>> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    (cfg!(test) || std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1"))
+        .then(|| STORE.get_or_init(Default::default))
+}
+
 /// 保存 API Key（Windows Credential Manager）。
 pub fn save_api_key(credential_ref: &str, key: &str) -> Result<(), AiError> {
+    if let Some(store) = isolated_credentials() {
+        store
+            .lock()
+            .map_err(|_| AiError::Keyring("隔离凭据不可用".into()))?
+            .insert(credential_ref.into(), key.into());
+        return Ok(());
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, keyring_user(credential_ref))
         .map_err(|e| AiError::Keyring(e.to_string()))?;
     entry
@@ -118,6 +135,13 @@ pub fn save_api_key(credential_ref: &str, key: &str) -> Result<(), AiError> {
 
 /// 读取 API Key；不存在返回 None。
 pub fn get_api_key(credential_ref: &str) -> Result<Option<String>, AiError> {
+    if let Some(store) = isolated_credentials() {
+        return Ok(store
+            .lock()
+            .map_err(|_| AiError::Keyring("隔离凭据不可用".into()))?
+            .get(credential_ref)
+            .cloned());
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, keyring_user(credential_ref))
         .map_err(|e| AiError::Keyring(e.to_string()))?;
     match entry.get_password() {
@@ -127,8 +151,34 @@ pub fn get_api_key(credential_ref: &str) -> Result<Option<String>, AiError> {
     }
 }
 
+/// Resolve credentials using the connection's authentication policy.
+/// No-auth endpoints never consult the OS vault, even if an old key exists.
+pub fn get_connection_api_key(
+    connection: &crate::db::provider::ProviderConnection,
+) -> Result<Option<String>, AiError> {
+    get_connection_api_key_with(connection, get_api_key)
+}
+
+pub(super) fn get_connection_api_key_with(
+    connection: &crate::db::provider::ProviderConnection,
+    lookup: impl FnOnce(&str) -> Result<Option<String>, AiError>,
+) -> Result<Option<String>, AiError> {
+    if connection.auth_mode == "none" {
+        Ok(Some(String::new()))
+    } else {
+        lookup(&connection.credential_ref)
+    }
+}
+
 /// 删除 API Key。
 pub fn delete_api_key(credential_ref: &str) -> Result<(), AiError> {
+    if let Some(store) = isolated_credentials() {
+        store
+            .lock()
+            .map_err(|_| AiError::Keyring("隔离凭据不可用".into()))?
+            .remove(credential_ref);
+        return Ok(());
+    }
     let entry = keyring::Entry::new(KEYRING_SERVICE, keyring_user(credential_ref))
         .map_err(|e| AiError::Keyring(e.to_string()))?;
     match entry.delete_credential() {
@@ -293,6 +343,29 @@ pub async fn test_connection(
 #[cfg(test)]
 mod tests {
     use super::new_credential_ref;
+
+    #[test]
+    fn isolated_credentials_keep_connections_independent_without_os_vault_access() {
+        assert!(super::isolated_credentials().is_some());
+        let first = new_credential_ref();
+        let second = new_credential_ref();
+        assert_eq!(super::get_api_key(&first).unwrap(), None);
+        super::save_api_key(&first, "synthetic-first").unwrap();
+        super::save_api_key(&second, "synthetic-second").unwrap();
+        super::save_api_key(&second, "synthetic-replaced").unwrap();
+        assert_eq!(
+            super::get_api_key(&first).unwrap().as_deref(),
+            Some("synthetic-first")
+        );
+        assert_eq!(
+            super::get_api_key(&second).unwrap().as_deref(),
+            Some("synthetic-replaced")
+        );
+        super::delete_api_key(&first).unwrap();
+        assert!(!super::has_api_key(&first));
+        assert!(super::has_api_key(&second));
+        super::delete_api_key(&second).unwrap();
+    }
 
     #[test]
     fn credential_refs_are_random_and_prefixed() {

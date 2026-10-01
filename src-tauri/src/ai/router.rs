@@ -98,9 +98,10 @@ impl<'a, C: CredentialSource> AiRouter<'a, C> {
         request: &super::provider::AiTextRequest,
     ) -> Result<super::provider::AiTextResponse, super::provider::AiError> {
         let resolved = self.resolve(task_kind)?;
-        let key = self
-            .credentials
-            .get(&resolved.connection.credential_ref)?
+        let key =
+            super::provider::get_connection_api_key_with(&resolved.connection, |credential_ref| {
+                self.credentials.get(credential_ref)
+            })?
             .ok_or_else(|| {
                 super::provider::AiError::Config(format!("任务 {task_kind} 未配置 API Key"))
             })?;
@@ -281,5 +282,95 @@ mod tests {
         let error = resolve(&repo, &credentials, "general").unwrap_err();
         assert!(error.to_string().contains("禁用"));
         assert!(!error.to_string().contains("synthetic"));
+    }
+
+    #[test]
+    fn no_auth_completion_skips_credential_source_and_sends_no_auth_header() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        struct RejectCredentials(AtomicUsize);
+        impl CredentialSource for RejectCredentials {
+            fn get(&self, _: &str) -> Result<Option<String>, super::super::provider::AiError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(super::super::provider::AiError::Keyring(
+                    "credential source must not be read".into(),
+                ))
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stopped);
+        let server = std::thread::spawn(move || {
+            let started = Instant::now();
+            while !stop.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(5) {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut buffer = [0u8; 16384];
+                    let count = stream.read(&mut buffer).unwrap();
+                    let request = String::from_utf8_lossy(&buffer[..count]).to_string();
+                    let body = r#"{"choices":[{"message":{"content":"local answer"},"finish_reason":"stop"}]}"#;
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                    return Some(request);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            None
+        });
+        let (db, provider_id, model_id) = fixture();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        repo.update_connection(
+            provider_id,
+            "Local no-auth",
+            "custom",
+            &base_url,
+            "",
+            "custom",
+            "none",
+            None,
+            true,
+        )
+        .unwrap();
+        repo.upsert_route("general", Some(model_id)).unwrap();
+        let credentials = RejectCredentials(AtomicUsize::new(0));
+        let result = tauri::async_runtime::block_on(complete(
+            &repo,
+            &credentials,
+            "translation",
+            &super::super::provider::AiTextRequest {
+                model_id: "mock-model".into(),
+                system: None,
+                messages: vec![super::super::provider::AiMessage {
+                    role: "user".into(),
+                    content: "synthetic prompt".into(),
+                }],
+                temperature: None,
+                max_output_tokens: None,
+                output_format: crate::ai::output::OutputFormat::Text,
+                budget: Default::default(),
+            },
+        ));
+        stopped.store(true, Ordering::SeqCst);
+        let request = server.join().unwrap();
+        assert_eq!(
+            credentials.0.load(Ordering::SeqCst),
+            0,
+            "auth_mode=none must not read the credential source"
+        );
+        assert_eq!(result.unwrap().content, "local answer");
+        let request = request
+            .expect("no-auth request must reach the loopback provider")
+            .to_ascii_lowercase();
+        assert!(request.starts_with("post /chat/completions "));
+        assert!(!request.contains("\r\nauthorization:"));
+        assert!(!request.contains("\r\nx-api-key:"));
     }
 }

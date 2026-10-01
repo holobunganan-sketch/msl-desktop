@@ -35,6 +35,17 @@ fn endpoint_url(
     connection: &ProviderConnection,
     model: &ProviderModel,
 ) -> Result<reqwest::Url, AiError> {
+    let capabilities: Value = serde_json::from_str(&model.capabilities_json).unwrap_or_default();
+    if capabilities["needs_protocol"] == true
+        || capabilities["unsupported"] == true
+        || capabilities
+            .get("unsupported_protocol")
+            .is_some_and(|v| !v.is_null() && v != false)
+    {
+        return Err(AiError::Config(
+            "此模型的接入协议尚未确认，请在模型设置中核对协议后再使用".into(),
+        ));
+    }
     if !model.endpoint_path.starts_with('/') || model.endpoint_path.contains("..") {
         return Err(AiError::Config("模型 endpoint 路径非法".into()));
     }
@@ -53,6 +64,9 @@ fn endpoint_url(
         base.path().trim_end_matches('/'),
         model.endpoint_path
     ));
+    if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") && !endpoint_is_loopback(&base) {
+        return Err(AiError::Config("隔离测试只允许本地模拟接口".into()));
+    }
     Ok(base)
 }
 
@@ -68,7 +82,8 @@ fn endpoint_is_loopback(url: &reqwest::Url) -> bool {
 fn http_client(url: &reqwest::Url, timeout: Duration) -> Result<reqwest::Client, AiError> {
     let mut builder = reqwest::Client::builder()
         .timeout(timeout)
-        .connect_timeout(CONNECT_TIMEOUT);
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none());
     if endpoint_is_loopback(url) {
         builder = builder.no_proxy();
     }
@@ -357,7 +372,11 @@ async fn send_json(
     anthropic: bool,
     budget: &std::sync::Mutex<crate::ai::output::RequestBudget>,
 ) -> Result<Value, AiError> {
-    let opencode_session = format!("msl-desktop-{}", uuid::Uuid::new_v4());
+    let opencode_session = budget
+        .lock()
+        .map_err(|_| AiError::Config("请求上下文不可用".into()))?
+        .session_id()
+        .to_owned();
     for attempt in 1..=MAX_ATTEMPTS {
         {
             use crate::ai::output::AttemptKind;
@@ -377,19 +396,22 @@ async fn send_json(
         }
         let mut request = client
             .post(url.clone())
-            .bearer_auth(api_key)
             .header(
                 USER_AGENT,
                 HeaderValue::from_static(concat!("msl-desktop/", env!("CARGO_PKG_VERSION"))),
             )
             .json(&body);
+        request = match connection.auth_mode.as_str() {
+            "bearer" => request.bearer_auth(api_key),
+            "api_key" => request.header("x-api-key", api_key),
+            "none" => request,
+            _ => return Err(AiError::Config("未识别的 API 鉴权方式".into())),
+        };
         if connection.template_kind == "opencode_go" {
             request = request.header("x-opencode-session", &opencode_session);
         }
         if anthropic {
-            request = request
-                .header("x-api-key", api_key)
-                .header("anthropic-version", "2023-06-01");
+            request = request.header("anthropic-version", "2023-06-01");
         }
         let mut response = match request.send().await {
             Ok(value) => value,
@@ -1196,9 +1218,133 @@ mod tests {
             assert_eq!(response.content, "messages ok");
             let request_text = request_capture.lock().unwrap().clone().to_ascii_lowercase();
             assert!(request_text.starts_with("post /messages http/1.1"));
-            assert!(request_text.contains("x-api-key:"));
+            assert!(request_text.contains("authorization: bearer synthetic-key"));
+            assert!(!request_text.contains("x-api-key:"));
             assert!(request_text.contains("anthropic-version: 2023-06-01"));
             handle.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn credentials_are_not_forwarded_through_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = stream.read(&mut buffer).unwrap();
+            stream.write_all(b"HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:1/credential-target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        tauri::async_runtime::block_on(async {
+            let url = reqwest::Url::parse(&base).unwrap();
+            let response = http_client(&url, Duration::from_secs(2))
+                .unwrap()
+                .get(url)
+                .header("x-api-key", "synthetic-key")
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 307);
+        });
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn configured_auth_mode_is_used_for_each_protocol() {
+        tauri::async_runtime::block_on(async {
+            for protocol in ["chat_completions", "responses", "anthropic_messages"] {
+                for auth in ["bearer", "api_key", "none"] {
+                    let (base, captured, handle) = server(
+                        200,
+                        r#"{"choices":[{"message":{"content":"ok"}}],"output":[{"content":[{"text":"ok"}]}],"content":[{"type":"text","text":"ok"}]}"#,
+                    );
+                    let mut conn = connection(&base);
+                    conn.auth_mode = auth.into();
+                    complete(
+                        &conn,
+                        &model(protocol, "/test"),
+                        "synthetic-auth-key",
+                        &request(),
+                    )
+                    .await
+                    .unwrap();
+                    handle.join().unwrap();
+                    let wire = captured.lock().unwrap().to_ascii_lowercase();
+                    assert_eq!(
+                        wire.contains("authorization: bearer synthetic-auth-key"),
+                        auth == "bearer",
+                        "{protocol}/{auth}"
+                    );
+                    assert_eq!(
+                        wire.contains("x-api-key: synthetic-auth-key"),
+                        auth == "api_key",
+                        "{protocol}/{auth}"
+                    );
+                    assert_eq!(
+                        wire.contains("anthropic-version:"),
+                        protocol == "anthropic_messages"
+                    );
+                    if auth == "none" {
+                        assert!(!wire.contains("synthetic-auth-key"));
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn protocol_pending_models_cannot_send_requests() {
+        tauri::async_runtime::block_on(async {
+            for caps in [
+                r#"{"needs_protocol":true}"#,
+                r#"{"unsupported_protocol":"google"}"#,
+            ] {
+                let mut pending = model("responses", "/responses");
+                pending.capabilities_json = caps.into();
+                let error = complete(
+                    &connection("http://127.0.0.1:1"),
+                    &pending,
+                    "synthetic-key",
+                    &request(),
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    matches!(error, AiError::Config(_)),
+                    "must stop before network: {error}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn opencode_recovery_keeps_the_logical_session() {
+        tauri::async_runtime::block_on(async {
+            let logical_request = request();
+            let mut session_headers = Vec::new();
+            for _ in 0..2 {
+                let (base, capture, handle) =
+                    server(200, r#"{"choices":[{"message":{"content":"ok"}}]}"#);
+                complete(
+                    &opencode_connection(&base),
+                    &model("chat_completions", "/chat/completions"),
+                    "synthetic",
+                    &logical_request,
+                )
+                .await
+                .unwrap();
+                handle.join().unwrap();
+                session_headers.push(
+                    capture
+                        .lock()
+                        .unwrap()
+                        .lines()
+                        .find(|line| line.starts_with("x-opencode-session:"))
+                        .unwrap()
+                        .to_string(),
+                );
+            }
+            assert_eq!(session_headers[0], session_headers[1]);
         });
     }
 

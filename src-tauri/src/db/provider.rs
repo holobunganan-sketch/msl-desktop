@@ -18,7 +18,6 @@ pub const AI_TASK_KINDS: &[&str] = &[
 ];
 pub const AI_PROTOCOLS: &[&str] = &["chat_completions", "responses", "anthropic_messages"];
 pub const AI_AUTH_MODES: &[&str] = &["bearer", "api_key", "none"];
-pub const PROVIDER_TEMPLATES: &[&str] = &["deepseek", "opencode_go", "custom"];
 
 pub fn validate_task_kind(value: &str) -> DbResult<()> {
     if AI_TASK_KINDS.contains(&value) {
@@ -45,7 +44,7 @@ pub fn validate_auth_mode(value: &str) -> DbResult<()> {
 }
 
 pub fn validate_template_kind(value: &str) -> DbResult<()> {
-    if PROVIDER_TEMPLATES.contains(&value) {
+    if value == "custom" || crate::ai::catalog::template(value).is_some() {
         Ok(())
     } else {
         Err(DbError::Migration(format!(
@@ -69,7 +68,7 @@ pub struct ProviderSetting {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProviderConnection {
     pub id: i64,
     pub display_name: String,
@@ -86,7 +85,7 @@ pub struct ProviderConnection {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ProviderModel {
     pub id: i64,
     pub provider_id: i64,
@@ -281,6 +280,14 @@ impl<'a> ProviderCatalogRepo<'a> {
         Self { conn }
     }
 
+    /// A catalog refresh is one atomic change, including its completion timestamp.
+    pub fn transaction<T>(&self, apply: impl FnOnce(&Self) -> DbResult<T>) -> DbResult<T> {
+        let transaction = self.conn.unchecked_transaction()?;
+        let result = apply(self)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
     fn connection_select() -> &'static str {
         "SELECT id, display_name, provider_type, base_url, model, enabled, credential_ref,
                 template_kind, auth_mode, models_endpoint, last_models_refresh_at, created_at, updated_at
@@ -449,6 +456,22 @@ impl<'a> ProviderCatalogRepo<'a> {
         available: bool,
     ) -> DbResult<ProviderModel> {
         validate_protocol(protocol)?;
+        if model_id.trim().is_empty()
+            || display_name.trim().is_empty()
+            || model_id.chars().any(char::is_control)
+        {
+            return Err(DbError::Migration(
+                "model ID and display name must be nonempty".into(),
+            ));
+        }
+        crate::ai::catalog::validate_endpoint_path(endpoint_path).map_err(DbError::Migration)?;
+        let capabilities: serde_json::Value = serde_json::from_str(capabilities_json)
+            .map_err(|_| DbError::Migration("model capabilities must be valid JSON".into()))?;
+        if !capabilities.is_object() {
+            return Err(DbError::Migration(
+                "model capabilities must be a JSON object".into(),
+            ));
+        }
         if !matches!(source, "legacy" | "template" | "remote" | "manual") {
             return Err(DbError::Migration(format!(
                 "invalid model source: {source}"
@@ -495,9 +518,39 @@ impl<'a> ProviderCatalogRepo<'a> {
     }
 
     pub fn set_model_enabled(&self, id: i64, enabled: bool) -> DbResult<()> {
+        if enabled {
+            let model = self
+                .get_model(id)?
+                .ok_or_else(|| DbError::NotFound("provider_model".into()))?;
+            let capabilities: serde_json::Value =
+                serde_json::from_str(&model.capabilities_json).unwrap_or_default();
+            if capabilities
+                .get("needs_protocol")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+                || capabilities
+                    .get("unsupported_protocol")
+                    .is_some_and(|value| {
+                        !value.is_null() && value != &serde_json::Value::Bool(false)
+                    })
+            {
+                return Err(DbError::Migration("请先编辑模型并选择已支持的协议".into()));
+            }
+        }
         let changed = self.conn.execute(
             "UPDATE provider_models SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
             params![enabled as i64, now_unix(), id],
+        )?;
+        if changed == 0 {
+            return Err(DbError::NotFound("provider_model".into()));
+        }
+        Ok(())
+    }
+
+    pub fn mark_model_available(&self, id: i64) -> DbResult<()> {
+        let changed = self.conn.execute(
+            "UPDATE provider_models SET available = 1, updated_at = ?1 WHERE id = ?2",
+            params![now_unix(), id],
         )?;
         if changed == 0 {
             return Err(DbError::NotFound("provider_model".into()));
@@ -755,5 +808,85 @@ mod tests {
         assert!(validate_protocol("unknown").is_err());
         assert!(validate_task_kind("unknown").is_err());
         assert!(validate_template_kind("openai").is_err());
+    }
+
+    #[test]
+    fn manual_model_rejects_invalid_capabilities_and_unsafe_endpoint() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        let provider = repo
+            .insert_connection(
+                "Synthetic",
+                "custom",
+                "http://127.0.0.1",
+                "",
+                "custom",
+                "none",
+                None,
+                true,
+            )
+            .unwrap();
+        assert!(repo
+            .upsert_model(
+                provider.id,
+                "bad-json",
+                "Bad JSON",
+                "responses",
+                "/responses",
+                "[]",
+                "manual",
+                true,
+                true
+            )
+            .is_err());
+        assert!(repo
+            .upsert_model(
+                provider.id,
+                "unsafe-path",
+                "Unsafe",
+                "responses",
+                "//other.example/responses",
+                "{}",
+                "manual",
+                true,
+                true
+            )
+            .is_err());
+        assert!(repo.list_models(Some(provider.id)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn enabling_unresolved_protocol_is_rejected_without_changing_availability() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        let provider = repo
+            .insert_connection(
+                "Synthetic",
+                "custom",
+                "http://127.0.0.1",
+                "",
+                "custom",
+                "none",
+                None,
+                true,
+            )
+            .unwrap();
+        let unresolved = repo
+            .upsert_model(
+                provider.id,
+                "unknown",
+                "Unknown",
+                "responses",
+                "/responses",
+                r#"{"needs_protocol":true}"#,
+                "remote",
+                false,
+                false,
+            )
+            .unwrap();
+        assert!(repo.set_model_enabled(unresolved.id, true).is_err());
+        let model = repo.get_model(unresolved.id).unwrap().unwrap();
+        assert!(!model.enabled);
+        assert!(!model.available);
     }
 }
