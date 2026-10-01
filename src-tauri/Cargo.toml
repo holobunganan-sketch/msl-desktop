@@ -1,6 +1,6 @@
 [package]
 name = "msl-desktop"
-version = "0.3.23"
+version = "0.3.24"
 description = "MSL Desktop workbench"
 authors = ["MSL Desktop contributors"]
 edition = "2021"

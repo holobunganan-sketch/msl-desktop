@@ -24,11 +24,12 @@ try {
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('dashboard:navigate',{detail:{view:'settings'}})));
   const card = page.getByTestId('weixin-settings');
   await card.waitFor();
-  // A user must be able to discover the current trigger and all six choices in settings.
+  // The menu is for actions; ordinary capture must not require a menu selection.
   await card.getByText('召唤秘书', {exact:true}).waitFor({timeout:5000});
   const menu = card.getByRole('list',{name:'微信操作菜单'});
-  assert.equal(await menu.getByRole('listitem').count(), 6);
-  for (const choice of ['记一句话','全局整理','生成每日简报','查看整理进度','查看待确认数量','退出菜单']) {
+  assert.equal(await menu.getByRole('listitem').count(), 5);
+  assert.equal(await menu.getByText('记一句话',{exact:true}).count(),0);
+  for (const choice of ['全局整理','生成每日简报','查看整理进度','查看待确认数量','退出菜单']) {
     await menu.getByText(choice,{exact:true}).waitFor();
   }
   const artifacts = path.join(profile,'artifacts');
@@ -43,5 +44,5 @@ try {
   await card.getByRole('button',{name:'扫码绑定并启用',exact:true}).click();
   await card.getByRole('alert').filter({hasText:'隔离测试环境'}).waitFor();
   assert.equal((await invoke('get_weixin_status')).bound,false);
-  console.log('PASS: menu discoverable, six actions visible, three viewport sizes, real login blocked');
+  console.log('PASS: five-action menu excludes ordinary capture, three viewport sizes, real login blocked');
 } finally { await browser.close(); }

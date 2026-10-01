@@ -165,6 +165,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "weixin_menu",
         sql: include_str!("../../migrations/0029_weixin_menu.sql"),
     },
+    Migration {
+        version: 30,
+        name: "weixin_capture_default",
+        sql: include_str!("../../migrations/0030_weixin_capture_default.sql"),
+    },
 ];
 
 /// 执行所有未应用的迁移（幂等、事务化）。

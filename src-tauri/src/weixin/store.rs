@@ -2,7 +2,7 @@ use crate::db::{jobs::AiJob, DbError, DbResult};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-const MENU: &str = "秘书在这里，请回复序号：\n一、记一句话\n二、全局整理\n三、生成每日简报\n四、查看整理进度\n五、查看待确认数量\n六、退出菜单\n可回复 1–6；菜单 10 分钟内有效。普通文字会原样记入收件箱，工作内容与建议请在桌面端查看。";
+const MENU: &str = "秘书在这里，请回复序号：\n一、全局整理\n二、生成每日简报\n三、查看整理进度\n四、查看待确认数量\n五、退出菜单\n可回复 1–5；菜单 10 分钟内有效。普通文字会原样记入收件箱，工作内容与建议请在桌面端查看。";
 
 #[derive(Clone)]
 pub(crate) struct Binding {
@@ -57,16 +57,15 @@ pub(crate) fn ingest_batch(
             |r| r.get(0),
         )?;
         let expired = tx.execute("UPDATE weixin_binding SET menu_mode=NULL,menu_expires_at=NULL WHERE id=1 AND menu_expires_at<=?1", [now])? > 0;
-        let (mode, after_ms, after_id): (Option<String>, i64, String) = tx.query_row(
-            "SELECT menu_mode,menu_after_ms,menu_after_id FROM weixin_binding WHERE id=1",
+        let (mode, after_ms, after_id, protocol_after_ms): (Option<String>, i64, String, i64) = tx.query_row(
+            "SELECT menu_mode,menu_after_ms,menu_after_id,menu_protocol_after_ms FROM weixin_binding WHERE id=1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         // IDs are validated uint64 values. They break ties when the service emits
         // multiple messages in the same millisecond, including one poll batch.
         let fresh = (created_ms, id.parse::<u64>().unwrap_or(0))
             > (after_ms, after_id.parse::<u64>().unwrap_or(0));
-        let recording = fresh && mode.as_deref() == Some("record");
         let choice = if fresh && mode.as_deref() == Some("menu") {
             menu_choice(text.trim())
         } else {
@@ -80,9 +79,14 @@ pub(crate) fn ingest_batch(
         if recent >= 60 {
             action = "rate_limited";
             ack = "消息较频繁，请稍后重新发送。".into();
-        } else if !recording && text.trim() == "召唤秘书" {
+        } else if text.trim() == "召唤秘书" {
             action = "menu";
-            if fresh {
+            let switch_wait = (protocol_after_ms / 1000 + 1).saturating_sub(now);
+            if protocol_after_ms > 0 && switch_wait > 0 {
+                ack = format!("升级后的菜单正在切换，请约{switch_wait}秒后重新发送“召唤秘书”；普通文字仍会记录。");
+            } else if created_ms <= protocol_after_ms {
+                ack = "菜单已更新，请重新发送“召唤秘书”打开当前菜单；普通文字仍会记录。".into();
+            } else if fresh {
                 // Offline delivery cannot renew old authorization; cap future clock skew.
                 let expires_at = now.min(created_ms / 1000) + 600;
                 tx.execute(
@@ -101,22 +105,11 @@ pub(crate) fn ingest_batch(
             } else {
                 ack = "菜单已更新，请按当前菜单操作；需要时可重新发送“召唤秘书”。".into();
             }
-        } else if !recording && text.trim() == "全局交给秘书整理一遍" {
-            action = "retired_command";
-            ack = "请发送“召唤秘书”，再回复“二”发起全局整理。".into();
         } else if let Some(choice) = choice {
             match choice {
-                1 => {
-                    action = "record_next";
-                    tx.execute(
-                        "UPDATE weixin_binding SET menu_mode='record' WHERE id=1",
-                        [],
-                    )?;
-                    ack = "请发送要记录的下一句，将原样记入收件箱；数字和指令文字也会作为原话保存。记录后返回菜单。".into();
-                }
-                2 | 3 => {
+                1 | 2 => {
                     let last: Option<i64> = tx.query_row(
-                        if choice == 2 {
+                        if choice == 1 {
                             "SELECT last_global_at FROM weixin_binding WHERE id=1"
                         } else {
                             "SELECT last_brief_at FROM weixin_binding WHERE id=1"
@@ -128,7 +121,7 @@ pub(crate) fn ingest_batch(
                         action = "rate_limited";
                         ack = "此操作刚刚提交，请稍后重试；进度可在桌面端查看。".into();
                     } else {
-                        let (command, args) = if choice == 2 {
+                        let (command, args) = if choice == 1 {
                             ("run_analysis_now", serde_json::json!({"trigger":"manual"}))
                         } else {
                             ("generate_brief", brief_args(now)?)
@@ -138,15 +131,15 @@ pub(crate) fn ingest_batch(
                         match crate::db::jobs::start_in_transaction(&tx, command, &args) {
                             Ok((started, created)) => {
                                 tx.execute(
-                                    if choice == 2 {
+                                    if choice == 1 {
                                         "UPDATE weixin_binding SET last_global_at=?1 WHERE id=1"
                                     } else {
                                         "UPDATE weixin_binding SET last_brief_at=?1 WHERE id=1"
                                     },
                                     [now],
                                 )?;
-                                action = if choice == 2 { "global" } else { "brief" };
-                                ack = if choice == 2 {
+                                action = if choice == 1 { "global" } else { "brief" };
+                                ack = if choice == 1 {
                                     "已提交后台整理请求；处理进度和待确认建议请在桌面端查看。"
                                 } else {
                                     "已提交今日简报请求；简报内容和处理进度请在桌面端查看。"
@@ -163,7 +156,7 @@ pub(crate) fn ingest_batch(
                         }
                     }
                 }
-                4 => {
+                3 => {
                     action = "job_status";
                     let counts: (i64, i64, i64, i64) = tx.query_row(
                         "SELECT COUNT(CASE WHEN status='running' THEN 1 END),COUNT(CASE WHEN status='completed' THEN 1 END),COUNT(CASE WHEN status='failed' THEN 1 END),COUNT(CASE WHEN status='interrupted' THEN 1 END) FROM ai_jobs", [],
@@ -171,7 +164,7 @@ pub(crate) fn ingest_batch(
                     )?;
                     ack = format!("本机保留的后台任务：进行中 {}，已完成 {}，失败 {}，已中断 {}。详情请在桌面端查看。", counts.0, counts.1, counts.2, counts.3);
                 }
-                5 => {
+                4 => {
                     action = "pending_status";
                     let counts: (i64, i64) = tx.query_row(
                         "SELECT COUNT(CASE WHEN deferred_at IS NULL THEN 1 END),COUNT(CASE WHEN deferred_at IS NOT NULL THEN 1 END) FROM ai_proposals WHERE status='pending'", [],
@@ -182,7 +175,7 @@ pub(crate) fn ingest_batch(
                         counts.0, counts.1
                     );
                 }
-                6 => {
+                5 => {
                     action = "exit_menu";
                     tx.execute(
                         "UPDATE weixin_binding SET menu_mode=NULL,menu_expires_at=NULL WHERE id=1",
@@ -199,10 +192,6 @@ pub(crate) fn ingest_batch(
             inbox_id = Some(item.id);
             if expired && menu_choice(text.trim()).is_some() {
                 ack = "菜单已过期，这条原话已记入收件箱；如需操作，请重新发送“召唤秘书”。".into();
-            }
-            if recording {
-                tx.execute("UPDATE weixin_binding SET menu_mode='menu' WHERE id=1", [])?;
-                ack = "已原样记入收件箱，已返回菜单；可继续回复序号，或回复“六”退出。".into();
             }
         }
         if fresh && action != "rate_limited" {
@@ -241,7 +230,6 @@ fn menu_choice(text: &str) -> Option<u8> {
         "3" | "三" | "３" => Some(3),
         "4" | "四" | "４" => Some(4),
         "5" | "五" | "５" => Some(5),
-        "6" | "六" | "６" => Some(6),
         _ => None,
     }
 }

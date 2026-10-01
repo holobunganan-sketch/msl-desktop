@@ -84,19 +84,20 @@
   <div class="weixin-settings" data-testid="weixin-settings">
     <p class="status" role="status">{loading ? txt("正在读取连接状态…", "Loading connection status…") : stateLabel(status.connection_state)}</p>
     <ul>
-      <li>{txt("普通文字会原话存入收件箱。", "Ordinary text is saved verbatim to your inbox.")}</li>
+      <li>{txt("直接发送一句话，就会按原话存入收件箱，无需打开菜单。", "Send a message to save it verbatim to your inbox. No menu is needed.")}</li>
       <li>{txt("发送", "Send")} <code>召唤秘书</code>{txt("，收到菜单后回复数字或中文序号。", " to open the menu, then reply with a number.")}</li>
     </ul>
     <ol class="menu-preview" aria-label={txt("微信操作菜单", "WeChat action menu")}>
       {#each [
-        ["一", "记一句话", "Record a note"], ["二", "全局整理", "Organize the workspace"],
-        ["三", "生成每日简报", "Prepare today's brief"], ["四", "查看整理进度", "Check progress"],
-        ["五", "查看待确认数量", "Count pending suggestions"], ["六", "退出菜单", "Exit the menu"],
+        ["一", "全局整理", "Organize the workspace"], ["二", "生成每日简报", "Prepare today's brief"],
+        ["三", "查看整理进度", "Check progress"], ["四", "查看待确认数量", "Count pending suggestions"],
+        ["五", "退出菜单", "Exit the menu"],
       ] as item, index}
         <li><span class="menu-number" aria-hidden="true">{txt(item[0], String(index + 1))}</span><span>{txt(item[1], item[2])}</span></li>
       {/each}
     </ol>
-    <p class="hint">{txt("菜单有效期 10 分钟。选“一”后，下一条文字按原话记录；选“六”退出。整理和简报在电脑后台进行，建议仍由你在桌面端确认。", "The menu stays active for 10 minutes. Choose 1 to save your next message verbatim, or 6 to exit. Analysis and briefs run on your computer; you confirm suggestions on the desktop.")}</p>
+    <p class="hint">{txt("菜单有效期 10 分钟，仅此时回复 1–5 或中文序号会执行操作；其他文字照常记录。选“五”退出后，数字也作为原话保存。整理和简报在电脑后台进行，建议仍由你在桌面端确认。", "While the menu is active for 10 minutes, replies 1–5 select an action. Other text is still saved as a note. Choose 5 to exit; numbers then become notes too. Analysis and briefs run on your computer; you confirm suggestions on the desktop.")}</p>
+    <p class="hint">{txt("旧版已绑定账号首次升级后，菜单需约 5 分钟完成安全切换，微信会提示剩余时间；普通文字记录不受影响。新安装首次绑定无需等待。", "After upgrading a previously paired installation, menu actions have a one-time safety window of about 5 minutes. WeChat shows the remaining time; ordinary notes still save. First-time pairing on a new installation does not require this wait.")}</p>
     <p class="hint">{txt("仅接收扫码账号本人的私聊文字；群聊、语音、图片和附件不处理。微信回复操作回执、任务进度或待确认数量，不发送工作正文。", "Only direct text messages from the paired owner are accepted. Groups, voice, images and attachments are ignored. Replies contain acknowledgments, job status or pending counts, never work content.")}</p>
     <div class="actions">
       <AppButton variant="secondary" loading={busy} disabled={loading} onclick={begin}>{txt(status.bound ? "重新扫码绑定" : "扫码绑定并启用", status.bound ? "Pair again" : "Scan to pair and enable")}</AppButton>

@@ -269,6 +269,8 @@ mod tests {
             let start = std::time::Instant::now();
             while start.elapsed().as_secs() < 30 {
                 if let Ok((mut stream, _)) = listener.accept() {
+                    // Winsock accepts inherit nonblocking mode; wait for request bytes.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(std::time::Duration::from_secs(15)))
                         .unwrap();
@@ -309,6 +311,24 @@ mod tests {
             }
         });
         (address, rx)
+    }
+    #[test]
+    fn mock_waits_for_request_bytes_after_accept() {
+        use std::io::{Read, Write};
+        let (base, rx) = server("{}", 200);
+        let mut client = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        // The connection can be accepted before the first HTTP bytes arrive.
+        std::thread::sleep(Duration::from_millis(100));
+        let request = "POST /mock HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}";
+        client.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), request);
+        assert!(response.starts_with("HTTP/1.1 200 Test\r\n"));
+        assert!(response.ends_with("\r\n\r\n{}"));
     }
     #[test]
     fn qr_uses_post_local_token_list_without_bearer() {
