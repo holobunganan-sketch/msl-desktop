@@ -4,8 +4,8 @@
     {
       "version": "0.3.22",
       "date": "2026-10-01",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "OpenCode 协议分流与认证修正",
       "summary": "参考 Reasonix 的分流方式，区分推荐入口与兼容入口，修正 OpenCode Messages 的认证。",
       "changes": [
@@ -14,7 +14,13 @@
         "为经过资料核对的 Go 模型补充兼容入口；保留当前官方默认协议，未确认的新模型不按名称猜测。",
         "Responses 显式采用无服务端会话存储的请求方式，继续携带本次任务所需上下文。",
         "刷新模型保留手动选择、启停状态和任务绑定；自定义网关沿用其显式配置。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.22",
+        "label": "发布记录",
+        "publishedAt": "2026-10-01T08:12:14Z",
+        "commit": "29c2f137ca9ba4323da53d120604cbebb4ec6442"
+      }
     },
     {
       "version": "0.3.21",
