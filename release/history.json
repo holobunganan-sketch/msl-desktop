@@ -4,8 +4,8 @@
     {
       "version": "0.3.24",
       "date": "2026-10-01",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "微信直接记录与秘书操作分开",
       "summary": "普通文字直接记入收件箱；发送“召唤秘书”才打开操作菜单，菜单不再包含记录选项。",
       "changes": [
@@ -14,7 +14,13 @@
         "旧整理口令也作为普通文字记录；未打开菜单、菜单过期或退出后，数字同样可直接记录。",
         "升级时关闭旧版菜单；已有绑定约 5 分钟后可打开新菜单，防止积压指令触发新操作，普通记录不受影响。绑定、消息去重记录和工作数据保留。",
         "设置页、官网示例和使用说明同步更新。"
-      ]
+      ],
+      "source": {
+        "label": "发布记录",
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.24"
+      },
+      "publishedAt": "2026-10-01T09:23:18Z",
+      "commit": "67a9fde14fd55f1cf87f1b92e5191643b71ed646"
     },
     {
       "version": "0.3.23",
