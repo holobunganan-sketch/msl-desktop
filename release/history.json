@@ -4,8 +4,8 @@
     {
       "version": "0.3.23",
       "date": "2026-10-01",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "微信秘书菜单",
       "summary": "发送“召唤秘书”查看六项操作，回复序号即可继续，原微信整理口令停用。",
       "changes": [
@@ -14,7 +14,13 @@
         "进度和数量查询不调用模型，不向微信发送工作正文；生成的建议继续在桌面端确认。",
         "重复消息不重复入库或发起任务，过期菜单和旧消息不会误触发操作；暂停、解绑及重新绑定会清除菜单状态。",
         "设置页展示菜单及操作说明，官网同步补充微信使用方式。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.23",
+        "label": "发布记录",
+        "publishedAt": "2026-10-01T08:42:38Z",
+        "commit": "8b3eb684a8c1e21e3fbd9acff5941083a0ca4996"
+      }
     },
     {
       "version": "0.3.22",
