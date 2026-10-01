@@ -11,6 +11,7 @@ pub mod field_evidence;
 pub mod insight_proposals;
 pub mod knowledge_contract;
 pub mod lifecycle;
+pub mod opencode;
 pub mod output;
 pub mod prompts;
 pub mod provider;

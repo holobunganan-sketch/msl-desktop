@@ -1015,6 +1015,56 @@ mod tests {
     }
 
     #[test]
+    fn opencode_contract_manual_routes_survive_refresh_and_repair_for_known_and_future_models() {
+        let db = Database::open_in_memory().unwrap();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        let provider = synthetic_connection(&repo, "opencode_go");
+        for id in ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-future"] {
+            let saved = repo
+                .upsert_model(
+                    provider.id,
+                    id,
+                    "Keep user route",
+                    "responses",
+                    "/custom/responses",
+                    r#"{"max_output_tokens":9000}"#,
+                    "manual",
+                    false,
+                    true,
+                )
+                .unwrap();
+            repo.upsert_route("general", Some(saved.id)).unwrap();
+            apply_remote_models(
+                &repo,
+                &provider,
+                &[RemoteModel {
+                    model_id: id.into(),
+                    protocol: Some("anthropic_messages".into()),
+                    endpoint_path: Some("/messages".into()),
+                    model_type: None,
+                }],
+            )
+            .unwrap();
+            repair_fixed_templates(&repo).unwrap();
+            let after = repo.get_model(saved.id).unwrap().unwrap();
+            assert_eq!(after.protocol, "responses");
+            assert_eq!(after.endpoint_path, "/custom/responses");
+            assert_eq!(after.source, "manual");
+            assert_eq!(after.display_name, "Keep user route");
+            assert!(!after.enabled);
+            assert!(after.available);
+            assert_eq!(model_capabilities(&after).max_output_tokens, Some(9000));
+            assert_eq!(
+                repo.get_route("general")
+                    .unwrap()
+                    .unwrap()
+                    .provider_model_id,
+                Some(saved.id)
+            );
+        }
+    }
+
+    #[test]
     fn refresh_preserves_disabled_model_and_route() {
         let db = Database::open_in_memory().unwrap();
         let repo = ProviderCatalogRepo::new(db.conn());

@@ -10,6 +10,7 @@ const {render}=await server.ssrLoadModule('svelte/server');
 const {default:Settings}=await server.ssrLoadModule('/src/lib/components/ProviderSettings.svelte');
 const catalog=await server.ssrLoadModule('/src/lib/services/providerCatalog.ts').catch(()=>({}));
 const card=await server.ssrLoadModule('/src/lib/components/ProviderConnectionCard.svelte').catch(()=>({}));
+const routingCard=await server.ssrLoadModule('/src/lib/components/ModelRouting.svelte').catch(()=>({}));
 const template={kind:'opencode_go',vendor:'OpenCode',display_name:'OpenCode Go',service_tier:'plan',base_url:'https://example.test/go/v1',models_endpoint:'https://example.test/go/v1/models',auth_mode:'bearer',protocol:null,endpoint_path:null,discovery:'remote',docs_url:'https://example.test/docs',note:'Restricted to approved coding clients.',models:[]};
 const connection={id:2,display_name:'Research account',provider_type:'opencode_go',base_url:template.base_url,legacy_model:'',enabled:true,template_kind:'opencode_go',auth_mode:'bearer',models_endpoint:template.models_endpoint,last_models_refresh_at:null,created_at:1,updated_at:1};
 const model=(changes={})=>({id:21,provider_id:2,model_id:'example-model',display_name:'Example model',protocol:'responses',endpoint_path:'/responses',capabilities_json:'{}',source:'remote',enabled:false,available:true,created_at:1,updated_at:1,...changes});
@@ -103,4 +104,46 @@ test('new Contributor variants keep their training-data notice',()=>{
   assert.equal(typeof card.default,'function');
   const body=render(card.default,{props:{connection,models:[model({model_id:'muse-spark-future-contributor'})],hasKey:true,folds:{},locale:'en-US',busy:null,onfold(){},onkey(){},onrefresh(){},onedit(){},onremove(){},onmodel(){},ontoggle(){},ontest(){}}}).body;
   assert.match(body,/prompts and completions may be used to train future models/);
+});
+
+const routing={recommended_protocol:'chat_completions',options:[
+  {protocol:'chat_completions',endpoint_path:'/chat/completions',recommended:true},
+  {protocol:'anthropic_messages',endpoint_path:'/messages',recommended:false},
+  {protocol:'responses',endpoint_path:'/responses',recommended:false}
+],note:'Flash has optional compatibility routes.',source_url:'https://github.com/indielab/Reasonix'};
+
+test('selecting a documented route changes only protocol and endpoint, without enabling the model',()=>{
+  assert.equal(typeof catalog.applyRouteOption,'function');
+  const form={modelId:'deepseek-v4-flash',displayName:'My model',protocol:'chat_completions',endpointPath:'/custom',enabled:false};
+  const next=catalog.applyRouteOption(form,routing.options[1]);
+  assert.deepEqual(next,{...form,protocol:'anthropic_messages',endpointPath:'/messages'});
+  assert.equal(form.endpointPath,'/custom');
+  assert.throws(()=>catalog.applyRouteOption(form,{protocol:'unknown',endpoint_path:'/unknown'}),/protocol/i);
+});
+
+test('routing guidance distinguishes recommended and optional entries, and shows the effective authentication',()=>{
+  assert.equal(typeof routingCard.default,'function');
+  const body=render(routingCard.default,{props:{routing,protocol:'anthropic_messages',endpointPath:'/messages',baseUrl:'https://opencode.ai/zen/go/v1',authMode:'bearer',locale:'zh-CN',onselect(){}}}).body;
+  assert.match(body,/推荐入口/);
+  assert.match(body,/兼容入口/);
+  assert.match(body,/x-api-key/);
+  assert.match(body,/https:\/\/opencode.ai\/zen\/go\/v1\/messages/);
+  assert.match(body,/共用/);
+  assert.match(body,/aria-pressed="true"/);
+  assert.match(body,/data-testid="model-route-responses"/);
+  assert.doesNotMatch(body,/API Key.*<input/);
+});
+
+test('routing guidance respects no-auth and keeps edited model paths visible',()=>{
+  assert.equal(typeof routingCard.default,'function');
+  const body=render(routingCard.default,{props:{routing,protocol:'responses',endpointPath:'/custom-response',baseUrl:'https://opencode.ai/zen/go/v1',authMode:'none',locale:'en-US',onselect(){}}}).body;
+  assert.match(body,/No authentication/);
+  assert.match(body,/custom-response/);
+  assert.doesNotMatch(body,/aria-pressed="true"/);
+});
+
+test('URL preview matches native normalization only for the selected protocol and its own endpoint',()=>{
+  assert.equal(catalog.routePreview('https://opencode.ai/zen/go','/messages','responses'),'https://opencode.ai/zen/go/messages');
+  assert.equal(catalog.routePreview('https://opencode.ai/zen/go','/messages','anthropic_messages'),'https://opencode.ai/zen/go/v1/messages');
+  assert.equal(catalog.routeAuthentication('https://opencode.ai/zen/go','/responses','anthropic_messages','bearer'),'Bearer');
 });

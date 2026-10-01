@@ -143,8 +143,32 @@ pub fn save_provider_connection(
 pub fn list_provider_models(
     state: State<AppState>,
     provider_id: Option<i64>,
-) -> Result<Vec<ProviderModel>, String> {
-    with_catalog(&state, |repo| repo.list_models(provider_id))
+) -> Result<Vec<ProviderModelDto>, String> {
+    with_catalog(&state, |repo| {
+        repo.list_models(provider_id)?
+            .into_iter()
+            .map(|model| model_for_display(repo, model))
+            .collect()
+    })
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ProviderModelDto {
+    #[serde(flatten)]
+    model: ProviderModel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    routing: Option<crate::ai::opencode::RoutingGuidance>,
+}
+
+fn model_for_display(
+    repo: &ProviderCatalogRepo<'_>,
+    model: ProviderModel,
+) -> crate::db::DbResult<ProviderModelDto> {
+    let connection = repo
+        .get_connection(model.provider_id)?
+        .ok_or_else(|| crate::db::DbError::NotFound("provider_connection".into()))?;
+    let routing = crate::ai::opencode::routing_guidance(&connection, &model.model_id);
+    Ok(ProviderModelDto { model, routing })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -161,7 +185,7 @@ pub fn save_provider_model(
     enabled: bool,
     available: bool,
     confirm_available: Option<bool>,
-) -> Result<ProviderModel, String> {
+) -> Result<ProviderModelDto, String> {
     let model_id = required(model_id, "模型 ID")?;
     let display_name = required(display_name, "模型显示名称")?;
     let endpoint_path = required(endpoint_path, "模型 endpoint")?;
@@ -177,7 +201,7 @@ pub fn save_provider_model(
     map.remove("unsupported_protocol");
     map.remove("protocol_from_remote");
     with_catalog(&state, |repo| {
-        save_manual_model(
+        let model = save_manual_model(
             repo,
             provider_id,
             &model_id,
@@ -188,7 +212,8 @@ pub fn save_provider_model(
             enabled,
             available,
             confirm_available.unwrap_or(false),
-        )
+        )?;
+        model_for_display(repo, model)
     })
 }
 
@@ -248,6 +273,88 @@ fn finish_successful_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_contract_command_model_includes_advisory_routing_without_persisting_it() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        let connection = repo
+            .insert_connection(
+                "OpenCode",
+                "custom",
+                "https://opencode.ai/zen/go/v1",
+                "",
+                "opencode_go",
+                "bearer",
+                None,
+                true,
+            )
+            .unwrap();
+        let saved = save_manual_model(
+            &repo,
+            connection.id,
+            "deepseek-v4-flash",
+            "User label",
+            "responses",
+            "/responses",
+            r#"{"max_output_tokens":9000}"#,
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        let dto = serde_json::to_value(model_for_display(&repo, saved.clone()).unwrap()).unwrap();
+        assert_eq!(dto["routing"]["recommended_protocol"], "chat_completions");
+        assert_eq!(dto["routing"]["options"].as_array().unwrap().len(), 3);
+        assert_eq!(dto["protocol"], "responses");
+        assert_eq!(dto["endpoint_path"], "/responses");
+        assert_eq!(dto["id"], saved.id);
+        assert_eq!(dto["display_name"], "User label");
+        assert_eq!(repo.get_model(saved.id).unwrap().unwrap(), saved);
+        assert!(serde_json::to_value(saved)
+            .unwrap()
+            .get("routing")
+            .is_none());
+    }
+
+    #[test]
+    fn opencode_contract_command_omits_guidance_for_unknown_models_and_custom_proxies() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let repo = ProviderCatalogRepo::new(db.conn());
+        for (base, id) in [
+            ("https://opencode.ai/zen/go/v1", "deepseek-future"),
+            ("https://proxy.example/zen/go/v1", "deepseek-v4-flash"),
+        ] {
+            let connection = repo
+                .insert_connection(
+                    "Custom",
+                    "custom",
+                    base,
+                    "",
+                    "opencode_go",
+                    "bearer",
+                    None,
+                    true,
+                )
+                .unwrap();
+            let saved = save_manual_model(
+                &repo,
+                connection.id,
+                id,
+                "User label",
+                "responses",
+                "/responses",
+                "{}",
+                true,
+                true,
+                false,
+            )
+            .unwrap();
+            let dto = serde_json::to_value(model_for_display(&repo, saved).unwrap()).unwrap();
+            assert!(dto.get("routing").is_none());
+            assert_eq!(dto["protocol"], "responses");
+        }
+    }
 
     #[test]
     fn explicit_manual_confirmation_restores_missing_model_without_changing_identity_or_route() {

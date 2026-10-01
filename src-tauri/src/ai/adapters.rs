@@ -59,11 +59,16 @@ fn endpoint_url(
             "Provider Base URL 必须是无凭据的 http/https URL".into(),
         ));
     }
-    base.set_path(&format!(
-        "{}{}",
-        base.path().trim_end_matches('/'),
-        model.endpoint_path
-    ));
+    let path =
+        crate::ai::opencode::normalized_endpoint(&base, &model.protocol, &model.endpoint_path)
+            .unwrap_or_else(|| {
+                format!(
+                    "{}{}",
+                    base.path().trim_end_matches('/'),
+                    model.endpoint_path
+                )
+            });
+    base.set_path(&path);
     if std::env::var("MSL_ISOLATED_TEST").as_deref() == Ok("1") && !endpoint_is_loopback(&base) {
         return Err(AiError::Config("隔离测试只允许本地模拟接口".into()));
     }
@@ -368,10 +373,17 @@ async fn send_json(
     connection: &ProviderConnection,
     model: &ProviderModel,
     api_key: &str,
-    body: Value,
+    mut body: Value,
     anthropic: bool,
     budget: &std::sync::Mutex<crate::ai::output::RequestBudget>,
 ) -> Result<Value, AiError> {
+    let opencode_request = crate::ai::opencode::is_request(&url, &model.protocol);
+    if opencode_request && model.protocol == "responses" {
+        body["store"] = Value::Bool(false);
+        if let Some(object) = body.as_object_mut() {
+            object.remove("previous_response_id");
+        }
+    }
     let opencode_session = budget
         .lock()
         .map_err(|_| AiError::Config("请求上下文不可用".into()))?
@@ -402,12 +414,13 @@ async fn send_json(
             )
             .json(&body);
         request = match connection.auth_mode.as_str() {
+            "bearer" if opencode_request && anthropic => request.header("x-api-key", api_key),
             "bearer" => request.bearer_auth(api_key),
             "api_key" => request.header("x-api-key", api_key),
             "none" => request,
             _ => return Err(AiError::Config("未识别的 API 鉴权方式".into())),
         };
-        if connection.template_kind == "opencode_go" {
+        if opencode_request {
             request = request.header("x-opencode-session", &opencode_session);
         }
         if anthropic {
@@ -968,6 +981,202 @@ mod tests {
             budget: Default::default(),
         }
     }
+
+    #[test]
+    fn opencode_contract_normalizes_root_and_versioned_bases() {
+        for root in ["/zen/go", "/zen"] {
+            for suffix in ["", "/", "/v1", "/v1/"] {
+                for (protocol, endpoint) in [
+                    ("chat_completions", "/chat/completions"),
+                    ("responses", "/responses"),
+                    ("anthropic_messages", "/messages"),
+                ] {
+                    let conn = opencode_connection(&format!("http://127.0.0.1{root}{suffix}"));
+                    let url = endpoint_url(&conn, &model(protocol, endpoint)).unwrap();
+                    assert_eq!(url.path(), format!("{root}/v1{endpoint}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_contract_all_protocols_use_exact_paths_and_shared_key() {
+        tauri::async_runtime::block_on(async {
+            for root in ["/zen/go", "/zen"] {
+                for (protocol, endpoint) in [
+                    ("chat_completions", "/chat/completions"),
+                    ("responses", "/responses"),
+                    ("anthropic_messages", "/messages"),
+                ] {
+                    let (base, captured, handle) = server(
+                        200,
+                        r#"{"choices":[{"message":{"content":"ok"}}],"output":[{"content":[{"text":"ok"}]}],"content":[{"type":"text","text":"ok"}]}"#,
+                    );
+                    let mut input = request();
+                    input.messages = vec![
+                        AiMessage {
+                            role: "user".into(),
+                            content: "earlier question".into(),
+                        },
+                        AiMessage {
+                            role: "assistant".into(),
+                            content: "earlier answer".into(),
+                        },
+                        AiMessage {
+                            role: "user".into(),
+                            content: "followup".into(),
+                        },
+                    ];
+                    complete(
+                        &opencode_connection(&format!("{base}{root}/v1")),
+                        &model(protocol, endpoint),
+                        "synthetic-shared-key",
+                        &input,
+                    )
+                    .await
+                    .unwrap();
+                    handle.join().unwrap();
+                    let wire = captured.lock().unwrap().clone();
+                    let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+                    let headers = headers.to_ascii_lowercase();
+                    assert!(headers.starts_with(&format!("post {root}/v1{endpoint} http/1.1")));
+                    assert_eq!(
+                        headers.contains("x-api-key: synthetic-shared-key"),
+                        protocol == "anthropic_messages"
+                    );
+                    assert_eq!(
+                        headers.contains("authorization: bearer synthetic-shared-key"),
+                        protocol != "anthropic_messages"
+                    );
+                    assert!(headers.contains("x-opencode-session:"));
+                    let body: Value = serde_json::from_str(body).unwrap();
+                    let history_key = if protocol == "responses" {
+                        "input"
+                    } else {
+                        "messages"
+                    };
+                    let history = body[history_key].as_array().unwrap();
+                    assert!(history.iter().any(|m| m["content"] == "earlier answer"));
+                    assert!(history.iter().any(|m| m["content"] == "followup"));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn opencode_contract_responses_are_stateless_for_probe_and_generation() {
+        tauri::async_runtime::block_on(async {
+            for is_probe in [false, true] {
+                let (base, captured, handle) = server(
+                    200,
+                    r#"{"id":"response-id","output":[{"content":[{"text":"ok"}]}]}"#,
+                );
+                let conn = opencode_connection(&format!("{base}/zen/go/v1"));
+                let selected = model("responses", "/responses");
+                if is_probe {
+                    probe(&conn, &selected, "synthetic-key", &request())
+                        .await
+                        .unwrap();
+                } else {
+                    complete(&conn, &selected, "synthetic-key", &request())
+                        .await
+                        .unwrap();
+                }
+                handle.join().unwrap();
+                let wire = captured.lock().unwrap().clone();
+                let body: Value =
+                    serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap();
+                assert_eq!(body["store"], false, "probe={is_probe}");
+                assert!(body.get("previous_response_id").is_none());
+                assert_eq!(body["input"][0]["content"], "hello");
+            }
+        });
+    }
+
+    #[test]
+    fn opencode_contract_custom_paths_do_not_inherit_provider_headers_or_body() {
+        tauri::async_runtime::block_on(async {
+            for path in ["/proxy/v1", "/zen/go/v1/other", "/zen/go/v1"] {
+                let endpoint = if path == "/zen/go/v1" {
+                    "/custom-responses"
+                } else {
+                    "/responses"
+                };
+                let (base, captured, handle) =
+                    server(200, r#"{"output":[{"content":[{"text":"ok"}]}]}"#);
+                complete(
+                    &opencode_connection(&format!("{base}{path}")),
+                    &model("responses", endpoint),
+                    "synthetic-key",
+                    &request(),
+                )
+                .await
+                .unwrap();
+                handle.join().unwrap();
+                let wire = captured.lock().unwrap().clone();
+                let (headers, body) = wire.split_once("\r\n\r\n").unwrap();
+                assert!(!headers.to_ascii_lowercase().contains("x-opencode-session:"));
+                assert!(serde_json::from_str::<Value>(body)
+                    .unwrap()
+                    .get("store")
+                    .is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn opencode_contract_preserves_explicit_authentication_modes() {
+        tauri::async_runtime::block_on(async {
+            for auth in ["api_key", "none"] {
+                for (protocol, endpoint) in [
+                    ("chat_completions", "/chat/completions"),
+                    ("responses", "/responses"),
+                    ("anthropic_messages", "/messages"),
+                ] {
+                    let (base, captured, handle) = server(
+                        200,
+                        r#"{"choices":[{"message":{"content":"ok"}}],"output":[{"content":[{"text":"ok"}]}],"content":[{"type":"text","text":"ok"}]}"#,
+                    );
+                    let mut conn = opencode_connection(&format!("{base}/zen/go/v1"));
+                    conn.auth_mode = auth.into();
+                    complete(
+                        &conn,
+                        &model(protocol, endpoint),
+                        "synthetic-key",
+                        &request(),
+                    )
+                    .await
+                    .unwrap();
+                    handle.join().unwrap();
+                    let wire = captured.lock().unwrap().to_ascii_lowercase();
+                    assert!(!wire.contains("authorization:"));
+                    assert_eq!(wire.contains("x-api-key: synthetic-key"), auth == "api_key");
+                    assert_eq!(
+                        wire.contains("anthropic-version:"),
+                        protocol == "anthropic_messages"
+                    );
+                    if auth == "none" {
+                        assert!(!wire.contains("synthetic-key"));
+                    }
+                }
+            }
+            let (base, captured, handle) =
+                server(200, r#"{"content":[{"type":"text","text":"ok"}]}"#);
+            complete(
+                &opencode_connection(&format!("{base}/custom/v1")),
+                &model("anthropic_messages", "/messages"),
+                "synthetic-key",
+                &request(),
+            )
+            .await
+            .unwrap();
+            handle.join().unwrap();
+            let wire = captured.lock().unwrap().to_ascii_lowercase();
+            assert!(wire.contains("authorization: bearer synthetic-key"));
+            assert!(!wire.contains("x-api-key:"));
+            assert!(!wire.contains("x-opencode-session:"));
+        });
+    }
     #[test]
     fn logical_generation_and_repair_share_three_http_attempts() {
         tauri::async_runtime::block_on(async {
@@ -1326,7 +1535,7 @@ mod tests {
                 let (base, capture, handle) =
                     server(200, r#"{"choices":[{"message":{"content":"ok"}}]}"#);
                 complete(
-                    &opencode_connection(&base),
+                    &opencode_connection(&format!("{base}/zen/go/v1")),
                     &model("chat_completions", "/chat/completions"),
                     "synthetic",
                     &logical_request,
@@ -1356,7 +1565,7 @@ mod tests {
                 r#"{"id":"chat-1","choices":[{"message":{"content":"ok"}}]}"#,
             );
             complete(
-                &opencode_connection(&base),
+                &opencode_connection(&format!("{base}/zen/go/v1")),
                 &model("chat_completions", "/chat/completions"),
                 "synthetic-key",
                 &request(),

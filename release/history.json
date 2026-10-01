@@ -2,6 +2,21 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "0.3.22",
+      "date": "2026-10-01",
+      "status": "current",
+      "dateKind": "local",
+      "title": "OpenCode 协议分流与认证修正",
+      "summary": "参考 Reasonix 的分流方式，区分推荐入口与兼容入口，修正 OpenCode Messages 的认证。",
+      "changes": [
+        "OpenCode Go 与 Zen 按实际请求端点选择认证：Messages 使用 x-api-key，Chat Completions 与 Responses 使用 Bearer；同一连接共用一把 Key。",
+        "模型编辑页提供推荐入口与兼容入口选择，同时填写协议和路径，并展示请求地址与认证方式。",
+        "为经过资料核对的 Go 模型补充兼容入口；保留当前官方默认协议，未确认的新模型不按名称猜测。",
+        "Responses 显式采用无服务端会话存储的请求方式，继续携带本次任务所需上下文。",
+        "刷新模型保留手动选择、启停状态和任务绑定；自定义网关沿用其显式配置。"
+      ]
+    },
+    {
       "version": "0.3.21",
       "date": "2026-10-01",
       "status": "released",

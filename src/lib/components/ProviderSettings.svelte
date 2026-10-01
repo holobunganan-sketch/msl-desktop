@@ -3,11 +3,12 @@
   import Modal from './ui/Modal.svelte';
   import AppButton from './ui/AppButton.svelte';
   import ProviderConnectionCard from './ProviderConnectionCard.svelte';
+  import ModelRouting from './ModelRouting.svelte';
   import {command, normalizeError} from '$lib/services/api';
   import type {ProviderConnection, ProviderModel} from '$lib/types/domain';
   import {locale} from '$lib/i18n';
   import {addToast} from '$lib/stores/toast';
-  import {connectionPayload, connectionVendor, createConnection, groupConnections, modelSavePayload, protocols, readFolds, saveFold, supportedModel, type FoldState, type ModelForm, type ProviderTemplate, type RefreshResult} from '$lib/services/providerCatalog';
+  import {applyRouteOption, connectionPayload, connectionVendor, createConnection, groupConnections, modelSavePayload, protocols, readFolds, saveFold, supportedModel, type FoldState, type ModelForm, type ProviderTemplate, type RefreshResult} from '$lib/services/providerCatalog';
 
   let connections = $state<ProviderConnection[]>([]);
   let templates = $state<ProviderTemplate[]>([]);
@@ -236,6 +237,7 @@
     {#if editingModel && !editingModel.available}<p>{en ? 'Saving restores this as a manually configured model. Test the connection to confirm actual access.' : '保存后将恢复为手动配置，实际调用权限可通过测试确认。'}</p>{/if}
     <label>{en ? 'Model ID' : '模型 ID'}<input data-testid="provider-model-id" bind:value={modelForm.modelId} readonly={!!editingModel} required /></label>
     <label>{en ? 'Display name' : '显示名称'}<input data-testid="provider-model-name" bind:value={modelForm.displayName} required /></label>
+    {#if editingModel?.routing && modelConnection}<ModelRouting routing={editingModel.routing} protocol={modelForm.protocol} endpointPath={modelForm.endpointPath} baseUrl={modelConnection.base_url} authMode={modelConnection.auth_mode} locale={$locale} onselect={option => modelForm = applyRouteOption(modelForm, option)} />{/if}
     <div class="form-grid"><label>{en ? 'Protocol' : '协议'}<select data-testid="provider-model-protocol" bind:value={modelForm.protocol} onchange={changeProtocol} required><option value="" disabled>{en ? 'Choose protocol' : '请选择协议'}</option>{#each protocols as protocol}<option value={protocol.id}>{protocol.label}</option>{/each}</select></label><label>{en ? 'Endpoint path' : '请求端点'}<input data-testid="provider-model-endpoint" bind:value={modelForm.endpointPath} required placeholder="/responses" /></label></div>
     <label class="check"><input data-testid="provider-model-enabled" type="checkbox" bind:checked={modelForm.enabled} />{en ? 'Enable this model' : '启用此模型'}</label>
     {#if modelError}<p class="error" role="alert">{modelError}</p>{/if}

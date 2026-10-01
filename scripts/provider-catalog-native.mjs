@@ -43,6 +43,7 @@ try {
     const models = await call('list_provider_models',{providerId:saved.connections[0]});
     assert.equal(models.find(item => item.id === saved.disabled).enabled,false);
     assert.equal(models.find(item => item.id === saved.manual).protocol,'chat_completions');
+    if (saved.alternate) assert.equal(models.find(item => item.id === saved.alternate).protocol,'responses');
     assert.equal((await call('list_ai_task_routes')).find(item => item.task_kind === 'general').provider_model_id,saved.route);
     assert.equal(await page.getByTestId('vendor-fold-OpenCode').evaluate(el=>el.parentElement.open),true);
     assert.equal(await page.getByTestId(`models-fold-${saved.connections[0]}`).evaluate(el=>el.parentElement.open),true);
@@ -60,18 +61,19 @@ try {
     server = http.createServer(async(req,res) => {
       const chunks=[]; for await (const chunk of req) chunks.push(chunk);
       const input = chunks.length ? JSON.parse(Buffer.concat(chunks)) : null;
-      requests.push({method:req.method,url:req.url,headers:req.headers,model:input?.model});
+      requests.push({method:req.method,url:req.url,headers:req.headers,model:input?.model,input});
       res.setHeader('content-type','application/json');
       if (req.method === 'GET') {
         if (catalogMode === 'unauthorized') {res.statusCode=401; res.end('{"error":"synthetic-key-must-not-appear"}'); return;}
         if (catalogMode === 'malformed') {res.end('{"data":[{"id":"partial-new"},{}]}'); return;}
-        res.end(JSON.stringify({data:['gpt-5.6-luna','glm-5.3','minimax-m2.7','qwen3.8-max','synthetic-future-model'].map(id => ({id,object:'model'}))})); return;
+        res.end(JSON.stringify({data:['gpt-5.6-luna','glm-5.3','deepseek-v4-flash','minimax-m2.7','qwen3.8-max','qwen3.8-flash','synthetic-future-model'].map(id => ({id,object:'model'}))})); return;
       }
       res.end(JSON.stringify({choices:[{message:{role:'assistant',content:'synthetic response'},finish_reason:'stop'}],output:[{content:[{type:'output_text',text:'synthetic response'}]}],content:[{type:'text',text:'synthetic response'}],stop_reason:'end_turn'}));
     });
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
-    const base = `http://127.0.0.1:${server.address().port}/v1`;
+    const origin = `http://127.0.0.1:${server.address().port}`;
     async function add(nickname, key, kind='opencode_go') {
+      const base = `${origin}${kind === 'opencode_go' ? '/zen/go' : '/zen'}/v1`;
       await page.getByTestId('add-provider-connection').click();
       await page.getByTestId('provider-vendor-select').selectOption('OpenCode');
       await page.getByTestId('provider-access-select').selectOption(kind);
@@ -131,13 +133,39 @@ try {
     await call('refresh_provider_models',{providerId:zen.id});
     assert.equal((await call('list_provider_models',{providerId:zen.id})).find(m=>m.model_id === 'qwen3.8-max').protocol,'chat_completions');
     assert.equal(models.find(m=>m.model_id === 'qwen3.8-max').protocol,'anthropic_messages');
+    const alternate = models.find(m=>m.model_id === 'deepseek-v4-flash');
+    assert.deepEqual(alternate.routing.options.map(item=>item.protocol),['chat_completions','anthropic_messages','responses']);
+    await open(`protocol-fold-${first.id}-chat_completions`);
+    await page.getByTestId(`model-edit-${alternate.id}`).click();
+    await page.getByTestId('model-route-responses').click();
+    assert.equal(await page.getByTestId('provider-model-protocol').inputValue(),'responses');
+    assert.equal(await page.getByTestId('provider-model-endpoint').inputValue(),'/responses');
+    await page.screenshot({path:path.join(artifacts,'opencode-route-picker.png')});
+    await page.getByTestId('provider-save-model').click();
+    await page.locator('[role="dialog"]').waitFor({state:'hidden'});
+    await call('refresh_provider_models',{providerId:first.id});
+    await call('list_provider_connections');
+    assert.equal((await call('list_provider_models',{providerId:first.id})).find(m=>m.id===alternate.id).protocol,'responses');
+    await call('test_provider_model',{providerModelId:alternate.id});
     for (const id of ['glm-5.3','minimax-m2.7']) {
       const model = models.find(m=>m.model_id === id);
       assert.match(await call('test_provider_model',{providerModelId:model.id}),/连接成功/);
     }
     const secondModels = await call('list_provider_models',{providerId:second.id});
     await call('test_provider_model',{providerModelId:secondModels.find(m=>m.model_id === 'gpt-5.6-luna').id});
-    for (const endpoint of ['/v1/chat/completions','/v1/messages','/v1/responses']) assert.ok(requests.some(r=>r.method==='POST' && r.url===endpoint),endpoint);
+    for (const endpoint of ['/zen/go/v1/chat/completions','/zen/go/v1/messages','/zen/go/v1/responses']) assert.ok(requests.some(r=>r.method==='POST' && r.url===endpoint),endpoint);
+    const messageRequest = requests.find(r=>r.method==='POST' && r.url==='/zen/go/v1/messages');
+    assert.equal(messageRequest.headers['x-api-key'],'synthetic-first');
+    assert.equal(messageRequest.headers.authorization,undefined);
+    assert.equal(messageRequest.headers['anthropic-version'],'2023-06-01');
+    const responsesRequest = requests.find(r=>r.method==='POST' && r.url==='/zen/go/v1/responses');
+    assert.equal(responsesRequest.input.store,false);
+    assert.equal(responsesRequest.input.previous_response_id,undefined);
+    const zenModels = await call('list_provider_models',{providerId:zen.id});
+    const zenMessages = zenModels.find(m=>m.protocol==='anthropic_messages' && m.available && m.enabled);
+    await call('test_provider_model',{providerModelId:zenMessages.id});
+    assert.equal(requests.at(-1).headers['x-api-key'],'synthetic-zen');
+    assert.equal(requests.at(-1).url,'/zen/v1/messages');
     assert.ok(requests.some(r=>r.headers.authorization==='Bearer synthetic-first'));
     assert.ok(requests.some(r=>r.headers.authorization==='Bearer synthetic-second'));
     await call('save_provider_connection',{...connectionPayload(second),authMode:'none'});
@@ -157,9 +185,15 @@ try {
       assert.ok(await page.locator('[role="dialog"]').evaluate(el=>el.scrollWidth-el.clientWidth<=1));
       await page.screenshot({path:path.join(artifacts,`provider-picker-${width}.png`)});
       await page.keyboard.press('Escape');
+      await open(`protocol-fold-${first.id}-responses`);
+      await page.getByTestId(`model-edit-${alternate.id}`).click();
+      await page.getByTestId('model-routing-guide').waitFor();
+      assert.ok(await page.locator('[role="dialog"]').evaluate(el=>el.scrollWidth-el.clientWidth<=1));
+      await page.screenshot({path:path.join(artifacts,`opencode-routes-${width}.png`)});
+      await page.keyboard.press('Escape');
     }
     assert.deepEqual(errors,[]);
-    fs.writeFileSync(receipt,JSON.stringify({connections:[first.id,second.id,zen.id],disabled:disabled.id,manual:unknown.id,route:routed.id,templates:templates.length,protocols:3},null,2));
+    fs.writeFileSync(receipt,JSON.stringify({connections:[first.id,second.id,zen.id],disabled:disabled.id,manual:unknown.id,alternate:alternate.id,route:routed.id,templates:templates.length,protocols:3},null,2));
     console.log('PASS native: dropdown + independent accounts, protocol groups, live refresh, failure preservation, manual correction, routes, auth modes and responsive screenshots');
   }
 } finally {server?.close(); await browser.close();}

@@ -130,6 +130,14 @@ export type ProviderConnection = {
   updated_at: number;
 };
 
+export type ModelRouteOption = {protocol: string; endpoint_path: string; recommended: boolean};
+export type ModelRoutingGuidance = {
+  recommended_protocol: string;
+  options: ModelRouteOption[];
+  note: string;
+  source_url: string;
+};
+
 export type ProviderModel = {
   id: number;
   provider_id: number;
@@ -138,6 +146,7 @@ export type ProviderModel = {
   protocol: "chat_completions" | "responses" | "anthropic_messages" | string;
   endpoint_path: string;
   capabilities_json: string;
+  routing?: ModelRoutingGuidance;
   source: string;
   enabled: boolean;
   available: boolean;

@@ -52,4 +52,23 @@
 - 刷新先完整读取和校验目录，再通过事务更新。认证失败、网络故障、分页损坏时保留原目录。
 - 模型刷新保留模型 ID、任务绑定、已停用状态、手动协议及能力设置；手动条目不会因远程目录缺失被自动删除。
 - API Key 保存在系统凭据库。隔离测试使用进程内合成凭据，不访问用户凭据库；测试仅访问回环 Mock 服务。
-- 应用只使用实际配置的认证方式。HTTP 重定向不转发密钥，需在连接设置中填入厂商正式的新地址。
+- OpenCode 官方 Messages 入口使用 `x-api-key`；Chat Completions 与 Responses 使用 Bearer。连接默认 Bearer 时，Messages 自动使用同一把 Key 生成正确认证头；显式“无需认证”或 API Key 设置保持不变。自定义网关不套用此规则。
+- HTTP 重定向不转发密钥，需在连接设置中填入厂商正式的新地址。
+
+## OpenCode 分流依据
+
+v0.3.22 参考 [Reasonix 的协议契约](https://github.com/indielab/Reasonix/blob/6845b6de3c5e079737a3b010ebcdd87f6cd0228c/internal/provider/opencode_contract.go)及[推荐预设](https://github.com/indielab/Reasonix/blob/6845b6de3c5e079737a3b010ebcdd87f6cd0228c/internal/config/provider_presets_opencode_go.go)，将推荐入口与兼容入口分开。实现保持独立，模型默认表以本轮核对的 OpenCode 官方文档为准。
+
+| 协议 | Go 请求路径 | 认证 |
+| --- | --- | --- |
+| Chat Completions | `/zen/go/v1/chat/completions` | `Authorization: Bearer …` |
+| Anthropic Messages | `/zen/go/v1/messages` | `x-api-key: …`，另含 `anthropic-version` |
+| Responses | `/zen/go/v1/responses` | `Authorization: Bearer …` |
+
+Zen 对应路径去掉 `/go`，模型分组独立维护。Messages 的认证另核对了 [OpenCode 官方服务端实现](https://github.com/anomalyco/opencode/blob/0112a92c416f5ad833d96e7a8308441f0a875d94/packages/console/app/src/routes/zen/go/v1/messages.ts#L5)。
+
+展开模型并点击“编辑”可选择入口，无需重复填写 Key。Go 的 DeepSeek V4 Flash 提供三种入口；部分 Qwen、MiniMax 模型保留参考项目中的 Chat 兼容入口。仅列出已核对的精确模型 ID，不将一个模型的兼容性外推到整个模型系列或 Zen。DeepSeek Pro 继续推荐 Chat：[Reasonix 使用说明](https://github.com/indielab/Reasonix/blob/6845b6de3c5e079737a3b010ebcdd87f6cd0228c/docs/GUIDE.md#L369)记录了其他入口的上游转换问题，因此本轮未将其加入快捷选项；手动配置仍保留。
+
+这些选项用于明确请求协议，无法保证账户拥有模型权限或上游始终提供相同兼容能力。手动协议会在刷新后保留；一次请求只走选定入口，不会自动向三个入口重复提交。Responses 使用 `store: false`，继续发送本次所需上下文。应用使用自己的 User-Agent，不冒充 Reasonix 或其他客户端。
+
+测试通过本地 Mock 检查实际路径、认证头、请求体和刷新后的持久状态。此验证不包含真实付费模型调用。

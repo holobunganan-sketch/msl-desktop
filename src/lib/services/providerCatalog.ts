@@ -1,4 +1,4 @@
-import type { ProviderConnection, ProviderModel } from '../types/domain';
+import type { ModelRouteOption, ProviderConnection, ProviderModel } from '../types/domain';
 
 export type ProviderTemplate = {
   kind: string; vendor: string; display_name: string; service_tier: 'api' | 'plan';
@@ -79,6 +79,24 @@ export async function createConnection(
 }
 
 export type ModelForm = {modelId: string; displayName: string; protocol: string; endpointPath: string; enabled: boolean};
+export function applyRouteOption(form: ModelForm, route: ModelRouteOption): ModelForm {
+  if (!protocols.some(item => item.id === route.protocol)) throw new Error('Unknown protocol.');
+  return {...form, protocol:route.protocol, endpointPath:route.endpoint_path};
+}
+
+// Only presented when the native core identifies an official OpenCode connection.
+export function routePreview(baseUrl: string, endpointPath: string, protocol: string) {
+  let base = baseUrl.replace(/\/+$/, '');
+  if (/\/zen(?:\/go)?$/.test(base) && protocols.some(item => item.id === protocol && item.endpoint === endpointPath)) base += '/v1';
+  return base + endpointPath;
+}
+
+export function routeAuthentication(baseUrl: string, endpointPath: string, protocol: string, authMode: string) {
+  if (authMode === 'none') return 'none';
+  if (authMode === 'api_key') return 'x-api-key';
+  if (protocol === 'anthropic_messages' && /\/zen(?:\/go)?\/v1\/messages$/.test(routePreview(baseUrl,endpointPath,protocol))) return 'x-api-key';
+  return 'Bearer';
+}
 export function modelSavePayload(providerId: number, form: ModelForm, original?: ProviderModel) {
   if (!form.modelId.trim() || !form.displayName.trim()) throw new Error('Model ID and display name are required.');
   if (!protocols.some(item => item.id === form.protocol)) throw new Error('Choose a supported protocol.');
