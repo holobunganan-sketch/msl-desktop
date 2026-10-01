@@ -215,6 +215,65 @@ mod tests {
     }
 
     #[test]
+    fn migration_v28_to_v29_preserves_binding_receipts_and_work_idempotently() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at INTEGER NOT NULL);").unwrap();
+        for migration in migrations::MIGRATIONS
+            .iter()
+            .filter(|entry| entry.version <= 28)
+        {
+            conn.execute_batch(migration.sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES(?1,?2,0)",
+                rusqlite::params![migration.version, migration.name],
+            )
+            .unwrap();
+        }
+        conn.execute_batch("INSERT INTO weixin_binding(id,bot_id,owner_id,base_url,credential_ref,bound_at,enabled,cursor,last_global_at) VALUES(1,'test-bot','test-owner','https://ilinkai.weixin.qq.com','unused-test-ref',1000,1,'private-cursor',1001);
+            INSERT INTO weixin_receipts(bot_id,message_id,received_at,action,inbox_id,job_id) VALUES('test-bot','1',1001,'capture',9,NULL),('test-bot','2',1002,'global',NULL,7),('test-bot','3',1003,'rate_limited',NULL,NULL),('test-bot','4',1004,'queue_busy',NULL,NULL);
+            INSERT INTO inbox_items(content,created_at) VALUES('保留原话',1001);").unwrap();
+        let before = knowledge::rows(
+            &conn,
+            "SELECT * FROM weixin_receipts ORDER BY message_id",
+            &[],
+        )
+        .unwrap();
+        migrations::run(&mut conn).unwrap();
+        migrations::run(&mut conn).unwrap();
+        assert_eq!(
+            knowledge::rows(
+                &conn,
+                "SELECT * FROM weixin_receipts ORDER BY message_id",
+                &[]
+            )
+            .unwrap(),
+            before
+        );
+        let binding: (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT cursor,last_global_at,menu_mode FROM weixin_binding",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(binding, ("private-cursor".into(), 1001, None));
+        assert_eq!(
+            conn.query_row("SELECT content FROM inbox_items", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "保留原话"
+        );
+        conn.execute("INSERT INTO weixin_receipts(bot_id,message_id,received_at,action) VALUES('test-bot','5',1005,'menu')", []).unwrap();
+        assert!(conn.execute("INSERT INTO weixin_receipts(bot_id,message_id,received_at,action) VALUES('test-bot','2',1006,'global')", []).is_err());
+        assert_eq!(
+            conn.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
+    }
+
+    #[test]
     fn fresh_db_auto_creates_and_migrates() {
         let path = temp_db_path("fresh");
         let db = Database::open(&path).unwrap();
@@ -226,7 +285,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
 
         // 业务表包含 Provider catalog、文档智能、AI secretary 与周期报告。
         let table_count: i64 = db
@@ -279,7 +338,7 @@ mod tests {
         let before = snapshot(&conn);
         migrations::run(&mut conn).unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         assert_eq!(snapshot(&conn), before);
         for table in [
             "weixin_binding",
@@ -358,13 +417,13 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
         // Each registered migration is recorded exactly once.
         let count: i64 = db
             .conn()
             .query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 28);
+        assert_eq!(count, 29);
     }
 
     #[test]
@@ -381,7 +440,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM provider_settings", [], |r| r
                 .get::<_, i64>(0))
@@ -438,7 +497,7 @@ mod tests {
         .unwrap();
 
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         assert_eq!(
             conn.query_row(
                 "SELECT template_kind FROM provider_settings WHERE id = 1",
@@ -520,7 +579,7 @@ mod tests {
              INSERT INTO works (title, status, created_at, updated_at) VALUES ('work', 'active', 0, 0);",
         ).unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         for table in ["work_workspace_links", "document_index", "cache_entries"] {
             assert_eq!(
                 conn.query_row(
@@ -567,7 +626,7 @@ mod tests {
         .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0); INSERT INTO daily_briefs (brief_date,generated_at,content) VALUES ('2026-08-14',0,'kept brief');").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         let schedule: (i64, i64, i64, i64) = conn.query_row("SELECT enabled, interval_minutes, daily_hour, daily_minute FROM analysis_schedule_state WHERE id=1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(schedule, (1, 180, 6, 0));
         assert_eq!(
@@ -597,7 +656,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            28
+            29
         );
     }
 
@@ -622,7 +681,7 @@ mod tests {
             .unwrap();
         conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations VALUES (1,'init',0),(2,'workbench_reliability',0),(3,'ai_provider_catalog',0),(4,'document_intelligence',0),(5,'ai_secretary',0); INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES ('cache_limit_bytes','123',1);").unwrap();
         migrations::run(&mut conn).unwrap();
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         assert_eq!(
             conn.query_row(
                 "SELECT value FROM app_settings WHERE key='cache_limit_bytes'",
@@ -663,7 +722,7 @@ mod tests {
 
         migrations::run(&mut conn).unwrap();
 
-        assert_eq!(migrations::current_version(&conn).unwrap(), 28);
+        assert_eq!(migrations::current_version(&conn).unwrap(), 29);
         assert_eq!(
             conn.query_row(
                 "SELECT kind || '|' || suggested_kind FROM ai_proposals WHERE dedupe_key='kept-proposal'",
@@ -812,7 +871,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            28
+            29
         );
         let violations: i64 = conn
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
@@ -865,7 +924,7 @@ mod tests {
         });
         drop(before);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 28);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 29);
         let counts_after = [
             "works",
             "tasks",
@@ -892,7 +951,7 @@ mod tests {
             .is_empty());
         drop(db);
         let db = Database::open(&canonical).unwrap();
-        assert_eq!(migrations::current_version(db.conn()).unwrap(), 28);
+        assert_eq!(migrations::current_version(db.conn()).unwrap(), 29);
         for table in ["reports", "report_schedule_state"] {
             assert_eq!(
                 db.conn()

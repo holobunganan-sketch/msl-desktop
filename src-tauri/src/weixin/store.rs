@@ -2,6 +2,8 @@ use crate::db::{jobs::AiJob, DbError, DbResult};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
+const MENU: &str = "秘书在这里，请回复序号：\n一、记一句话\n二、全局整理\n三、生成每日简报\n四、查看整理进度\n五、查看待确认数量\n六、退出菜单\n可回复 1–6；菜单 10 分钟内有效。普通文字会原样记入收件箱，工作内容与建议请在桌面端查看。";
+
 #[derive(Clone)]
 pub(crate) struct Binding {
     pub bot_id: String,
@@ -13,7 +15,7 @@ pub(crate) struct Binding {
     pub cursor: String,
 }
 pub(crate) struct Receipt {
-    pub ack: &'static str,
+    pub ack: String,
     pub context: String,
     pub job: Option<AiJob>,
 }
@@ -38,7 +40,7 @@ pub(crate) fn ingest_batch(
     }
     let mut receipts = vec![];
     for msg in messages {
-        let Some((id, text)) = trusted_text(binding, msg, now) else {
+        let Some((id, text, created_ms)) = trusted_text(binding, msg, now) else {
             continue;
         };
         let exists: bool = tx.query_row(
@@ -54,57 +56,161 @@ pub(crate) fn ingest_batch(
             params![binding.bot_id, now - 60],
             |r| r.get(0),
         )?;
-        let global = text == "全局交给秘书整理一遍";
-        let last_global: Option<i64> = tx.query_row(
-            "SELECT last_global_at FROM weixin_binding WHERE id=1",
+        let expired = tx.execute("UPDATE weixin_binding SET menu_mode=NULL,menu_expires_at=NULL WHERE id=1 AND menu_expires_at<=?1", [now])? > 0;
+        let (mode, after_ms, after_id): (Option<String>, i64, String) = tx.query_row(
+            "SELECT menu_mode,menu_after_ms,menu_after_id FROM weixin_binding WHERE id=1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        let limited = recent >= 60 || (global && last_global.is_some_and(|t| now - t < 60));
-        let (action, ack, inbox_id, job_id, job) = if limited {
-            (
-                "rate_limited",
-                "消息较频繁，请稍后重新发送。",
-                None,
-                None,
-                None,
-            )
-        } else if global {
-            // Reuse the same job request and deduplication as the desktop button.
-            // This explicit owner command is a manual request; proposals still
-            // go through the desktop's normal confirmation flow.
-            match crate::db::jobs::start_in_transaction(
-                &tx,
-                "run_analysis_now",
-                &serde_json::json!({"trigger":"manual"}),
-            ) {
-                Ok((job, created)) => {
-                    tx.execute(
-                        "UPDATE weixin_binding SET last_global_at=?1 WHERE id=1",
-                        [now],
-                    )?;
-                    (
-                        "global",
-                        "已提交后台整理请求；处理进度和待确认建议请在桌面端查看。",
-                        None,
-                        Some(job.id),
-                        created.then_some(job),
-                    )
+        // IDs are validated uint64 values. They break ties when the service emits
+        // multiple messages in the same millisecond, including one poll batch.
+        let fresh = (created_ms, id.parse::<u64>().unwrap_or(0))
+            > (after_ms, after_id.parse::<u64>().unwrap_or(0));
+        let recording = fresh && mode.as_deref() == Some("record");
+        let choice = if fresh && mode.as_deref() == Some("menu") {
+            menu_choice(text.trim())
+        } else {
+            None
+        };
+        let mut action = "capture";
+        let mut ack = "已记入收件箱。".to_string();
+        let mut inbox_id = None;
+        let mut job_id = None;
+        let mut job = None;
+        if recent >= 60 {
+            action = "rate_limited";
+            ack = "消息较频繁，请稍后重新发送。".into();
+        } else if !recording && text.trim() == "召唤秘书" {
+            action = "menu";
+            if fresh {
+                // Offline delivery cannot renew old authorization; cap future clock skew.
+                let expires_at = now.min(created_ms / 1000) + 600;
+                tx.execute(
+                    "UPDATE weixin_binding SET menu_mode=?1,menu_expires_at=?2 WHERE id=1",
+                    params![
+                        if expires_at > now { Some("menu") } else { None },
+                        expires_at
+                    ],
+                )?;
+                ack = if expires_at > now {
+                    MENU
+                } else {
+                    "菜单已过期，请重新发送“召唤秘书”。"
                 }
-                Err(DbError::Migration(_)) => (
-                    "queue_busy",
-                    "后台任务较多，请稍后重新发送整理命令。",
-                    None,
-                    None,
-                    None,
-                ),
-                Err(e) => return Err(e),
+                .into();
+            } else {
+                ack = "菜单已更新，请按当前菜单操作；需要时可重新发送“召唤秘书”。".into();
+            }
+        } else if !recording && text.trim() == "全局交给秘书整理一遍" {
+            action = "retired_command";
+            ack = "请发送“召唤秘书”，再回复“二”发起全局整理。".into();
+        } else if let Some(choice) = choice {
+            match choice {
+                1 => {
+                    action = "record_next";
+                    tx.execute(
+                        "UPDATE weixin_binding SET menu_mode='record' WHERE id=1",
+                        [],
+                    )?;
+                    ack = "请发送要记录的下一句，将原样记入收件箱；数字和指令文字也会作为原话保存。记录后返回菜单。".into();
+                }
+                2 | 3 => {
+                    let last: Option<i64> = tx.query_row(
+                        if choice == 2 {
+                            "SELECT last_global_at FROM weixin_binding WHERE id=1"
+                        } else {
+                            "SELECT last_brief_at FROM weixin_binding WHERE id=1"
+                        },
+                        [],
+                        |r| r.get(0),
+                    )?;
+                    if last.is_some_and(|last| now.saturating_sub(last) < 60) {
+                        action = "rate_limited";
+                        ack = "此操作刚刚提交，请稍后重试；进度可在桌面端查看。".into();
+                    } else {
+                        let (command, args) = if choice == 2 {
+                            ("run_analysis_now", serde_json::json!({"trigger":"manual"}))
+                        } else {
+                            ("generate_brief", brief_args(now)?)
+                        };
+                        // Shared job deduplication and queue limit; entity changes
+                        // continue through the desktop proposal confirmation flow.
+                        match crate::db::jobs::start_in_transaction(&tx, command, &args) {
+                            Ok((started, created)) => {
+                                tx.execute(
+                                    if choice == 2 {
+                                        "UPDATE weixin_binding SET last_global_at=?1 WHERE id=1"
+                                    } else {
+                                        "UPDATE weixin_binding SET last_brief_at=?1 WHERE id=1"
+                                    },
+                                    [now],
+                                )?;
+                                action = if choice == 2 { "global" } else { "brief" };
+                                ack = if choice == 2 {
+                                    "已提交后台整理请求；处理进度和待确认建议请在桌面端查看。"
+                                } else {
+                                    "已提交今日简报请求；简报内容和处理进度请在桌面端查看。"
+                                }
+                                .into();
+                                job_id = Some(started.id);
+                                job = created.then_some(started);
+                            }
+                            Err(DbError::Migration(_)) => {
+                                action = "queue_busy";
+                                ack = "后台任务较多，请稍后重新回复序号。".into();
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
+                }
+                4 => {
+                    action = "job_status";
+                    let counts: (i64, i64, i64, i64) = tx.query_row(
+                        "SELECT COUNT(CASE WHEN status='running' THEN 1 END),COUNT(CASE WHEN status='completed' THEN 1 END),COUNT(CASE WHEN status='failed' THEN 1 END),COUNT(CASE WHEN status='interrupted' THEN 1 END) FROM ai_jobs", [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )?;
+                    ack = format!("本机保留的后台任务：进行中 {}，已完成 {}，失败 {}，已中断 {}。详情请在桌面端查看。", counts.0, counts.1, counts.2, counts.3);
+                }
+                5 => {
+                    action = "pending_status";
+                    let counts: (i64, i64) = tx.query_row(
+                        "SELECT COUNT(CASE WHEN deferred_at IS NULL THEN 1 END),COUNT(CASE WHEN deferred_at IS NOT NULL THEN 1 END) FROM ai_proposals WHERE status='pending'", [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )?;
+                    ack = format!(
+                        "待确认 {} 条，暂缓 {} 条。请在桌面端查看并确认建议。",
+                        counts.0, counts.1
+                    );
+                }
+                6 => {
+                    action = "exit_menu";
+                    tx.execute(
+                        "UPDATE weixin_binding SET menu_mode=NULL,menu_expires_at=NULL WHERE id=1",
+                        [],
+                    )?;
+                    ack = "已退出菜单，之后发送的普通文字会记入收件箱。需要时请发送“召唤秘书”。"
+                        .into();
+                }
+                _ => unreachable!(),
             }
         } else {
             let item = crate::db::inbox::InboxRepo::new(&tx).insert(text)?;
             tx.execute("INSERT INTO capture_context(inbox_id,work_id,entity_kind,entity_id) VALUES(?1,NULL,NULL,NULL)",[item.id])?;
-            ("capture", "已记入收件箱。", Some(item.id), None, None)
-        };
+            inbox_id = Some(item.id);
+            if expired && menu_choice(text.trim()).is_some() {
+                ack = "菜单已过期，这条原话已记入收件箱；如需操作，请重新发送“召唤秘书”。".into();
+            }
+            if recording {
+                tx.execute("UPDATE weixin_binding SET menu_mode='menu' WHERE id=1", [])?;
+                ack = "已原样记入收件箱，已返回菜单；可继续回复序号，或回复“六”退出。".into();
+            }
+        }
+        if fresh && action != "rate_limited" {
+            tx.execute(
+                "UPDATE weixin_binding SET menu_after_ms=?1,menu_after_id=?2 WHERE id=1",
+                params![created_ms, id],
+            )?;
+        }
         tx.execute("INSERT INTO weixin_receipts(bot_id,message_id,received_at,action,inbox_id,job_id) VALUES(?1,?2,?3,?4,?5,?6)",params![binding.bot_id,id,now,action,inbox_id,job_id])?;
         tx.execute(
             "UPDATE weixin_binding SET last_received_at=?1 WHERE id=1",
@@ -128,7 +234,57 @@ pub(crate) fn ingest_batch(
     Ok(receipts)
 }
 
-fn trusted_text<'a>(binding: &Binding, msg: &'a Value, now: i64) -> Option<(String, &'a str)> {
+fn menu_choice(text: &str) -> Option<u8> {
+    match text {
+        "1" | "一" | "１" => Some(1),
+        "2" | "二" | "２" => Some(2),
+        "3" | "三" | "３" => Some(3),
+        "4" | "四" | "４" => Some(4),
+        "5" | "五" | "５" => Some(5),
+        "6" | "六" | "６" => Some(6),
+        _ => None,
+    }
+}
+
+fn brief_args(now: i64) -> DbResult<Value> {
+    use chrono::{Local, TimeZone};
+    let invalid = || DbError::Migration("本机日期无效，请在桌面端生成简报".into());
+    let local = Local.timestamp_opt(now, 0).single().ok_or_else(invalid)?;
+    let date = local.date_naive();
+    let period_start = Local
+        .from_local_datetime(
+            &date
+                .pred_opt()
+                .ok_or_else(invalid)?
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(invalid)?,
+        )
+        .earliest()
+        .ok_or_else(invalid)?
+        .timestamp();
+    let today_start = Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0).ok_or_else(invalid)?)
+        .earliest()
+        .ok_or_else(invalid)?
+        .timestamp();
+    let today_end = Local
+        .from_local_datetime(
+            &date
+                .succ_opt()
+                .ok_or_else(invalid)?
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(invalid)?,
+        )
+        .earliest()
+        .ok_or_else(invalid)?
+        .timestamp();
+    Ok(
+        serde_json::json!({"date":date.to_string(),"periodStart":period_start,"periodEnd":today_start,
+        "todayStart":today_start,"todayEnd":today_end,"locale":"zh-CN","force":false}),
+    )
+}
+
+fn trusted_text<'a>(binding: &Binding, msg: &'a Value, now: i64) -> Option<(String, &'a str, i64)> {
     if msg["from_user_id"].as_str() != Some(binding.owner_id.as_str())
         || msg["to_user_id"]
             .as_str()
@@ -142,7 +298,8 @@ fn trusted_text<'a>(binding: &Binding, msg: &'a Value, now: i64) -> Option<(Stri
     {
         return None;
     }
-    let created = msg["create_time_ms"].as_i64()?.checked_div(1000)?;
+    let created_ms = msg["create_time_ms"].as_i64()?;
+    let created = created_ms.checked_div(1000)?;
     if created < binding.bound_at || created > now + 300 {
         return None;
     }
@@ -162,5 +319,5 @@ fn trusted_text<'a>(binding: &Binding, msg: &'a Value, now: i64) -> Option<(Stri
     if text.trim().is_empty() || text.len() > 20000 {
         return None;
     }
-    Some((id, text))
+    Some((id, text, created_ms))
 }

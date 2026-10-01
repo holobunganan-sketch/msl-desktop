@@ -312,4 +312,19 @@ footer>p { font-size: 12px; }
   .case-route>div { font-size: 13px; }
   .casebook-caption { font-size: 11px; }
 }
+.weixin-section { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 56px; padding-block: 36px 76px; align-items: center; }
+.weixin-copy h2 { margin-block: 15px 20px; }
+.weixin-copy>p:not(.eyebrow) { color: var(--muted); max-width: 520px; }
+.weixin-copy .weixin-condition { margin-top: 16px; }
+.weixin-condition { font-size: 13px; line-height: 1.8; color: var(--muted); }
+.weixin-example { display: grid; gap: 14px; min-width: 0; }
+.weixin-message { justify-self: end; padding: 9px 18px; border-radius: 4px; background: #e4edf0; color: var(--ink); }
+.weixin-reply { padding: 22px 26px; border: 1px solid var(--line); border-radius: 5px; background: var(--white); }
+.weixin-reply>p:first-child { font-weight: 600; }
+.weixin-reply ol { list-style-type: cjk-ideographic; columns: 2; margin-block: 12px 16px; padding-left: 2em; }
+.weixin-reply li { break-inside: avoid; padding-block: 4px; font-size: 15px; }
+.footer-links { display: flex; gap: 24px; font-size: 13px; color: var(--muted); }
+.footer-links a:hover { color: var(--ink); }
+@media (max-width: 900px) { .weixin-section { gap: 30px; } .weixin-reply ol { columns: 1; } }
+@media (max-width: 680px) { .weixin-section { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-block: 0 42px; } .weixin-reply { padding: 20px; } .weixin-copy h2 { font-size: 30px; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { transition: none !important; } }

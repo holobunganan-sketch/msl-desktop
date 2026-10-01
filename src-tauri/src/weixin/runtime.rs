@@ -175,7 +175,7 @@ fn start_if_current(app: tauri::AppHandle, expected_generation: Option<u64>) -> 
     let api = Api::new(&binding.base_url, Some(token))?;
     connection_state(&app, "connecting")?;
     let generation = control.generation;
-    let (ack_tx, ack_rx) = mpsc::sync_channel::<(&'static str, String)>(32);
+    let (ack_tx, ack_rx) = mpsc::sync_channel::<(String, String)>(32);
     let ack_api = api.clone();
     let owner = binding.owner_id.clone();
     control
@@ -184,7 +184,7 @@ fn start_if_current(app: tauri::AppHandle, expected_generation: Option<u64>) -> 
             loop {
                 match ack_rx.try_recv() {
                     Ok((text, context)) => {
-                        let _ = ack_api.acknowledge(&owner, &context, text).await;
+                        let _ = ack_api.acknowledge(&owner, &context, &text).await;
                     }
                     Err(mpsc::TryRecvError::Empty) => {
                         tokio::time::sleep(Duration::from_millis(150)).await
@@ -207,7 +207,7 @@ async fn poll_messages(
     api: Api,
     mut binding: store::Binding,
     generation: u64,
-    ack: mpsc::SyncSender<(&'static str, String)>,
+    ack: mpsc::SyncSender<(String, String)>,
 ) {
     let mut failures = 0u32;
     loop {
@@ -238,13 +238,24 @@ async fn poll_messages(
                                 let changed = !receipts.is_empty();
                                 for receipt in receipts {
                                     if let Some(job) = receipt.job {
-                                        crate::commands::jobs::spawn_existing_job(
-                                            app.clone(),
-                                            job.id,
-                                            crate::commands::jobs::JobRequest::RunAnalysisNow {
-                                                trigger: Some("manual".into()),
-                                            },
-                                        );
+                                        match request_for_job(&job) {
+                                            Ok(request) => {
+                                                crate::commands::jobs::spawn_existing_job(
+                                                    app.clone(),
+                                                    job.id,
+                                                    request,
+                                                )
+                                            }
+                                            Err(error) => {
+                                                let _ = db(&app, |conn| {
+                                                    crate::db::jobs::finish(
+                                                        conn,
+                                                        job.id,
+                                                        Err(error),
+                                                    )
+                                                });
+                                            }
+                                        }
                                     }
                                     if !receipt.context.is_empty() {
                                         let _ = ack.try_send((receipt.ack, receipt.context));
@@ -289,6 +300,13 @@ async fn poll_messages(
 }
 fn backoff(failures: u32) -> Duration {
     Duration::from_secs((1u64 << failures.min(6)).min(60))
+}
+
+fn request_for_job(
+    job: &crate::db::jobs::AiJob,
+) -> Result<crate::commands::jobs::JobRequest, String> {
+    serde_json::from_value(serde_json::json!({"command":job.command,"args":job.args}))
+        .map_err(|_| "后台任务参数无效，请从菜单重新提交。".into())
 }
 
 pub fn set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<WeixinStatus, String> {
@@ -472,7 +490,7 @@ pub async fn poll_login(app: tauri::AppHandle) -> Result<LoginView, String> {
                     .set_password(&confirmed.token)
                     .map_err(|_| SAFE_CREDENTIAL_ERROR)?;
                 let saved = db(&app, |conn| {
-                    conn.execute("INSERT INTO weixin_binding(id,bot_id,owner_id,base_url,credential_ref,bound_at,enabled,cursor,connection_state) VALUES(1,?1,?2,?3,?4,?5,1,'','connecting') ON CONFLICT(id) DO UPDATE SET bot_id=excluded.bot_id,owner_id=excluded.owner_id,base_url=excluded.base_url,credential_ref=excluded.credential_ref,bound_at=excluded.bound_at,enabled=1,cursor='',connection_state='connecting',last_received_at=NULL,last_global_at=NULL",params![confirmed.bot_id,confirmed.owner_id,confirmed.base,reference,now_unix()])?;
+                    conn.execute("INSERT INTO weixin_binding(id,bot_id,owner_id,base_url,credential_ref,bound_at,enabled,cursor,connection_state) VALUES(1,?1,?2,?3,?4,?5,1,'','connecting') ON CONFLICT(id) DO UPDATE SET bot_id=excluded.bot_id,owner_id=excluded.owner_id,base_url=excluded.base_url,credential_ref=excluded.credential_ref,bound_at=excluded.bound_at,enabled=1,cursor='',connection_state='connecting',last_received_at=NULL,last_global_at=NULL,last_brief_at=NULL,menu_mode=NULL,menu_expires_at=NULL,menu_after_ms=0,menu_after_id='0'",params![confirmed.bot_id,confirmed.owner_id,confirmed.base,reference,now_unix()])?;
                     Ok(())
                 });
                 if saved.is_err() {
@@ -498,6 +516,16 @@ pub async fn poll_login(app: tauri::AppHandle) -> Result<LoginView, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Dispatching all receipts as global analysis would run the wrong task for a brief.
+    #[test]
+    fn menu_receipt_dispatches_the_persisted_job_kind_and_arguments() {
+        let db = crate::db::Database::open_in_memory().unwrap();
+        let args = serde_json::json!({"date":"2026-10-01","periodStart":1790784000i64,"periodEnd":1790870400i64,"todayStart":1790870400i64,"todayEnd":1790956800i64,"locale":"zh-CN","force":false});
+        let (job, _) = crate::db::jobs::start(db.conn(), "generate_brief", &args).unwrap();
+        let dispatched = serde_json::to_value(request_for_job(&job).unwrap()).unwrap();
+        assert_eq!(dispatched["command"], "generate_brief");
+        assert_eq!(dispatched["args"], args);
+    }
     #[test]
     fn cancel_invalidates_late_pairing_and_clears_pending_secrets() {
         let mut control = Control {

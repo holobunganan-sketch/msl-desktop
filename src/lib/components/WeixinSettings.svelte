@@ -85,9 +85,19 @@
     <p class="status" role="status">{loading ? txt("正在读取连接状态…", "Loading connection status…") : stateLabel(status.connection_state)}</p>
     <ul>
       <li>{txt("普通文字会原话存入收件箱。", "Ordinary text is saved verbatim to your inbox.")}</li>
-      <li>{txt("发送精确命令", "Send this exact command:")} <code>全局交给秘书整理一遍</code>{txt("，即可提交后台整理。建议仍由你在桌面端确认。", " to queue a global review. You still confirm suggestions on the desktop.")}</li>
+      <li>{txt("发送", "Send")} <code>召唤秘书</code>{txt("，收到菜单后回复数字或中文序号。", " to open the menu, then reply with a number.")}</li>
     </ul>
-    <p class="hint">{txt("仅接收扫码账号本人的私聊文字；群聊、语音、图片和附件不处理。微信只收到简短回执，工作内容不会通过回执发出。", "Only direct text messages from the paired owner are accepted. Groups, voice, images and attachments are ignored. Replies are brief acknowledgments and contain no work details.")}</p>
+    <ol class="menu-preview" aria-label={txt("微信操作菜单", "WeChat action menu")}>
+      {#each [
+        ["一", "记一句话", "Record a note"], ["二", "全局整理", "Organize the workspace"],
+        ["三", "生成每日简报", "Prepare today's brief"], ["四", "查看整理进度", "Check progress"],
+        ["五", "查看待确认数量", "Count pending suggestions"], ["六", "退出菜单", "Exit the menu"],
+      ] as item, index}
+        <li><span class="menu-number" aria-hidden="true">{txt(item[0], String(index + 1))}</span><span>{txt(item[1], item[2])}</span></li>
+      {/each}
+    </ol>
+    <p class="hint">{txt("菜单有效期 10 分钟。选“一”后，下一条文字按原话记录；选“六”退出。整理和简报在电脑后台进行，建议仍由你在桌面端确认。", "The menu stays active for 10 minutes. Choose 1 to save your next message verbatim, or 6 to exit. Analysis and briefs run on your computer; you confirm suggestions on the desktop.")}</p>
+    <p class="hint">{txt("仅接收扫码账号本人的私聊文字；群聊、语音、图片和附件不处理。微信回复操作回执、任务进度或待确认数量，不发送工作正文。", "Only direct text messages from the paired owner are accepted. Groups, voice, images and attachments are ignored. Replies contain acknowledgments, job status or pending counts, never work content.")}</p>
     <div class="actions">
       <AppButton variant="secondary" loading={busy} disabled={loading} onclick={begin}>{txt(status.bound ? "重新扫码绑定" : "扫码绑定并启用", status.bound ? "Pair again" : "Scan to pair and enable")}</AppButton>
       {#if status.bound}
@@ -115,6 +125,10 @@
   .weixin-settings { display: grid; gap: 12px; }
   p, ul { margin: 0; font-size: 13px; line-height: 1.65; }
   ul { padding-left: 20px; }
+  .menu-preview { list-style: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; margin: 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 8px; }
+  .menu-preview li { display: flex; align-items: baseline; gap: 10px; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+  .menu-number { color: var(--color-muted); flex: 0 0 1.4em; }
+  @media (max-width: 600px) { .menu-preview { grid-template-columns: minmax(0, 1fr); } }
   .status { font-weight: 600; }
   .hint { color: var(--color-muted); }
   .actions, .verify { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

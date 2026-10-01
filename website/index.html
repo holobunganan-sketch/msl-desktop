@@ -16,6 +16,11 @@
   <meta property="og:title" content="MSL Desktop｜医学联络官的日常工作台">
   <meta property="og:description" content="专家交流、项目进展和待办放在一起。AI 帮忙整理，你负责确认；工作数据保存在本机。">
   <meta property="og:image" content="https://msl-desktop.pages.dev/assets/project.png">
+  <meta property="og:image:alt" content="MSL Desktop 项目页面，使用演示数据">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="MSL Desktop｜医学联络官的日常工作台">
+  <meta name="twitter:description" content="拜访后留下一句原话，在项目中继续跟进。Windows 桌面版，工作数据保存在本机。">
+  <meta name="twitter:image" content="https://msl-desktop.pages.dev/assets/project.png">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"MSL Desktop","applicationCategory":"BusinessApplication","audience":{"@type":"Audience","audienceType":"医学联络官（MSL）"},"operatingSystem":"Windows","inLanguage":"zh-CN","url":"https://msl-desktop.pages.dev/","downloadUrl":"https://msl-desktop.pages.dev/downloads/MSL-Desktop-Windows-x64.exe","description":"记录专家交流，跟进临床研究与日常项目，管理待办和相关资料。AI 根据记录提出整理建议，经你确认后保存。Mac 版本正在开发。"}</script>
   <link rel="icon" type="image/png" href="assets/icon.png">
   <link rel="preload" href="assets/noto-serif-sc-regular-e8a27ef386c4.woff2" as="font" type="font/woff2" crossorigin>
@@ -100,6 +105,14 @@
       <div class="workspace-endnote"><span>回顾这段时间做了什么</span><p>简报、周报和月报按工作记录起草，生成后由你核对。你对建议的修改也会影响下一次整理。</p></div>
     </section>
 
+    <section id="weixin" class="weixin-section wrap" aria-labelledby="weixin-title">
+      <div class="weixin-copy"><p class="eyebrow">离开电脑，也能先记下来</p><h2 id="weixin-title">在微信里，叫一声秘书。</h2><p>拜访结束后，把一句原话发进收件箱。需要整理时，发送“召唤秘书”，按菜单回复数字；回到电脑前，再核对建议。</p><p class="weixin-condition">需本人扫码绑定，接收电脑联网且工作台保持运行。仅接收绑定账号的私聊文字，账号接入以微信服务返回为准。</p></div>
+      <div class="weixin-example" aria-label="微信秘书菜单示例">
+        <p class="weixin-message">召唤秘书</p>
+        <div class="weixin-reply"><p>请选择要做的事</p><ol><li>记一句话</li><li>全局整理</li><li>生成每日简报</li><li>查看整理进度</li><li>查看待确认数量</li><li>退出菜单</li></ol><p class="weixin-condition">回复数字或中文序号，菜单有效期 10 分钟。<br>进度和数量查询不调用模型，不发送工作正文。</p></div>
+      </div>
+    </section>
+
     <section class="data-section wrap" aria-labelledby="data-title">
       <div><p class="eyebrow">数据与备份</p><h2 id="data-title">数据保存在本机。</h2></div>
       <div class="data-facts"><div><h3>应用与数据分开</h3><p>工作记录与安装目录分开保存。可选 WPS、OneDrive 等云盘的本地文件夹，用于备份或设备间同步。</p></div><div><h3>不改动你的源文件</h3><p>关联目录中的文件只供读取，工作台不会增删或修改。使用远程模型分析时，相关记录和资料会发送给你选定的服务商。</p></div></div>
@@ -119,6 +132,6 @@
       </div>
     </section>
   </main>
-  <footer class="wrap"><a class="brand" href="#main"><img src="assets/icon.png" alt="" width="28" height="28"><span>MSL <span class="brand-light">Desktop</span></span></a><span>© 2026 MSL Desktop</span></footer>
+  <footer class="wrap"><a class="brand" href="#main"><img src="assets/icon.png" alt="" width="28" height="28"><span>MSL <span class="brand-light">Desktop</span></span></a><div class="footer-links"><a href="https://github.com/holobunganan-sketch/msl-desktop" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/holobunganan-sketch/msl-desktop/issues" target="_blank" rel="noopener">反馈问题</a></div><span>© 2026 MSL Desktop</span></footer>
 </body>
 </html>
