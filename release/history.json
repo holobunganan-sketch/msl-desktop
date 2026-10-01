@@ -4,8 +4,8 @@
     {
       "version": "0.3.21",
       "date": "2026-10-01",
-      "status": "current",
-      "dateKind": "local",
+      "status": "released",
+      "dateKind": "published",
       "title": "按厂商管理模型接入",
       "summary": "模型接入改为下拉选择，可保存多个独立连接；模型按厂商、连接和接口协议折叠。",
       "changes": [
@@ -15,7 +15,13 @@
         "OpenCode Go 与 Zen 分别维护模型协议，Responses、Chat Completions 和 Anthropic Messages 分组展示。",
         "刷新模型保留手动配置、启停状态与任务分工，目录读取失败时保留已有列表。",
         "修正请求鉴权设置，阻止携带凭据的重定向；模型协议待核对时显示配置提示。"
-      ]
+      ],
+      "source": {
+        "url": "https://github.com/holobunganan-sketch/msl-desktop/releases/tag/v0.3.21",
+        "label": "发布记录",
+        "publishedAt": "2026-10-01T02:48:35Z",
+        "commit": "de5bc4e4f6015be4c530631f7827839e845df401"
+      }
     },
     {
       "version": "0.3.20",
